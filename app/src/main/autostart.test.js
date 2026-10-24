@@ -110,7 +110,7 @@ test('linux: turning run at login on also installs the icon the entries name', a
   const { a } = await setup({ iconPath: src });
   await a.set(true);
   assert.equal(await fsp.readFile(a.files().icon, 'utf8'), 'png');
-  assert.match(a.files().icon, /\.local\/share\/icons\/hicolor\/512x512\/apps\/watchyard-desktop\.png$/);
+  assert.ok(a.files().icon.endsWith(path.join('.local', 'share', 'icons', 'hicolor', '512x512', 'apps', 'watchyard-desktop.png')));
 });
 
 test('linux: ensureIcon adds a missing icon only when an entry exists', async () => {
