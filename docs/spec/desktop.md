@@ -45,6 +45,10 @@ pairing.md (desktop codes, owner links), machines.md 4.4 (admin channel).
 - Run at login: on Linux, `~/.config/autostart/watchyard-desktop.desktop` and
   `~/.local/share/applications/watchyard-desktop.desktop`. On macOS and Windows,
   `app.setLoginItemSettings` with `--background`.
+- Linux icon: the entries say `Icon=watchyard-desktop`. Writing them also copies the app icon to
+  `~/.local/share/icons/hicolor/512x512/apps/watchyard-desktop.png`, and each start copies it when
+  an entry exists and the icon does not (an AppImage installs no icon; GNOME on Wayland takes the
+  window and notification icon from the entry).
 
 ## C2. Security baseline
 

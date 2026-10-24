@@ -163,6 +163,7 @@ export async function boot(electron, opts = {}) {
     appPath: app.getAppPath(),
     isPackaged: app.isPackaged,
     env,
+    iconPath: ICON_PATH,
   });
   made.background = m.background.create({
     electron,
@@ -187,6 +188,7 @@ export async function boot(electron, opts = {}) {
     return made;
   }
 
+  await made.autostart.ensureIcon();
   await app.whenReady();
 
   // ---- after 'ready'

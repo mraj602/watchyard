@@ -102,3 +102,36 @@ test('darwin and win32: a login item with --background, nothing written to disk'
     assert.deepEqual(await fsp.readdir(home), []);
   }
 });
+
+test('linux: turning run at login on also installs the icon the entries name', async () => {
+  const src = path.join(await fsp.mkdtemp(path.join(os.tmpdir(), 'wy-icon-')), 'icon.png');
+  homes.push(path.dirname(src));
+  await fsp.writeFile(src, 'png');
+  const { a } = await setup({ iconPath: src });
+  await a.set(true);
+  assert.equal(await fsp.readFile(a.files().icon, 'utf8'), 'png');
+  assert.match(a.files().icon, /\.local\/share\/icons\/hicolor\/512x512\/apps\/watchyard-desktop\.png$/);
+});
+
+test('linux: ensureIcon adds a missing icon only when an entry exists', async () => {
+  const src = path.join(await fsp.mkdtemp(path.join(os.tmpdir(), 'wy-icon-')), 'icon.png');
+  homes.push(path.dirname(src));
+  await fsp.writeFile(src, 'png');
+  const { a } = await setup({ iconPath: src });
+  assert.equal(await a.ensureIcon(), false, 'no entry, no icon');
+  await assert.rejects(fsp.access(a.files().icon));
+  await fsp.mkdir(path.dirname(a.files().launcher), { recursive: true });
+  await fsp.writeFile(a.files().launcher, a.desktopEntry(false));
+  assert.equal(await a.ensureIcon(), true);
+  assert.equal(await fsp.readFile(a.files().icon, 'utf8'), 'png');
+  assert.equal(await a.ensureIcon(), false, 'already there');
+});
+
+test('ensureIcon does nothing off Linux or without an icon path', async () => {
+  const mac = await setup({ platform: 'darwin', iconPath: '/nope.png' });
+  assert.equal(await mac.a.ensureIcon(), false);
+  const { a } = await setup();
+  await fsp.mkdir(path.dirname(a.files().launcher), { recursive: true });
+  await fsp.writeFile(a.files().launcher, a.desktopEntry(false));
+  assert.equal(await a.ensureIcon(), false);
+});

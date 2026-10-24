@@ -30,6 +30,7 @@ function recordingModules(app, over = {}) {
       start: () => note('background.start'),
       setSettings: async (p) => ({ ...p, set: true }),
     },
+    autostart: { ensureIcon: async () => (note('autostart.ensureIcon'), false) },
     wy: { flushNow: async () => note('wy.flushNow') },
     hub: { start: async () => note('hub.start'), stop: async () => note('hub.stop'), view: () => null, ensureView: async () => note('hub.ensureView') },
     window: { selected: () => 'hub', onSelect: () => () => {}, shell: null },
@@ -106,7 +107,7 @@ test('boot wires the deps each module asked for', async () => {
   assert.equal(at('security').deps.claudeOrigin, 'http://127.0.0.1:9');
   assert.equal(typeof at('store').deps.toast, 'function');
   const auto = at('autostart').deps;
-  for (const k of ['electron', 'fs', 'path', 'platform', 'home', 'execPath', 'appImage', 'appPath', 'isPackaged', 'env']) assert.ok(k in auto, `autostart.${k}`);
+  for (const k of ['electron', 'fs', 'path', 'platform', 'home', 'execPath', 'appImage', 'appPath', 'isPackaged', 'env', 'iconPath']) assert.ok(k in auto, `autostart.${k}`);
   assert.equal(auto.home, '/h');
   const bg = at('background').deps;
   assert.ok(bg.autostart && bg.bus && typeof bg.onQuit === 'function');
