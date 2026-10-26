@@ -6,6 +6,13 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A session resumed in another account folder (`claude --resume` where folders share
+  `projects/`) now moves to that folder and account on the hub, the board, alerts and
+  `wy status`. Before, it stayed under the account it started in: alerts named the wrong
+  account, and the old folder's session lists could mark it gone.
+
 ## [1.0.0] - 2026-10-24
 
 The first public version. Everything below is new.

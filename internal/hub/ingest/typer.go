@@ -273,6 +273,14 @@ func (t *typer) noteForeign(c *ctx, id, owner string) {
 		c.r.Kind, c.r.ID, c.r.Machine, id, owner))
 }
 
+// moved reports whether a hook event shows its session running in another folder of the
+// same machine than the one the hub has (identity.md 5.3): `claude --resume` in a second
+// account whose projects/ is shared with the first. A late record (older than the newest
+// event folded in) never moves it.
+func moved(s store.SessionRow, c *ctx) bool {
+	return c.slotID != 0 && s.SlotID != 0 && s.SlotID != c.slotID && s.MachineID == c.r.Machine && c.at >= s.LastEventAt
+}
+
 // ensureSession creates the session from its first record, or fills what it lacks. A
 // session of another machine is refused with errForeignSession.
 func (t *typer) ensureSession(c *ctx, id string, info store.SessionInfo) error {
@@ -360,8 +368,23 @@ func (t *typer) hookEvent(c *ctx) error {
 			info.Model = mo.ID
 		}
 	}
+	prev, known, err := t.tx.GetSession(p.SessionID)
+	if err != nil {
+		return err
+	}
 	if err := t.ensureSession(c, p.SessionID, info); err != nil {
 		return err
+	}
+	if known && moved(prev, c) {
+		if err := t.tx.MoveSession(p.SessionID, c.slotID, c.seat); err != nil {
+			return err
+		}
+		if prev.SeatID != "" {
+			t.ch.Seats[prev.SeatID] = true
+		}
+		if c.seat != "" {
+			t.ch.Seats[c.seat] = true
+		}
 	}
 	var sub string
 	switch p.Event {

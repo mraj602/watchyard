@@ -98,6 +98,19 @@ func (tx *Tx) SetSessionSlot(id string, slot int64, machine string) error {
 	return err
 }
 
+// MoveSession gives a session that was resumed in another folder of its machine that
+// folder and seat (identity.md 5.3). The list counters start over, since only lists of the
+// new folder speak for the session from now on. Token rows and limit hits already
+// attributed keep their seat.
+func (tx *Tx) MoveSession(id string, slot int64, seat string) error {
+	_, err := tx.exec(`UPDATE session SET slot_id = ?, seat_id = ?, last_listed_at = NULL, missed_lists = 0 WHERE id = ?`,
+		nullInt(slot), nullStr(seat), id)
+	if err != nil || seat == "" {
+		return err
+	}
+	return tx.backfillSeat(id, seat)
+}
+
 func (tx *Tx) backfillSeat(id, seat string) error {
 	if _, err := tx.exec(`UPDATE token_row SET seat_id = ? WHERE session_id = ? AND seat_id IS NULL`, seat, id); err != nil {
 		return err

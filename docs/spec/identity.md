@@ -141,8 +141,18 @@ files `<config>/sessions/<digits>.json` (pid, session id, cwd, socket path, name
    - Late records (`ts` older than the open period's `since_at`) do not open or close
      periods; they are attributed by looking up the period that contains their `ts`.
 3. **Session.** A session takes the seat of the first record for it that names a seat, and
-   keeps it for life, even if the folder is re-logged later. Its slot and
-   machine are those of its first record.
+   keeps it even if the folder is re-logged later. Its slot and machine are those of its
+   first record.
+   **Resumed in another folder.** Folders that share `projects/` (setup.md) can resume each
+   other's sessions: `claude --resume <id>` in `~/.claude-6` continues a session that began
+   in `~/.claude`. A hook event for the session from another slot of the same machine, not
+   older than the session's newest event, moves the session to that slot and to that
+   record's seat; the hub resets the session's list counters (states.md 5), since only the
+   new slot's lists speak for it from then on. Token rows and limit hits already attributed
+   keep their seat; rows typed after the move take the new one. A refold uses each slot's
+   lists only for the stretch of time the session was in that slot (from the first hook
+   event sent from it until the first one sent from another). Sessions never move between
+   machines (record.md 5.1).
 4. **Token rows** take the seat of their session. Rows whose session has no seat are
    attributed later, when a hook event for that session arrives, or by the history
    importer from `session_dirs`-style evidence; otherwise they stay Unattributed

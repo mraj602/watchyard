@@ -183,6 +183,14 @@ func (t *typer) refold(sessionID string) error {
 	return persistFold(t.tx, sessionID, inputs)
 }
 
+// folderSpan is a stretch of a session's life in one folder (identity.md 5.3): from the
+// first hook event sent from it until the first one sent from another (0: still there).
+// Only that folder's session lists in that stretch speak for the session.
+type folderSpan struct {
+	folder      string
+	from, until int64
+}
+
 // loadInputs reads every fold input of a session from the record table.
 func loadInputs(tx *store.Tx, sessionID string) ([]state.Input, error) {
 	sess, ok, err := tx.GetSession(sessionID)
@@ -195,6 +203,7 @@ func loadInputs(tx *store.Tx, sessionID string) ([]state.Input, error) {
 	}
 	var inputs []state.Input
 	var rows []int64 // the session's transcript activity, loaded with the first list that lists it
+	var spans []folderSpan
 	from := sess.StartedAt
 	for _, h := range hooks {
 		var r record.Record
@@ -209,17 +218,36 @@ func loadInputs(tx *store.Tx, sessionID string) ([]state.Input, error) {
 		if from == 0 || h.TS < from {
 			from = h.TS
 		}
+		if r.Slot != "" && (len(spans) == 0 || spans[len(spans)-1].folder != r.Slot) {
+			if len(spans) > 0 {
+				spans[len(spans)-1].until = h.TS
+			}
+			spans = append(spans, folderSpan{folder: r.Slot, from: h.TS})
+		}
 	}
-	if sess.SlotID != 0 && sess.MachineID != "" {
+	if sess.MachineID == "" {
+		return inputs, nil
+	}
+	if len(spans) == 0 {
+		if sess.SlotID == 0 {
+			return inputs, nil
+		}
 		folder, err := tx.SlotFolder(sess.SlotID)
 		if err != nil {
 			return nil, err
 		}
-		lists, err := tx.SessionListRecords(sess.MachineID, folder, from)
+		spans = []folderSpan{{folder: folder}}
+	}
+	spans[0].from = from
+	for _, sp := range spans {
+		lists, err := tx.SessionListRecords(sess.MachineID, sp.folder, sp.from)
 		if err != nil {
 			return nil, err
 		}
 		for _, l := range lists {
+			if sp.until != 0 && l.TS >= sp.until {
+				break
+			}
 			var r struct {
 				Payload record.SessionListPayload `json:"payload"`
 			}
