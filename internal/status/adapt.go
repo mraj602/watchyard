@@ -84,6 +84,19 @@ func Adapt(recs []*record.Record) map[string]*Session {
 			}
 			in.Hook.PeerFacts(r.Derived)
 			s := get(p.SessionID, r.Slot, r.Seat)
+			if r.Slot != "" && s.Slot != r.Slot {
+				// Resumed in another folder (identity.md 5.3): it moves there, with that
+				// folder's seat, and only that folder's lists speak for it from now on.
+				old := bySlot[s.Slot]
+				for i, id := range old {
+					if id == s.ID {
+						bySlot[s.Slot] = append(old[:i:i], old[i+1:]...)
+						break
+					}
+				}
+				bySlot[r.Slot] = append(bySlot[r.Slot], s.ID)
+				s.Slot, s.Seat = r.Slot, r.Seat
+			}
 			if p.Cwd != "" {
 				s.Cwd = p.Cwd
 			}

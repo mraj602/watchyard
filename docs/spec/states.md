@@ -239,7 +239,9 @@ alone, because a quiet session (a long build, a person reading) is normal.
   hook event but applied after it) does not repair `busy`/`idle`: the hook event wins.
 - The hub keeps, per session, `last_listed_at` (newest complete list of its slot that listed
   it) and `missed_lists` (complete lists of its slot since then that did not list it, and
-  whose `ts` is at least 60 seconds after the session's `last_event_at`).
+  whose `ts` is at least 60 seconds after the session's `last_event_at`). "Its slot" is the
+  slot the session is in now: a session resumed in another folder moves to that slot, both
+  counters start over, and the old slot's lists no longer count (identity.md 5.3).
 - A session that is not `ended` becomes **`gone`** when `missed_lists >= 2`. `end_reason`
   = `gone`, `ended_at` = `ts` of the second missing list.
 - Any later event or list entry for it brings it back (`·` column).
