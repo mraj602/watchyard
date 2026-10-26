@@ -38,13 +38,19 @@ func (s sentSlot) same(o sentSlot) bool {
 	return s == o
 }
 
+// sameLogin reports whether two reports name the same login (label, colour and At aside).
+func (s sentSlot) sameLogin(o sentSlot) bool {
+	return s.Account == o.Account && s.Org == o.Org && s.Email == o.Email && s.LoggedIn == o.LoggedIn
+}
+
 // maybeSlotInfo queues a slot_info on SessionStart when the slot's login, label or colour
-// differs from the last one sent for it, or that one is a day old (record.md 4.7). That is
-// how a folder that was logged in again, logged out, or labelled after `wy connect` reaches
-// the hub, and the label follows the login to its new seat. It reads only the login the
-// hook already has and one small file. Errors are logged, never returned.
+// differs from the last one sent for it, or that one is a day old, and on any other hook
+// event when the login differs (record.md 4.7). That is how a folder that was logged in
+// again, logged out, or labelled after `wy connect` reaches the hub, and the label follows
+// the login to its new seat, even when `/login` ran inside a session that goes on. It reads
+// only the login the hook already has and one small file. Errors are logged, never returned.
 func maybeSlotInfo(env *clientenv.Env, getenv func(string) string, event string, now time.Time) {
-	if event != "SessionStart" || env.Slot.Name == "" {
+	if env.Slot.Name == "" {
 		return
 	}
 	cur := sentSlot{LoggedIn: env.Login.HasSeat, Label: env.Config.Slots.Labels[env.Slot.Name],
@@ -57,7 +63,11 @@ func maybeSlotInfo(env *clientenv.Env, getenv func(string) string, event string,
 	if b, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(b, &sent) // a torn file just means "send again"
 	}
-	if last, ok := sent[env.Slot.Name]; ok && last.same(cur) && now.Sub(last.At) < slotInfoEvery && !last.At.After(now) {
+	last, ok := sent[env.Slot.Name]
+	if event != "SessionStart" && (!ok || last.sameLogin(cur)) {
+		return
+	}
+	if ok && last.same(cur) && now.Sub(last.At) < slotInfoEvery && !last.At.After(now) {
 		return
 	}
 	p := record.SlotInfoPayload{Folder: env.Slot.Name, Default: env.Slot.Default, LoggedIn: cur.LoggedIn}

@@ -138,3 +138,41 @@ func TestSessionStartReportsLoggedOut(t *testing.T) {
 		t.Fatalf("logged out: %+v", got)
 	}
 }
+
+// A `/login` inside a session that goes on: the next hook event of any kind sends the new
+// login (record.md 4.7), so the folder's label reaches its new seat without waiting for the
+// next SessionStart. Label changes and the daily resend still wait for SessionStart.
+func TestAnyEventSendsSlotInfoOnLoginChange(t *testing.T) {
+	sb := newSandbox(t)
+	writeConfig(t, sb, "[slots.labels]\n\"~/.claude-3\" = \"work\"\n")
+	sb.run("SessionStart", []byte(`{"session_id":"s1"}`))
+	if n := len(slotInfos(t, sb)); n != 1 {
+		t.Fatalf("SessionStart: %d slot_info, want 1", n)
+	}
+
+	slot := filepath.Join(sb.home, ".claude-3", ".claude.json")
+	other := []byte(`{"oauthAccount":{"accountUuid":"aaaaaaaa-0000-4000-8000-000000000003","emailAddress":"new@example.com","organizationUuid":"bbbbbbbb-0000-4000-8000-000000000009"}}`)
+	if err := os.WriteFile(slot, other, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(2 * time.Second)
+	_ = os.Chtimes(slot, later, later)
+	sb.run("Notification", []byte(`{"session_id":"s1","message":"logged in"}`))
+	got := slotInfos(t, sb)
+	if len(got) != 2 || string(got[1].Extra["label"]) != `"work"` {
+		t.Fatalf("after /login: %+v", got)
+	}
+	if rs := sb.ofKind(record.KindSlotInfo); rs[1].Seat == nil || rs[1].Seat.Org != "bbbbbbbb-0000-4000-8000-000000000009" {
+		t.Fatalf("after /login seat: %+v", rs[1].Seat)
+	}
+	sb.run("UserPromptSubmit", []byte(`{"session_id":"s1","prompt":"x"}`))
+	if n := len(slotInfos(t, sb)); n != 2 {
+		t.Fatalf("same login again: %d slot_info, want still 2", n)
+	}
+
+	writeConfig(t, sb, "[slots.labels]\n\"~/.claude-3\" = \"client\"\n")
+	sb.run("UserPromptSubmit", []byte(`{"session_id":"s1","prompt":"y"}`))
+	if n := len(slotInfos(t, sb)); n != 2 {
+		t.Fatalf("relabel outside SessionStart: %d slot_info, want still 2", n)
+	}
+}

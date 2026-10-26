@@ -6,6 +6,12 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A folder logged in again with `/login` inside a running session now reports its new login on
+  the next hook event, so the hub gives the new account its folder label at once instead of
+  showing it unlabelled until the next session starts.
+
 ## [1.0.0] - 2026-10-24
 
 The first public version. Everything below is new.
