@@ -158,6 +158,6 @@ files `<config>/sessions/<digits>.json` (pid, session id, cwd, socket path, name
 | --- | --- | --- |
 | `<state>/machine.json` | machine id, name | Once; on rename. |
 | `<state>/identity/<slot hash>.json` | `{slot, state_file, size, mtime_ns, oauth: {accountUuid, organizationUuid, emailAddress}, auth_status_at, logged_in, auth: {loggedIn, email, orgId, orgName, subscriptionType}}` (`auth` is the last `claude auth status` result; it is what makes the `src = auth_status` seat possible when `oauth` is missing) | When the state file changes. |
-| `<state>/identity/sent.json` | Per slot, what the last `slot_info` from a SessionStart hook said: seat (account, org, email), `logged_in`, label, colour, and when | When a login, label or colour change is sent, and on the daily resend (record.md 4.7). |
+| `<state>/identity/sent.json` | Per slot, what the last `slot_info` from a hook said: seat (account, org, email), `logged_in`, label, colour, and when | When a login, label or colour change is sent, and on the daily resend (record.md 4.7). |
 
 Nothing in these files is secret; they hold uuids and emails.

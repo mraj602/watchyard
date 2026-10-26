@@ -476,8 +476,9 @@ The hub turns `dailyModelTokens` into `history_day` rows for that slot's seat (a
 
 ### 4.7 `slot_info`
 
-Written by `wy` on `wy connect`, on SessionStart when the login it reads differs from the
-last one it sent for that slot, and once a day per slot.
+Written by `wy` on `wy connect`, on SessionStart when the login, label or colour it reads
+differs from the last one it sent for that slot, on any other hook event when the login
+differs (a `/login` inside a session that goes on), and once a day per slot.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
