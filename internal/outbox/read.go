@@ -38,6 +38,10 @@ type Cursor struct {
 	// last one. Together they tell a poison record from a hub that refuses everything.
 	LoneDrops  int    `json:"lone_drops,omitempty"`
 	LoneDropAt string `json:"lone_drop_at,omitempty"`
+	// BatchMax, when above 0, caps the records per batch below the flusher's maximum: a
+	// batch the hub could not answer in time (timeout or 5xx) halves it, each accepted batch
+	// raises it by a quarter, and it is cleared once it reaches the maximum again (outbox.md 4).
+	BatchMax int `json:"batch_max,omitempty"`
 }
 
 // Item is one complete, parsable line of the outbox.
