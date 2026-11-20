@@ -46,7 +46,7 @@ CREATE TABLE schema_version (
 ) STRICT;
 
 INSERT INTO schema_version (version, applied_at, wy_version)
-VALUES (14, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
+VALUES (15, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
 
 -- Hub-wide settings that are not secrets (retention days, last-message policy, …).
 CREATE TABLE setting (
@@ -270,6 +270,7 @@ CREATE TABLE record (
 ) STRICT;
 CREATE INDEX record_kind_ts ON record(kind, ts);
 CREATE INDEX record_machine_ts ON record(machine_id, ts);
+CREATE INDEX record_machine_kind_slot_ts ON record(machine_id, kind, slot, ts);  -- a refold's session_list records (v15)
 CREATE INDEX record_untyped ON record(received_at) WHERE typed = 0;
 
 -- One Claude Code conversation.
@@ -362,6 +363,7 @@ CREATE TABLE token_row (
 ) STRICT;
 CREATE INDEX token_row_ts ON token_row(ts);
 CREATE INDEX token_row_session ON token_row(session_id);
+CREATE INDEX token_row_session_ts ON token_row(session_id, ts);                  -- LastTokenRowAt (v15)
 CREATE INDEX token_row_seat_ts ON token_row(seat_id, ts);
 
 -- "You've hit your limit" replies found in transcripts.
@@ -406,6 +408,10 @@ CREATE TABLE limit_sample (
   PRIMARY KEY (seat_id, window_key, ts, source)
 ) STRICT;
 CREATE INDEX limit_sample_ts ON limit_sample(ts);
+CREATE INDEX limit_sample_reset ON limit_sample(seat_id, window_key, resets_at); -- a window's sources (v15)
+-- the newest idle reading (v15):
+CREATE INDEX limit_sample_idle ON limit_sample(seat_id, window_key, ts)
+  WHERE source = 'web' AND resets_at IS NULL AND used_pct = 0;
 
 -- The full claude.ai usage response per seat per poll. Every field kept (iguana_necktie…).
 CREATE TABLE web_usage (
