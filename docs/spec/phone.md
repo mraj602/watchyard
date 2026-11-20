@@ -230,7 +230,7 @@ Accounts, More**:
 | `/sessions/[id]?alert=` | `#/sessions/<id>` | State history, last message, **Open in Claude** (`remote_url` in the seat's claude.ai tab on Android, P17; elsewhere with the wrong-account note), **Copy resume command**, Snooze |
 | `/accounts?seat=` | `#/accounts` | One compact row per account that opens in place (P17.8), "most room", **Count down on Lock Screen** (iOS, P12) |
 | `/more` | `#/more` | Alerts, Machines, Peers, Settings |
-| `/more/alerts` | `#/more/alerts` | Rule switches as `prefs.mute` (`PATCH /v1/devices/self`), recent pushes (`GET /v1/alerts`) |
+| `/more/alerts` | `#/more/alerts` | Rule switches as `prefs.mute` (`PATCH /v1/devices/self`), recent pushes (`GET /v1/alerts?limit=50`, filtered on the phone to open alerts (`pending`, `fired`, `snoozed`) plus anything fired or created in the last 48 hours) |
 | `/more/machines?machine=` | `#/machines` | Machines list |
 | `/more/settings` | `#/more/settings` | Hub and status, notifications state, private pushes, tap behaviour, own quiet hours, widgets refresh switch (`prefs.widgets`), app version and **Check for update** (P16), **Unpair** |
 | `/more/settings/notifications` | — | P6.7 |
@@ -283,6 +283,8 @@ on a shared table.
   shows on the next poll (15 s in the foreground).
 
 ## P6. Notifications
+
+Android alert notifications also carry `setTimeoutAfter(24 h)`, so one lingers at most a day if the hub's `dismiss` frame (24 h TTL) never arrives.
 
 **P6.1 Android channels** (created before any permission or token call; Android 13+ shows
 the permission prompt only once a channel exists):
