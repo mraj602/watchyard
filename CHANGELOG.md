@@ -6,6 +6,15 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `wy account next`: recommends the account (config folder) to start the next Claude Code
+  session on, from each folder's login on this machine and the limits of its seat (hub, or
+  this machine's status line), with strategies (`smart`, `expiring`, `most-room`, `spread`,
+  `fill`, `sticky`), per-account modes, caps, hours and priorities under `[next]` in
+  `config.toml`, short reservations so bursts of launches spread out, and `--env`, `--json`,
+  `--explain` and `--exec` output. It only recommends.
+
 ## [1.0.0] - 2026-10-24
 
 The first public version. Everything below is new.

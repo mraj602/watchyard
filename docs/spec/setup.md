@@ -824,6 +824,7 @@ wy account login <folder|label> [--relay]
 wy account label <folder|email|label> <new label> [--colour <c>]
 wy account share [<folder|label>] [--share ...] [--conflicts ...] [--yes] [--dry-run] [--json]
 wy account remove <folder|label> [--unshare] [--yes] [--dry-run] [--json]
+wy account next [--strategy <s>] [--model <m>] [--env | --json | --explain | --exec [-- <cmd>...]] [--no-reserve] [--no-hub]
 ```
 
 - **`list`:** one row per folder: label, colour, folder, launcher, logged in, email, org,
@@ -844,6 +845,7 @@ wy account remove <folder|label> [--unshare] [--yes] [--dry-run] [--json]
   sizes); the copies are not synced copies. Undo turns an unchanged copy back into the link;
   a copy with changes made since is kept (exit 5). Nothing is ever deleted from the folder.
   Journaled. An unreadable ledger stops the command before any change.
+- **`next`:** 8.5. Reads and recommends; changes no login and no Claude Code file.
 
 ### 8.2 Login handoff
 
@@ -897,6 +899,180 @@ does not `chcp`, which would change the person's console) or contains `"` or `^`
 
 `slot_info` gains two optional fields, `label` and `colour` (record.md 4.7). The hub sets
 `seat.label` / `seat.colour` from them only while the seat has no label set in the UI.
+
+### 8.5 `wy account next`
+
+Recommends the folder to start the next Claude Code session on, for a person or for an agent
+that launches other agents. It **recommends only**: it never switches a running session, never
+changes or moves a login, and never starts anything unless `--exec` is given. Implemented in
+`internal/picker` and `cmd/wy/account_next.go`.
+
+**Folders and logins.** The folders of identity.md 3 (`CLAUDE_CONFIG_DIR` of the calling
+session is ignored, so `~/.claude` is always its default view), each with its login read as
+`wy doctor` reads it: `oauthAccount` through the identity cache, `claude` is not run. A
+folder without a login is not eligible.
+
+**Hub data.** When `hub.url` is set and `<state>/board/token.json` holds a read token for it
+(`wy board connect`; a machine token has no read scope, tokens.md 3), `wy` reads
+`GET /v1/accounts` and, for each seat a local folder matches, `GET /v1/accounts/{seat}/windows`
+with `since` = now − 26 h, `samples=true` and the limit keys of that seat. All hub reads share
+a 5-second budget. No other endpoint and no schema change is needed.
+
+**Matching folders to seats** is by login, never by label (a seat labelled `claude-1` on the
+hub may be `claude` on this machine): (1) the seat with the folder's account and org uuids;
+(2) else the seat whose `places` list this folder on this machine (`machine.json` id); (3) else
+the only seat with the folder's email (two seats with that email: no match). A folder the hub
+lists in any seat's `signed_out` for this machine is not eligible, unless its matched seat
+lists it as a place again.
+
+**Local data.** Every `limit_sample` in the outbox from the last 7 days (record.md 4.2; the
+outbox keeps sent records for `outbox.keep_days`) is read too. For `five_hour` and
+`seven_day`, a local reading of the same seat (account and org, else the same folder) newer
+than the hub's replaces it, and local readings newer than the hub's newest sample are added
+to the history. Without a hub, or when the hub cannot be read, local readings are all there
+is: the output says `local data` and, in `--explain`, that other machines' use is missing.
+Live sessions are known only from the hub.
+
+**Windows considered.** `five_hour` and `seven_day` always. With `--model <m>` (or
+`next.model`), also the model-scoped windows whose model part matches `m` in either
+direction, case-insensitively (`seven_day_opus` and `weekly_opus` for `opus` or
+`claude-opus-5`, `session_opus` as a five-hour kind). Other model windows,
+`seven_day_oauth_apps`, `seven_day_cowork` and credit windows are shown nowhere and never
+limit. A seat with no reading of `five_hour` or `seven_day` gets that window as not started
+with unknown usage (below).
+
+**Projection.** Per window, with `now`, `S` = the per-session use (`next.session_5h` for
+five-hour kinds, `next.session_7d` for weekly kinds), `T` = `next.session_min`, `p` = the
+pending reservations of the seat, `L` = the hub's `live_sessions`:
+
+1. *Reading.* `u0` = `used_pct`, read at `updated_at`. A window whose `resets_at` has passed
+   (hub state `reset`, or a local reading from before the reset) has `u0 = 0` read at
+   `resets_at`. An idle window (hub state `idle`) or one with no reset time and 0 % has
+   `u0 = 0` and has not started. `h` = hours until `resets_at`, or the window's length (5 h,
+   7 days) when it has not started or has reset.
+2. *Burn rate* `r` (points per hour). The history rate: over the readings of the current
+   window (from `resets_at` − length) in the last 2 h (five-hour kinds) or 24 h (weekly), the
+   sum of each step's rise divided by the sum of its duration, each step weighted
+   `exp(−age/τ)` (age of its midpoint, τ = half the lookback); the last reading before the
+   lookback anchors it at the lookback start; the time from the newest reading to now is a
+   flat step (the status line writes when the value changes, so no reading means no change);
+   drops count as flat. It needs 20 minutes of history. Weekly kinds fall back to the window
+   average `u0 / (updated_at − window start)` (needs 30 minutes), then to the mean history
+   rate of the other accounts of that kind; five-hour kinds fall back to 0. Windows that
+   reset or have not started use 0. Then `r = max(r, L × S / T)`: live sessions set a floor.
+3. *Now.* `n = min(100, u0 + r × age)`, age = now − reading time.
+4. *Staleness.* A reading older than `next.stale_min` is stale: the band
+   `σ = min(100 − n, max(r × age, S × min(1, age / T)))` is added above `n` (at least the part
+   of a session that may have run unseen). A window with no reading at all is stale with
+   `σ = S`. A stale reading is never treated as 0.
+5. *At session end* (eligibility): `E = n + σ + r × min(h, T) + (1 + p) × S × min(1, h / T)`
+   (a window that resets before the session ends only takes the share that falls before the
+   reset).
+6. *At reset* (ranking): `R = n + r × h + (1 + p) × S`; unused room
+   `U_w = max(0, cap − R)`.
+
+**Eligibility**, in this order (the first that fails is `excluded_reason`): logged in on this
+machine; not signed out on the hub; not `exclude`d; inside its `hours` and `days`; and
+`E ≤ cap` for every window considered. Each over-cap account gets `free_at`: the latest
+`resets_at` of its over-cap windows (unknown if any has none); an account outside its hours
+gets the next allowed minute. With no eligible account, `next_free` is the earliest `free_at`.
+
+**Settings** (paths.md 4, `[next]`; `wy config set next.<key> <value>`):
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `next.strategy` | `smart` | Default strategy. |
+| `next.model` | `""` | Default `--model`. |
+| `next.session_5h` | `15` | `S` for five-hour windows, in points. |
+| `next.session_7d` | `2` | `S` for weekly windows, in points. |
+| `next.session_min` | `120` | `T`, minutes. |
+| `next.stale_min` | `30` | Staleness threshold, minutes. |
+| `next.reserve_min` | `12` | How long a pick counts as a pending session, minutes. |
+| `next.sticky_margin` | `10` | `sticky`: points under each cap that end stickiness. |
+
+Per account: `next.accounts.<key>.<field>`, where `<key>` is matched against, in order, the
+hub seat id, the email (without case), the folder (`~/.claude-3`), this machine's label, then
+the hub's label; the first key present wins. The email is the recommended key: it is the same
+on every machine; a label works as an alias (`wy config set next.accounts.claude-3.mode
+aggressive`). The field is the part after the last dot, so emails with dots work.
+
+| Field | Meaning |
+| --- | --- |
+| `mode` | `conservative` (caps 5 h 60, 7 d 70, model 70; preference 0.6), `normal` (90, 90, 90; 1), `aggressive` (98, 98, 98; 1.4). Default `normal`. |
+| `cap_5h`, `cap_7d`, `cap_model` | Explicit caps (0 < cap ≤ 100) over the mode's; `cap_model` defaults to `cap_7d` when only that is set. |
+| `reserve_pct` | Taken off every cap (room kept for something else). |
+| `priority` | `fill` order, lowest first; unset is after every set one. |
+| `weight` | Multiplies the `smart` score (default 1). |
+| `exclude` | `true`: never recommended. |
+| `hours`, `days` | Allowed local times, e.g. `09:00-18:00` (may cross midnight) and `mon-fri` or `sat,sun`. |
+
+Unknown fields are reported by `wy doctor` as unknown keys.
+
+**Strategies** (`--strategy`; higher score first among the eligible, ties by label in natural
+order):
+
+- `smart` (default): `weight × preference × safety × confidence × (urgency + 0.02 × headroom)`.
+  `urgency` = `U_w / max(h, 1)` of the binding weekly window (the weekly window considered with
+  the least unused room): weekly room that would be lost at the reset, per hour left, so room
+  that expires soonest unused comes first. `headroom` = the least `cap − E` over the windows.
+  `safety` = `clamp((cap − E) / 20, 0.2, 1)` over five-hour windows: an account about to fill
+  its 5 hours is ranked down. `confidence` = 0.75 for an account with no usage data at all,
+  else 1.
+- `expiring`: `urgency` only (ties by headroom): pure use-it-or-lose-it.
+- `most-room`: the lowest `max(n + σ + p × S)` over the windows.
+- `spread`: the account picked longest ago (never picked first), from the pick log.
+- `fill`: the lowest `priority`.
+- `sticky`: the last pick while it is eligible with `E ≤ cap − next.sticky_margin` on every
+  window; otherwise `smart`.
+
+**Reservations and the pick log.** `<state>/next/picks.json` (mode 0600, written atomically
+under the advisory lock `<state>/next/picks.lock`) holds `{"v": 1, "reservations": [{"key",
+"folder", "at", "until"}], "last": {key: time}, "last_key"}`. The key is the seat (`acct:<account
+uuid>/<org uuid>`, else `seat:<id>`, else `slot:<folder>`), so folders logged in to one seat
+share it. Ranking and recording happen under the lock: each pick adds a reservation valid for
+`next.reserve_min`, and live reservations count as `p` above, so agents launched in a burst
+spread over the accounts and stop at the caps. Expired reservations and log entries older
+than 30 days are dropped on each write. A reservation keeps counting after the session shows
+up in `live_sessions` until it expires (conservative). `--no-reserve` reads the file and writes
+nothing. A file that cannot be parsed is started again empty.
+
+**Output.**
+
+- Default: one line, `<label>  <folder>  (<reason>)`, e.g. `claude-3  ~/.claude-3  (7d 23% →
+  ~41% at reset Wed 10:00; 5h fresh; aggressive)`. The reason names the weekly windows
+  (`n` → `R` at the reset), the five-hour windows (`fresh` under 1 %), `unknown` for a window
+  with no reading, a mode other than
+  normal, `+N reserved`, `local data` or `no usage data`, and `data <age> old` when stale.
+  When the hub could not be read, `  [hub not read: <why>]` follows.
+- `--env`: only `CLAUDE_CONFIG_DIR=<absolute folder>`, or `-u CLAUDE_CONFIG_DIR` for the
+  default view of `~/.claude` (with the variable set to `~/.claude`, Claude Code reads
+  `~/.claude/.claude.json`, which may be another login: identity.md 3). For
+  `env $(wy account next --env) claude`; a folder with spaces needs `--exec`.
+- `--json`: `{"v": 1, "time", "strategy", "model", "data": "hub"|"local", "hub_error",
+  "reserved", "picked": {"label", "folder", "dir", "env", "reason"} | null, "next_free",
+  "accounts": [...], "warnings"}`; each account has `label`, `folder`, `dir`, `default_view`,
+  `seat`, `email`, `seat_matched_by`, `logged_in`, `eligible`, `excluded_reason`, `score`,
+  `mode`, `settings_key`, `live_sessions`, `pending_reservations`, `data_source`
+  (`hub`, `hub+local`, `local`, `none`), `data_at`, `data_stale`, `free_at`, `reason` and
+  `windows` (each: `key`, `kind`, `cap_pct`, `used_pct`, `reading_at`, `age_min`, `stale`,
+  `now_pct`, `uncertainty_pct`, `at_session_end_pct`, `at_reset_pct`, `resets_at`,
+  `hours_to_reset`, `rate_pct_per_hour`, `rate_from` (`history`, `window`, `global`,
+  `live_sessions`, `none`), `unused_at_reset_pct`, `over_cap`, `source`). Eligible accounts
+  come first, best first. Times are RFC 3339 UTC.
+- `--explain`: the same as a table (5 h now→end/cap, 7 d now→reset/cap, other windows, data
+  source and age, why), then the pick line.
+- `--exec [-- <cmd> [args...]]`: runs `<cmd>` (default `claude`) found on `PATH` with the
+  pick's `CLAUDE_CONFIG_DIR` (unset for the default view of `~/.claude`), replacing `wy` (on
+  Windows, waiting for it and exiting with its code). It prints the pick line on stderr first.
+  It is an explicit action of the caller.
+- `--no-hub`: local data only.
+
+`--env`, `--json`, `--explain` and `--exec` do not mix (exit 2).
+
+**Exit codes.** 0: an account was picked. 4: no account is eligible; the line on stderr says
+when the earliest one frees up (or that none does at a known time) and points to
+`--explain`; `--json` and `--explain` still print their document on stdout. 2: usage. 1:
+another error (a hub that cannot be read is not one: the command falls back to local data).
 
 ## 9. Status line, ledger, doctor, uninstall
 

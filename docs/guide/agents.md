@@ -60,6 +60,15 @@ for `wy setup`.
    and the APK's signing certificate against the fingerprint in android.md. Never suggest
    skipping a check, `--no-verify`-style flags, or `WY_VERIFY_ATTESTATION=0`.
 
+## Starting Claude Code sessions yourself
+
+If your task launches other Claude Code sessions (subagents in a terminal, a batch of
+workers), ask Watchyard which account to use for each one: `env $(wy account next --env)
+claude …`, or `wy account next --exec -- claude …`. Each call holds its pick for a few minutes,
+so a burst of launches spreads over the accounts. When it exits 4, no account has room:
+report the time it prints instead of starting the session. Never log in, log out or edit a
+folder to make room; that stays with the person.
+
 ## Done when
 
 - `wy doctor` shows no failed checks (warnings it explains are fine).

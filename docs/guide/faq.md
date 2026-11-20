@@ -29,7 +29,9 @@ Use Watchyard only with your own accounts, each within the terms of its plan
 ([Consumer Terms](https://www.anthropic.com/legal/consumer-terms),
 [Usage Policy](https://www.anthropic.com/legal/aup)). Do not share accounts or credentials
 with other people. Watchyard never switches or rotates accounts to get around limits; the
-"most room right now" line is a suggestion and you choose.
+"most room right now" line and `wy account next` are suggestions for where to start your next
+session, and you (or the script you wrote) choose. Neither moves a running session or touches
+a login.
 
 ## Why do the desktop app's claude.ai tabs look like Chrome to claude.ai?
 
