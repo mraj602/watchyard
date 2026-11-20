@@ -153,6 +153,16 @@ func peersSendTag(pe peerEnv, caller peerspkg.Caller, tag, text string, one, sam
 		fmt.Fprintln(stdout, peerspkg.Describe(rf))
 		return peersExit(peerspkg.ExitCode(rf.Code), nil)
 	}
+	// The list answers from the agent's last directory even when the hub is out of reach, so
+	// its tags may be stale. Tags are held at the hub: without it a tag send refuses
+	// hub_unreachable, as tag add|rm and tags do (peers.md 3.4).
+	if tr, err := peersAgent(pe, agent.Request{Op: agent.OpTag, TagOp: peerspkg.TagList}); err == nil {
+		if rf := tr.Refusal(); rf != nil && rf.Code == peerspkg.CodeHubUnreachable {
+			rf = peerspkg.Refuse(peerspkg.CodeHubUnreachable, "tags are held at the hub, which cannot be reached now, so nothing was sent to tag %s", tag)
+			fmt.Fprintln(stdout, peerspkg.Describe(rf))
+			return peersExit(peerspkg.ExitCode(rf.Code), nil)
+		}
+	}
 	targets := peerspkg.TagTargets(rep.Entries, tag, sameHost)
 	return deliverTag(stdout, tag, targets, one, sameHost, func(to string) (peerspkg.SendResult, *peerspkg.Refusal, error) {
 		return peersDeliver(pe, caller, to, text, ttl, wait)
