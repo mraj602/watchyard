@@ -80,6 +80,8 @@ type WireSession struct {
 	Project      string   `json:"project"`
 	State        string   `json:"state"`
 	Device       *string  `json:"device"`
+	// Tags are the session's tags at the hub (peers.md 3.4), sorted, omitted when none.
+	Tags []string `json:"tags,omitempty"`
 }
 
 // PeersReply is the hub's `peers` answer: other machines' sessions and the certificates of
@@ -92,6 +94,19 @@ type PeersReply struct {
 	Sessions []WireSession       `json:"sessions"`
 	Mine     []WireSession       `json:"mine,omitempty"`
 	Certs    map[string]keys.Doc `json:"certs"`
+	// Tag is the outcome of the peer_tag this reply answers (peers.md 3.4); absent for a
+	// peers_list.
+	Tag *TagAnswer `json:"tag,omitempty"`
+}
+
+// PeerTagUp adds or removes one tag of a session on the sending machine (link.md 6.2,
+// peers.md 3.4). The hub answers `peers` with the same id and `tag` set.
+type PeerTagUp struct {
+	T       string `json:"t"`
+	ID      string `json:"id"`
+	Session string `json:"session"`
+	Op      string `json:"op"` // add | rm
+	Tag     string `json:"tag"`
 }
 
 // QueuedPeerMsg is the body of a queued `peer_msg` (link.md 6.4).

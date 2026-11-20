@@ -23,6 +23,10 @@ type Remote interface {
 	// own included, by session id (peers.md 3.2 canonical handles). It never asks the hub:
 	// nil when no answer came yet.
 	Names() map[string]HubName
+	// Tag adds or removes one tag of a session of this machine at the hub (peer_tag, link.md
+	// 6.2; peers.md 3.4) and refreshes the directory with the hub's answer. An error means the
+	// hub could not be asked; a refusal is the answer's Error word.
+	Tag(session, op, tag string) (TagAnswer, error)
 }
 
 // HubName is how the hub names one session: the canonical handle every machine shows, its
@@ -32,6 +36,8 @@ type HubName struct {
 	Aliases                      []string
 	// Mine: a session of the machine that asked.
 	Mine bool
+	// Tags are the session's tags (peers.md 3.4).
+	Tags []string
 }
 
 // Outgoing is a message to a session on another machine that passed the sender's checks.

@@ -1,7 +1,7 @@
 ---
 name: peers
 description: Message Claude Code sessions in other accounts or on other machines through Watchyard (`wy peers list`, `wy peers send`). Use when the user asks to coordinate with, ask, tell or hand information to another session, or mentions a session on another machine or account. Also use it on your own when your work would go better by coordinating with other agents or sessions (asking what another session knows or is doing, handing over a result, avoiding duplicate work), including sessions that native ListAgents and SendMessage do not show.
-allowed-tools: Bash(wy peers list:*), Bash(wy peers send:*), Bash(wy peers status:*), Bash(wy peers matrix:*)
+allowed-tools: Bash(wy peers list:*), Bash(wy peers send:*), Bash(wy peers status:*), Bash(wy peers matrix:*), Bash(wy peers tag:*), Bash(wy peers tags:*)
 ---
 
 Send one message to another Claude Code session with `wy peers`, and report what happened in
@@ -29,6 +29,22 @@ one line. Watchyard only relays what the user's matrix allows; you never decide 
 
 4. Report the line `wy peers send` prints, in one sentence. Nothing more is injected into
    this session later; `wy peers status` shows what became of earlier messages.
+
+## Tags
+
+A session can tag itself with a short role name (lowercase letters, digits and `-`), so
+others reach it by role instead of by handle:
+
+- `wy peers tag add <tag>` when your task gives you a standing role others should find (for
+  example `release-notes` or `slack-watcher`), `wy peers tag rm <tag>` when you no longer hold
+  it, `wy peers tags` to see yours. Tags go away by themselves when the session ends.
+- `tag add` prints the other sessions that hold the same tag, and each of them is told that you
+  took it. Decide with them (a short message) which of you keeps it; the one that does not runs
+  `wy peers tag rm <tag>`.
+- `wy peers send tag:<tag> --stdin` sends to every holder you may message (one line each);
+  `--one` sends to exactly one, an idle one first; `--same-host` keeps holders on this machine.
+  Use a handle when you know which session you mean, and a tag for whoever holds a role.
+  `not delivered: no session you may message holds tag …` means nobody holds it now.
 
 If `wy` is not on PATH, say so and stop; do not try to install it. If `wy peers list` shows
 nobody, say that, and name what it printed (for example that the matrix is not set up).

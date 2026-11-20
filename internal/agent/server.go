@@ -238,7 +238,7 @@ func (s *server) dispatch(req Request, pid int) Reply {
 			return fail(peers.CodeFailed, "%v", err)
 		}
 		return Reply{OK: true}
-	case OpWhoami, OpList, OpSend:
+	case OpWhoami, OpList, OpSend, OpTag:
 	default:
 		return fail(peers.CodeUnsupported, "op %q is not supported by this agent", req.Op)
 	}
@@ -262,6 +262,15 @@ func (s *server) dispatch(req Request, pid int) Reply {
 	}
 	if req.Op == OpWhoami {
 		return Reply{Session: &SessionInfo{Session: caller.Entry.SessionID, PID: caller.ClaudePID, ConfigDir: caller.Slot.Name}}
+	}
+	if req.Op == OpTag {
+		tr, rf := env.Tag(caller, req.TagOp, req.Tag)
+		if rf != nil {
+			s.logf("tag %s from=%s status=%s", req.TagOp, caller.Entry.SessionID, rf.Code)
+			return Reply{Error: &Error{Code: rf.Code, Detail: rf.Detail}}
+		}
+		s.logf("tag %s from=%s changed=%v notices=%d", req.TagOp, caller.Entry.SessionID, tr.Changed, len(tr.Notices))
+		return Reply{TagResult: &tr}
 	}
 	res, rf := env.SendWith(caller, req.To, req.Text, peers.SendOpts{TTL: time.Duration(req.TTLs) * time.Second})
 	if rf != nil {
