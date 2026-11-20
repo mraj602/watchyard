@@ -147,7 +147,9 @@ describe('Sessions', () => {
     await show(<SessionsScreen />);
     expect(rows().length).toBe(fx.sessions.sessions.filter((s) => isLive(s as Session, NOW)).length);
     await fireEvent.press(screen.getByTestId('filter-needs_you'));
-    expect(rows().length).toBe(3);
+    // Three sessions need you in the fixture; one has a seen alert, which hides it (push.md 4).
+    expect(fx.sessions.sessions.filter((s) => s.needs_you).length).toBe(3);
+    expect(rows().length).toBe(2);
     await fireEvent.press(screen.getByTestId('filter-working'));
     expect(rows().length).toBe(fx.sessions.sessions.filter((s) => s.state === 'working').length);
     await fireEvent.press(screen.getByTestId('filter-done'));
@@ -161,7 +163,7 @@ describe('Sessions', () => {
 
   it('starts on the filter and grouping of its route params', async () => {
     await show(<SessionsScreen filter="needs_you" by="machine" />);
-    expect(rows().length).toBe(3);
+    expect(rows().length).toBe(2); // the third, seen one is hidden
     expect(screen.getAllByRole('header').map((h) => h.props.children).length).toBeGreaterThan(1);
   });
 
