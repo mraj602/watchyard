@@ -1,8 +1,9 @@
 package main
 
-// `wy account list|add|login|label|share|remove` (docs/spec/setup.md 8). add, label and
+// `wy account list|add|login|label|share|remove|next` (docs/spec/setup.md 8). add, label and
 // share plan and apply through the setup planner and apply (a backup set each); remove is
-// journaled path by path in its own backup set; login is never journaled.
+// journaled path by path in its own backup set; login is never journaled. next is in
+// account_next.go.
 
 import (
 	"context"
@@ -41,6 +42,7 @@ func accountUsage(w io.Writer) {
        wy account label <folder|email|label> <new label> [--colour <c>] [--yes] [--dry-run] [--json]
        wy account share [<folder|label>] [--share ...] [--conflicts ...] [--yes] [--dry-run] [--json]
        wy account remove <folder|label> [--unshare] [--yes] [--dry-run] [--json]
+       wy account next [--strategy <s>] [--model <m>] [--env | --json | --explain | --exec [-- <cmd>...]] [--no-reserve]
 `)
 }
 
@@ -48,6 +50,9 @@ func runAccount(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		accountUsage(stderr)
 		return errUsage
+	}
+	if args[0] == "next" { // reads and recommends only: no setup environment
+		return runAccountNext(args[1:], stdout, stderr)
 	}
 	e, err := newSetupEnv(stdout, stderr)
 	if err != nil {

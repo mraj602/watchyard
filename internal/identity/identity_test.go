@@ -701,3 +701,72 @@ func TestNaturalLess(t *testing.T) {
 		}
 	}
 }
+
+// Login.LoggedIn (identity.md 4): oauthAccount stays in the state file after a logout, so a
+// later `claude auth status` saying logged out wins, until oauthAccount changes again.
+func TestLoggedInFollowsAuthStatus(t *testing.T) {
+	out := []byte(`{"loggedIn":false}`)
+	in := []byte(`{"loggedIn":true,"email":"user2@example.com"}`)
+	cases := []struct {
+		name  string
+		steps func(t *testing.T, st *Store, slot Slot, tick func())
+		want  bool
+	}{
+		{"oauthAccount, never asked", func(t *testing.T, st *Store, slot Slot, tick func()) {}, true},
+		{"oauthAccount, auth status logged in", func(t *testing.T, st *Store, slot Slot, tick func()) {
+			refresh(t, st, slot, in)
+		}, true},
+		{"oauthAccount kept, auth status logged out", func(t *testing.T, st *Store, slot Slot, tick func()) {
+			refresh(t, st, slot, out)
+		}, false},
+		{"logged out, state file rewritten with the same oauthAccount", func(t *testing.T, st *Store, slot Slot, tick func()) {
+			refresh(t, st, slot, out)
+			tick()
+			write(t, slot.StateFile, []byte(`{"numStartups":9,"oauthAccount":{"accountUuid":"a2","organizationUuid":"o2","emailAddress":"user2@example.com"}}`))
+			touch(t, slot.StateFile, time.Hour)
+		}, false},
+		{"logged out, then a new login changed oauthAccount", func(t *testing.T, st *Store, slot Slot, tick func()) {
+			refresh(t, st, slot, out)
+			tick()
+			write(t, slot.StateFile, []byte(`{"oauthAccount":{"accountUuid":"a3","organizationUuid":"o3","emailAddress":"user3@example.com"}}`))
+			touch(t, slot.StateFile, time.Hour)
+		}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			home := t.TempDir()
+			slot := Locator{Home: home, FS: OSFS{}}.SlotFor("~/.claude-2")
+			write(t, slot.StateFile, []byte(`{"oauthAccount":{"accountUuid":"a2","organizationUuid":"o2","emailAddress":"user2@example.com"}}`))
+			now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+			st := &Store{StateDir: t.TempDir(), FS: OSFS{}, Now: func() time.Time { return now }}
+			if _, err := st.Login(slot); err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(time.Minute)
+			c.steps(t, st, slot, func() { now = now.Add(time.Minute) })
+			l, err := st.Login(slot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !l.HasSeat || l.LoggedIn() != c.want {
+				t.Errorf("LoggedIn %v, want %v (%+v)", l.LoggedIn(), c.want, l)
+			}
+		})
+	}
+}
+
+func refresh(t *testing.T, st *Store, slot Slot, out []byte) {
+	t.Helper()
+	var called []string
+	if _, err := st.RefreshAuthStatus(context.Background(), slot, nil, fakeRunner(t, out, nil, &called)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func touch(t *testing.T, p string, d time.Duration) {
+	t.Helper()
+	at := time.Now().Add(d)
+	if err := os.Chtimes(p, at, at); err != nil {
+		t.Fatal(err)
+	}
+}

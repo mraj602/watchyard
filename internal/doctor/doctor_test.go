@@ -351,3 +351,28 @@ func TestReportText(t *testing.T) {
 		t.Fatalf("json round trip: %v", err)
 	}
 }
+
+// oauthAccount outlives a logout: a later `claude auth status` saying logged out makes the
+// folder logged out here too (identity.Login.LoggedIn, the rule wy account next uses).
+func TestLoginLoggedOutDespiteOAuthAccount(t *testing.T) {
+	e := newFakeHome(t, `{}`)
+	o := e.opts(identity.OSFS{})
+	st := &identity.Store{StateDir: e.dirs.State.Path, FS: identity.OSFS{}, Now: o.Now}
+	slot := identity.Locator{Home: e.home, FS: identity.OSFS{}}.SlotFor("~/.claude-2")
+	if _, err := st.Login(slot); err != nil {
+		t.Fatal(err)
+	}
+	at := o.Now().Add(time.Minute)
+	later := func() time.Time { return at }
+	st.Now = later
+	if _, err := st.RefreshAuthStatus(context.Background(), slot, nil, func(context.Context, []string, string, ...string) ([]byte, error) {
+		return []byte(`{"loggedIn":false}`), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	o.Now = later
+	l := wantLevel(t, Run(context.Background(), o), "login", "~/.claude-2", Warn)
+	if !strings.Contains(l.Detail, "logged out (claude auth status") {
+		t.Errorf("detail %q", l.Detail)
+	}
+}

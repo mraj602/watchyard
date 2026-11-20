@@ -114,6 +114,36 @@ type Config struct {
 		// HubMayWiden: accept a hub-signed matrix that widens (keys.md 5.4). Default true.
 		HubMayWiden bool `toml:"hub_may_widen"`
 	} `toml:"peers"`
+	// Next is the [next] table of `wy account next` (docs/spec/setup.md 8.5).
+	Next Next `toml:"next"`
+}
+
+// Next is the [next] table: the global settings of `wy account next` and, under
+// next.accounts, the settings of each account keyed by email, seat id, folder or label.
+type Next struct {
+	Strategy     string                 `toml:"strategy"`
+	Model        string                 `toml:"model"`
+	Session5h    float64                `toml:"session_5h"`
+	Session7d    float64                `toml:"session_7d"`
+	SessionMin   float64                `toml:"session_min"`
+	StaleMin     float64                `toml:"stale_min"`
+	ReserveMin   float64                `toml:"reserve_min"`
+	StickyMargin float64                `toml:"sticky_margin"`
+	Accounts     map[string]NextAccount `toml:"accounts"`
+}
+
+// NextAccount is one next.accounts.<key> table. A zero number means unset.
+type NextAccount struct {
+	Mode       string  `toml:"mode"`
+	Cap5h      float64 `toml:"cap_5h"`
+	Cap7d      float64 `toml:"cap_7d"`
+	CapModel   float64 `toml:"cap_model"`
+	ReservePct float64 `toml:"reserve_pct"`
+	Priority   float64 `toml:"priority"`
+	Weight     float64 `toml:"weight"`
+	Exclude    bool    `toml:"exclude"`
+	Hours      string  `toml:"hours"`
+	Days       string  `toml:"days"`
 }
 
 // MCPMode returns share.mcp as "true", "false" or "external" ("" when unset).
@@ -153,6 +183,8 @@ func Defaults() Config {
 	c.Peers.Delivery = "honest"
 	c.Peers.HubMayWiden = true
 	c.Update.VerifyAttestation = true
+	c.Next = Next{Strategy: NextStrategySmart, Session5h: 15, Session7d: 2, SessionMin: 120, StaleMin: 30,
+		ReserveMin: 12, StickyMargin: 10, Accounts: map[string]NextAccount{}}
 	return c
 }
 
@@ -163,7 +195,8 @@ const (
 	kBool
 	kInt
 	kStrings
-	kMCP // true, false or "external" (share.mcp)
+	kMCP   // true, false or "external" (share.mcp)
+	kFloat // a number >= 0 (next.*)
 )
 
 // spec describes one known key: its type, default and whether `wy config set` may change it.
@@ -208,6 +241,14 @@ var known = map[string]spec{
 	"peers.enabled":             {kind: kBool, def: false},
 	"peers.delivery":            {kind: kString, def: "honest"},
 	"peers.hub_may_widen":       {kind: kBool, def: true},
+	"next.strategy":             {kind: kString, def: NextStrategySmart},
+	"next.model":                {kind: kString, def: ""},
+	"next.session_5h":           {kind: kFloat, def: float64(15)},
+	"next.session_7d":           {kind: kFloat, def: float64(2)},
+	"next.session_min":          {kind: kFloat, def: float64(120)},
+	"next.stale_min":            {kind: kFloat, def: float64(30)},
+	"next.reserve_min":          {kind: kFloat, def: float64(12)},
+	"next.sticky_margin":        {kind: kFloat, def: float64(10)},
 }
 
 // labelsPrefix: "slots.labels.<slot>" is a free-form key; the slot (e.g. "~/.claude-2")
@@ -236,7 +277,7 @@ func Known() []string {
 	for k := range known {
 		out = append(out, k)
 	}
-	out = append(out, labelsPrefix+"<slot>", coloursPrefix+"<slot>")
+	out = append(out, labelsPrefix+"<slot>", coloursPrefix+"<slot>", nextAccountsPrefix+"<account>.<field>")
 	sort.Strings(out)
 	return out
 }
@@ -299,7 +340,7 @@ func (f *File) Typed() (Config, error) {
 	for k := range known {
 		keys = append(keys, k)
 	}
-	keys = append(keys, "slots.labels", "slots.colours")
+	keys = append(keys, "slots.labels", "slots.colours", "next.accounts")
 	sort.Strings(keys)
 	for _, k := range keys {
 		parts := strings.Split(k, ".")
@@ -350,6 +391,9 @@ func (c *Config) normalize() {
 	if c.Share.MCPExclude == nil {
 		c.Share.MCPExclude = []string{}
 	}
+	if c.Next.Accounts == nil {
+		c.Next.Accounts = map[string]NextAccount{}
+	}
 }
 
 // Get returns the value of key: the stored value, else the default of a known key.
@@ -361,13 +405,18 @@ func (f *File) Get(key string) (any, error) {
 	if sp, ok := known[key]; ok {
 		return sp.def, nil
 	}
-	if key == "slots.labels" || key == "slots.colours" {
+	if key == "slots.labels" || key == "slots.colours" || key == "next.accounts" {
 		return map[string]any{}, nil
 	}
 	return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
 }
 
 func (f *File) lookup(key string) (any, bool) {
+	if acct, field, ok := nextAccountKey(key); ok {
+		m, _ := lookupPath(f.doc, []string{"next", "accounts", acct}).(map[string]any)
+		v, ok := m[field]
+		return v, ok
+	}
 	if table, rest, ok := slotMapKey(key); ok && rest != "" {
 		m, _ := lookupPath(f.doc, []string{"slots", table}).(map[string]any)
 		v, ok := m[rest]
@@ -399,6 +448,21 @@ func (f *File) Set(key string, args []string) error { return f.set(key, args, fa
 
 // set is Set; fromPlan allows managed keys (SetJSON, the path a setup plan takes).
 func (f *File) set(key string, args []string, fromPlan bool) error {
+	if strings.HasPrefix(key, nextAccountsPrefix) {
+		acct, field, ok := nextAccountKey(key)
+		if !ok {
+			return fmt.Errorf("usage: next.accounts.<email|seat|folder|label>.<field> <value> (fields: %s)", strings.Join(nextAccountFieldNames(), ", "))
+		}
+		if len(args) != 1 {
+			return fmt.Errorf("%s takes exactly one value", key)
+		}
+		val, err := parseNextAccountField(key, field, args[0])
+		if err != nil {
+			return err
+		}
+		f.table("next", "accounts", acct)[field] = val
+		return nil
+	}
 	if table, rest, ok := slotMapKey(key); ok {
 		if rest == "" || len(args) != 1 {
 			return fmt.Errorf("usage: slots.%s.<slot> <value>", table)
@@ -478,8 +542,14 @@ func parse(key string, k kind, args []string) (any, error) {
 			return nil, fmt.Errorf("%s: want a positive whole number, got %q", key, v)
 		}
 		return n, nil
+	case kFloat:
+		return parseFloat(key, v)
 	}
 	switch key {
+	case "next.strategy":
+		if !ValidNextStrategy(v) {
+			return nil, fmt.Errorf("next.strategy: want one of %s, got %q", strings.Join(NextStrategies, ", "), v)
+		}
 	case "hub.reach":
 		switch v {
 		case ReachDirect, ReachForward, ReachPull:
@@ -541,6 +611,10 @@ func (f *File) Unknown() []string {
 				continue
 			}
 			if full == "slots.labels" || full == "slots.colours" {
+				continue
+			}
+			if full == "next.accounts" {
+				out = append(out, unknownNextAccountKeys(v)...)
 				continue
 			}
 			if sub, ok := v.(map[string]any); ok && isKnownTable(full) {

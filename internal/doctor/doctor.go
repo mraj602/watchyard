@@ -204,9 +204,12 @@ func checkLogin(rep *Report, o Options, store *identity.Store, s identity.Slot, 
 		rep.add(Check{Name: name, Slot: s.Name, Level: Warn, Detail: "cannot read the login: " + err.Error(),
 			Fix: "run " + loginCmd(s) + " status --json to see what claude says"})
 		return false
-	case !login.HasSeat:
+	case !login.LoggedIn(): // identity.md 4: the same rule as wy account next
 		d := "logged out"
-		if login.AuthStatusAt.IsZero() {
+		switch {
+		case login.HasSeat:
+			d = "logged out (claude auth status; the state file still names " + login.Seat.Email + ")"
+		case login.AuthStatusAt.IsZero():
 			d = "logged out (no login in the state file)"
 		}
 		rep.add(Check{Name: name, Slot: s.Name, Level: Warn, Detail: d + "; hooks and status line not checked",

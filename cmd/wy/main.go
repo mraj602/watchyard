@@ -64,7 +64,7 @@ func commands() map[string]command {
 		"hub":         {summary: "Run and manage the hub (serve, pair, owner-link, token, backup, prune)", run: runHub},
 		"phone":       {summary: "Pair a phone with this hub (wy phone pair; run on the hub)", run: runPhone},
 		"setup":       {summary: "Set up accounts, sharing, hub and phone (--undo reverses a run)", run: runSetup},
-		"account":     {summary: "Add, log in, label, share and remove accounts", run: runAccount},
+		"account":     {summary: "Add, log in, label, share and remove accounts; pick the next one to use", run: runAccount},
 		"uninstall":   {summary: "Remove the plugin, status line, timer and launchers", run: runUninstall},
 		"update":      {summary: "Update wy from a release (--machines updates every added machine)", run: runUpdate},
 		"direct-push": {summary: "Send session pushes straight to ntfy when the hub is unreachable", run: runDirectPush},

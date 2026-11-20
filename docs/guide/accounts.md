@@ -40,6 +40,54 @@ For each folder without a launcher of its own, setup writes a small `claude-N` s
 `claude-<label>`). Launchers you already have, including shell functions and aliases, are
 detected and kept.
 
+## Which account to start on next
+
+`wy account next` recommends the folder for your next Claude Code session. It looks at which
+folders are logged in on this machine and at each account's 5-hour and weekly limits (from
+the hub, or from this machine's status line when there is no hub), projects them to the end
+of a new session and to each reset, and picks one. It only recommends: it never moves a
+running session or changes a login.
+
+```sh
+wy account next                       # claude-3  ~/.claude-3  (7d 23% → ~41% at reset Wed 10:00; 5h fresh; aggressive)
+wy account next --explain             # every account, its projection, and why it was or was not picked
+env $(wy account next --env) claude   # start Claude Code in the recommended folder
+wy account next --exec -- claude      # the same, without the shell trick
+wy account next --model opus          # also count the Opus weekly limit
+```
+
+It exits 4 when no account can take a new session and says when the first one frees up.
+With a hub, the machine's own token from `wy connect` is enough to read every account's
+usage (percentages and reset times only). Upgrade the hub first: an older hub cannot answer
+that read, and then only this machine's own readings are used (or the board's token, if
+`wy board connect` was run) and the output says so. A folder counts as logged in only if
+`claude auth status` agrees, as in `wy account list`.
+
+Each pick is held for about 12 minutes as a reservation, so ten agents started within a
+minute spread over your accounts instead of all landing on one. `--no-reserve` asks without
+holding anything.
+
+Strategies (`--strategy`, or `wy config set next.strategy …`): `smart` (default: spend the
+weekly room that would otherwise expire unused first, keeping clear of accounts about to fill
+their 5 hours), `expiring`, `most-room`, `spread`, `fill` (a fixed order) and `sticky`.
+
+Settings per account, keyed by its email (the same on every machine) or by a label:
+
+```sh
+wy config set next.accounts.me@work.example.mode conservative   # caps 5 h at 60 %, 7 d at 70 %
+wy config set next.accounts.claude-3.mode aggressive            # caps at 98 % and preferred
+wy config set next.accounts.me@work.example.hours 09:00-18:00
+wy config set next.accounts.me@work.example.days mon-fri
+wy config set next.accounts.claude-5.exclude true
+```
+
+Also `cap_5h`, `cap_7d`, `cap_model`, `reserve_pct`, `priority` (for `fill`) and `weight`.
+The full rules are in [setup.md 8.5](../spec/setup.md#85-wy-account-next).
+
+**Agents that start other agents** should ask first: `env $(wy account next --env) claude …`
+or `wy account next --exec -- claude …`, and stop when it exits 4 instead of starting the
+session anyway.
+
 ## Sharing
 
 The primary folder (`~/.claude` unless you choose another with `--primary`) holds the shared
