@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mraj602/watchyard/internal/board"
@@ -47,7 +48,13 @@ type nextEnv struct {
 	// lookPath finds the command of --exec; nil means exec.LookPath.
 	lookPath func(string) (string, error)
 	environ  func() []string
+	// authRun runs `claude auth status --json`; nil means identity.ExecRunner.
+	authRun identity.Runner
 }
+
+// nextAuthFresh: a cached `claude auth status` younger than this is reused, so a burst of
+// agents launching at once asks claude once per folder.
+const nextAuthFresh = time.Minute
 
 func nextUsage(w io.Writer) {
 	fmt.Fprint(w, `usage: wy account next [--strategy smart|expiring|most-room|spread|fill|sticky] [--model <m>]
@@ -221,8 +228,10 @@ func accountNext(e nextEnv, args []string) error {
 	return nil
 }
 
-// nextSlots lists this machine's folders and their logins without running claude: the
-// state file's oauthAccount through the identity cache, as `wy doctor` reads it.
+// nextSlots lists this machine's folders and their logins, decided by identity.Login.LoggedIn
+// (the rule `wy doctor` uses): the state file's oauthAccount, overruled by
+// `claude auth status`, which is asked again (in parallel, AuthTimeout each) when its cached
+// answer is older than nextAuthFresh and claude is on PATH, as `wy account list` does.
 func nextSlots(e nextEnv, cfg config.Config) ([]picker.Slot, error) {
 	loc := identity.Locator{Home: e.home, FS: identity.OSFS{}}
 	// Every folder in its own view: CLAUDE_CONFIG_DIR of the calling session is ignored,
@@ -238,6 +247,28 @@ func nextSlots(e nextEnv, cfg config.Config) ([]picker.Slot, error) {
 		return nil, err
 	}
 	st := &identity.Store{StateDir: e.dirs.State.Path, FS: identity.OSFS{}, Now: e.now}
+	look, environ := e.lookPath, e.environ
+	if look == nil {
+		look = exec.LookPath
+	}
+	if environ == nil {
+		environ = os.Environ
+	}
+	if _, err := look("claude"); err == nil {
+		var wg sync.WaitGroup
+		for _, s := range found {
+			if l, err := st.Login(s); err == nil && !l.AuthStatusAt.IsZero() && e.now().Sub(l.AuthStatusAt) < nextAuthFresh {
+				continue
+			}
+			wg.Add(1)
+			go func(s identity.Slot) {
+				defer wg.Done()
+				// A failure keeps the cached answer: the state file decides alone.
+				_, _ = st.RefreshAuthStatus(context.Background(), s, environ(), e.authRun)
+			}(s)
+		}
+		wg.Wait()
+	}
 	var out []picker.Slot
 	for _, s := range found {
 		label := cfg.Slots.Labels[s.Name]
@@ -245,7 +276,7 @@ func nextSlots(e nextEnv, cfg config.Config) ([]picker.Slot, error) {
 			label = strings.TrimLeft(filepath.Base(s.Dir), ".")
 		}
 		ps := picker.Slot{Folder: s.Name, Dir: s.Dir, Default: s.Default, Label: label}
-		if l, err := st.Login(s); err == nil && l.HasSeat {
+		if l, err := st.Login(s); err == nil && l.LoggedIn() {
 			ps.LoggedIn, ps.Account, ps.Org, ps.Email = true, l.Seat.Account, l.Seat.Org, l.Seat.Email
 		}
 		out = append(out, ps)
@@ -253,20 +284,20 @@ func nextSlots(e nextEnv, cfg config.Config) ([]picker.Slot, error) {
 	return out, nil
 }
 
-// nextHub reads the hub with the board token. (nil, nil): no hub is set up.
+// nextHub reads the hub (setup.md 8.5): GET /v1/usage with this machine's token, or, when
+// there is no machine token or the hub is too old for /v1/usage, /v1/accounts with the board
+// token. (nil, nil): no hub is set up.
 func nextHub(e nextEnv, cfg config.Config, slots []picker.Slot, machine string, now time.Time) (*picker.HubData, error) {
 	if cfg.Hub.URL == "" {
 		return nil, nil
 	}
-	tok, err := board.LoadToken(e.dirs.State.Path, cfg.Hub.URL)
-	if err != nil {
-		if errors.Is(err, board.ErrNoToken) {
-			return nil, errors.New("no read token for the hub; run wy board connect")
-		}
-		return nil, err
-	}
 	if _, _, err := client.CheckURL(cfg.Hub.URL, cfg.Hub.InsecureLAN); err != nil {
 		return nil, err
+	}
+	machineTok, mErr := client.ReadToken(e.dirs.State.Path)
+	boardTok, bErr := board.LoadToken(e.dirs.State.Path, cfg.Hub.URL)
+	if mErr != nil && bErr != nil {
+		return nil, errors.New("no hub token on this machine; run wy connect")
 	}
 	tr := e.transport
 	if tr == nil {
@@ -278,13 +309,32 @@ func nextHub(e nextEnv, cfg config.Config, slots []picker.Slot, machine string, 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), nextHubTimeout)
 	defer cancel()
-	hc := picker.HubClient{URL: cfg.Hub.URL, Token: tok.Token, HTTP: &http.Client{Transport: tr, Timeout: nextHubTimeout}}
+	hc := picker.HubClient{URL: cfg.Hub.URL, HTTP: &http.Client{Transport: tr, Timeout: nextHubTimeout}}
+	timeout := func(err error) error {
+		if ctx.Err() != nil {
+			return errors.New("the hub did not answer in time")
+		}
+		return err
+	}
+	var usageErr error
+	if mErr == nil {
+		hc.Token = machineTok
+		d, err := hc.FetchUsage(ctx, now)
+		if err == nil {
+			return &d, nil
+		}
+		if bErr != nil || !errors.Is(err, picker.ErrNoUsageEndpoint) {
+			return nil, timeout(err)
+		}
+		usageErr = err
+	}
+	hc.Token = boardTok.Token
 	d, err := hc.Fetch(ctx, now, picker.WantSeat(slots, machine))
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, errors.New("the hub did not answer in time")
+		if usageErr != nil {
+			return nil, usageErr
 		}
-		return nil, err
+		return nil, timeout(err)
 	}
 	return &d, nil
 }

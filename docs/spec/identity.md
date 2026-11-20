@@ -97,7 +97,8 @@ entry per view (`<slot hash>` is taken over `~/.claude#explicit` for the explici
    stdin closed. Used:
    - at SessionStart, in the background after the hook record is written (never inside the
      20 ms budget), refreshing the cache;
-   - by `wy doctor`, `wy connect` and `slot_info`;
+   - by `wy doctor`, `wy connect`, `slot_info`, `wy account list` and `wy account next`
+     (setup.md 8.5: again when the cached answer is older than 1 minute);
    - on macOS whenever `oauthAccount` is missing from the state file (the login itself
      lives in the Keychain).
    Fields used: `loggedIn`, `email`, `orgId`, `orgName`, `subscriptionType`. **Uncertain:**
@@ -108,6 +109,15 @@ entry per view (`<slot hash>` is taken over `~/.claude#explicit` for the explici
    with `account` = `""`, `email`, `org` = `orgId`, `src` = `auth_status`, and the hub joins
    it by (email, org) to an existing seat, or keeps the record unattributed until a record
    with an account uuid arrives.
+
+**Logged in** has one rule, `identity.Login.LoggedIn`, used by `wy doctor` and
+`wy account next`: a seat is known (above) and the last `claude auth status` did not say
+`loggedIn: false` after the state file's `oauthAccount` took its current value. Claude Code
+leaves `oauthAccount` in the state file on logout, so the key alone does not prove a login.
+The cache records when `oauthAccount` was first seen with its current value (`oauth_at`); it
+moves only when the key changes, not on the state file's other rewrites, and is unknown for
+entries written before it existed (an earlier "logged out" then holds until claude is asked
+again).
 
 `internal/identity` enforces this in its file-system layer (`OSFS` returns `ErrForbidden`
 for those names) and a test records every open to prove it.
@@ -157,7 +167,7 @@ files `<config>/sessions/<digits>.json` (pid, session id, cwd, socket path, name
 | File | Holds | Rewritten |
 | --- | --- | --- |
 | `<state>/machine.json` | machine id, name | Once; on rename. |
-| `<state>/identity/<slot hash>.json` | `{slot, state_file, size, mtime_ns, oauth: {accountUuid, organizationUuid, emailAddress}, auth_status_at, logged_in, auth: {loggedIn, email, orgId, orgName, subscriptionType}}` (`auth` is the last `claude auth status` result; it is what makes the `src = auth_status` seat possible when `oauth` is missing) | When the state file changes. |
+| `<state>/identity/<slot hash>.json` | `{slot, state_file, size, mtime_ns, oauth: {accountUuid, organizationUuid, emailAddress}, oauth_at, auth_status_at, logged_in, auth: {loggedIn, email, orgId, orgName, subscriptionType}}` (`auth` is the last `claude auth status` result; it is what makes the `src = auth_status` seat possible when `oauth` is missing) | When the state file changes. |
 | `<state>/identity/sent.json` | Per slot, what the last `slot_info` from a SessionStart hook said: seat (account, org, email), `logged_in`, label, colour, and when | When a login, label or colour change is sent, and on the daily resend (record.md 4.7). |
 
 Nothing in these files is secret; they hold uuids and emails.

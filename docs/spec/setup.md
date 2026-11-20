@@ -908,20 +908,32 @@ changes or moves a login, and never starts anything unless `--exec` is given. Im
 `internal/picker` and `cmd/wy/account_next.go`.
 
 **Folders and logins.** The folders of identity.md 3 (`CLAUDE_CONFIG_DIR` of the calling
-session is ignored, so `~/.claude` is always its default view), each with its login read as
-`wy doctor` reads it: `oauthAccount` through the identity cache, `claude` is not run. A
-folder without a login is not eligible.
+session is ignored, so `~/.claude` is always its default view). A folder is logged in by the
+one rule `wy doctor` also uses, `identity.Login.LoggedIn` (identity.md 4): the state file's
+`oauthAccount`, overruled by a `claude auth status` that said logged out after
+`oauthAccount` took its current value (Claude Code keeps `oauthAccount` after a logout).
+When `claude` is on PATH, `claude auth status --json` is asked again for every folder whose
+cached answer is older than 1 minute, in parallel with the 10-second timeout of identity.md 4,
+as `wy account list` does; a failure keeps the cached answer. A folder without a login is not
+eligible.
 
-**Hub data.** When `hub.url` is set and `<state>/board/token.json` holds a read token for it
-(`wy board connect`; a machine token has no read scope, tokens.md 3), `wy` reads
-`GET /v1/accounts` and, for each seat a local folder matches, `GET /v1/accounts/{seat}/windows`
-with `since` = now − 26 h, `samples=true` and the limit keys of that seat. All hub reads share
-a 5-second budget. No other endpoint and no schema change is needed.
+**Hub data.** When `hub.url` is set, `wy` reads `GET /v1/usage?since=<now − 26 h>` with
+this machine's token (`<state>/token`, `wy connect`; tokens.md 3): per seat its ids, label,
+limit windows, samples since then, live sessions, and this machine's places and signed-out
+folders. Without a machine token, or when the hub answers 404 (a hub older than this `wy`)
+and `<state>/board/token.json` holds a read token (`wy board connect`), it reads
+`GET /v1/accounts` and, for each seat a local folder matches,
+`GET /v1/accounts/{seat}/windows` with `since` = now − 26 h, `samples=true` and the limit keys
+of that seat. A 404 with no board token is "hub not read: the hub has no /v1/usage (it is
+older than this wy); upgrade the hub to give this machine hub data", and local data is used
+(below): **upgrade the hub before the machines** to give them hub data. All hub reads share
+a 5-second budget.
 
 **Matching folders to seats** is by login, never by label (a seat labelled `claude-1` on the
 hub may be `claude` on this machine): (1) the seat with the folder's account and org uuids;
 (2) else the seat whose `places` list this folder on this machine (`machine.json` id); (3) else
-the only seat with the folder's email (two seats with that email: no match). A folder the hub
+the only seat with the folder's email (two seats with that email: no match; `/v1/usage`
+carries no email, so this step applies to the board-token read only). A folder the hub
 lists in any seat's `signed_out` for this machine is not eligible, unless its matched seat
 lists it as a place again.
 

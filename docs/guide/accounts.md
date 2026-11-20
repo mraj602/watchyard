@@ -57,8 +57,11 @@ wy account next --model opus          # also count the Opus weekly limit
 ```
 
 It exits 4 when no account can take a new session and says when the first one frees up.
-Reading the hub needs the board's read token (`wy board connect`); without it, only this
-machine's own readings are used and the output says `local data`.
+With a hub, the machine's own token from `wy connect` is enough to read every account's
+usage (percentages and reset times only). Upgrade the hub first: an older hub cannot answer
+that read, and then only this machine's own readings are used (or the board's token, if
+`wy board connect` was run) and the output says so. A folder counts as logged in only if
+`claude auth status` agrees, as in `wy account list`.
 
 Each pick is held for about 12 minutes as a reservation, so ten agents started within a
 minute spread over your accounts instead of all landing on one. `--no-reserve` asks without

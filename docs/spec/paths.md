@@ -131,7 +131,7 @@ one folder.
   update/                      downloads and verified archives (machines.md 7.3); cache/ for other platforms
   hub.sock                     forward mode with --forward-socket only (machines.md 3.3)
   pull/                        hub host only: id_ed25519(.pub), generated ssh_config and known_hosts (machines.md 3.4)
-  board/token.json             read-only board token for wy board, the pane and wy account next, mode 0600 (terminal.md T3)
+  board/token.json             read-only board token for wy board, the pane and wy account next (older hubs), mode 0600 (terminal.md T3)
   next/picks.json              wy account next: reservations and pick log, mode 0600 (setup.md 8.5)
   next/picks.lock              held while wy account next ranks and records a pick
   board/last-view.json         last board view shown, mode 0600 (terminal.md T3)

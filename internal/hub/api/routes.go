@@ -104,6 +104,9 @@ var handlerRoutes = []Route{
 	{Method: "POST", Path: "/v1/machines/{id}/pull", Scopes: []string{"owner"}},
 	{Method: "GET", Path: "/v1/push/direct-policy", Scopes: []string{"write"}},
 
+	// Seat usage for `wy account next` on a machine (setup.md 8.5).
+	{Method: "GET", Path: "/v1/usage", Scopes: []string{"read", "write"}},
+
 	// Seats (desktop.md C10, pwa.md Accounts).
 	{Method: "PATCH", Path: "/v1/accounts/{seat}", Scopes: []string{"owner"}},
 	{Method: "PUT", Path: "/v1/seats/order", Scopes: []string{"owner"}},

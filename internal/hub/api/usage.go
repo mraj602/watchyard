@@ -1,0 +1,110 @@
+package api
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/mraj602/watchyard/internal/hub/auth"
+	"github.com/mraj602/watchyard/internal/hub/store"
+)
+
+// GET /v1/usage (setup.md 8.5, tokens.md 3): each seat's limit windows and recent samples
+// for `wy account next`, readable with a machine token. It is the owner's own seat usage,
+// percentages and times only: no email, no org name, no session, project or message, and
+// places and signed-out folders only of the calling machine. Scopes read or write.
+func init() {
+	Register("GET", "/v1/usage", func(s *Server) http.Handler { return http.HandlerFunc(s.machineUsage) })
+}
+
+// usageDefaultSince and usageMaxSince bound ?since=.
+const (
+	usageDefaultSince = 26 * time.Hour
+	usageMaxSince     = 8 * 24 * time.Hour
+	usageMaxSamples   = 5000
+)
+
+// UsageDoc is api.yaml UsageDoc.
+type UsageDoc struct {
+	V       int         `json:"v"`
+	Time    store.Time  `json:"time"`
+	Machine *string     `json:"machine"`
+	Since   store.Time  `json:"since"`
+	Seats   []UsageSeat `json:"seats"`
+}
+
+// UsageSeat is api.yaml UsageSeat: the allow-listed fields of a seat.
+type UsageSeat struct {
+	ID           string            `json:"id"`
+	Account      string            `json:"account"`
+	Org          string            `json:"org"`
+	Label        *string           `json:"label"`
+	Windows      []Window          `json:"windows"`
+	Samples      []store.SampleRow `json:"samples"`
+	LiveSessions int               `json:"live_sessions"`
+	Places       []UsageSlot       `json:"places"`
+	SignedOut    []UsageSlot       `json:"signed_out"`
+}
+
+// UsageSlot is a folder of the calling machine: logged in to the seat (places) or signed
+// out of it (signed_out, with since).
+type UsageSlot struct {
+	Slot  string      `json:"slot"`
+	Since *store.Time `json:"since,omitempty"`
+}
+
+func (s *Server) machineUsage(w http.ResponseWriter, r *http.Request) {
+	now := s.now()
+	since := now.Add(-usageDefaultSince)
+	if t, ok := timeParam(r, "since"); !ok {
+		auth.WriteError(w, http.StatusBadRequest, "bad_request", "since must be an RFC 3339 time")
+		return
+	} else if !t.IsZero() {
+		since = t
+	}
+	if since.Before(now.Add(-usageMaxSince)) {
+		since = now.Add(-usageMaxSince)
+	}
+	caller, _ := auth.DeviceFrom(r.Context())
+	rows, err := s.store.Seats(r.Context(), true, now)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	out := UsageDoc{V: 1, Time: store.Time(now.UnixMilli()), Since: store.Time(since.UnixMilli()), Seats: []UsageSeat{}}
+	if caller.MachineID != "" {
+		m := caller.MachineID
+		out.Machine = &m
+	}
+	for _, x := range rows {
+		ws, err := s.store.Windows(r.Context(), x.ID, nil, time.Time{}, true)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		sm, err := s.store.Samples(r.Context(), x.ID, nil, since, usageMaxSamples)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		seat := UsageSeat{ID: x.ID, Account: x.Account, Org: x.Org, Label: x.Label, Windows: windowsOf(ws, now),
+			Samples: sm, LiveSessions: x.LiveSessions, Places: []UsageSlot{}, SignedOut: []UsageSlot{}}
+		if seat.Samples == nil {
+			seat.Samples = []store.SampleRow{}
+		}
+		if caller.MachineID != "" {
+			for _, p := range x.Places {
+				if p.Machine == caller.MachineID && p.Slot != nil {
+					seat.Places = append(seat.Places, UsageSlot{Slot: *p.Slot})
+				}
+			}
+			for _, p := range x.SignedOut {
+				if p.Machine == caller.MachineID {
+					t := p.Since
+					seat.SignedOut = append(seat.SignedOut, UsageSlot{Slot: p.Slot, Since: &t})
+				}
+			}
+		}
+		out.Seats = append(out.Seats, seat)
+	}
+	writeJSON(w, http.StatusOK, out)
+}

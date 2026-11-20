@@ -52,6 +52,7 @@ type entry struct {
 	Size         int64       `json:"size"`
 	MtimeNS      int64       `json:"mtime_ns"`
 	OAuth        *OAuth      `json:"oauth,omitempty"`
+	OAuthAt      string      `json:"oauth_at,omitempty"` // when oauth was first seen as it is now
 	AuthStatusAt string      `json:"auth_status_at,omitempty"`
 	LoggedIn     *bool       `json:"logged_in,omitempty"`
 	Auth         *AuthStatus `json:"auth,omitempty"`
@@ -63,6 +64,22 @@ type Login struct {
 	HasSeat      bool       // false: no oauthAccount and no usable auth status
 	Auth         AuthStatus // last `claude auth status` result, zero if never run
 	AuthStatusAt time.Time  // zero if never run
+	OAuthAt      time.Time  // when the state file's oauthAccount was first seen as it is; zero if unknown
+}
+
+// LoggedIn is the one answer to "is this slot logged in" for every command that decides
+// without asking claude again (identity.md 4): a seat is known and the last
+// `claude auth status` did not say logged out after the state file's oauthAccount took its
+// current value. Claude Code leaves oauthAccount in place on logout, so that key alone
+// does not prove a login.
+func (l Login) LoggedIn() bool {
+	if !l.HasSeat {
+		return false
+	}
+	if l.AuthStatusAt.IsZero() || l.Auth.LoggedIn {
+		return true
+	}
+	return l.OAuthAt.After(l.AuthStatusAt) // logged in again since claude said logged out
 }
 
 // Store reads and caches slot logins under <state>/identity/.
@@ -100,18 +117,46 @@ func (s *Store) Login(slot Slot) (Login, error) {
 	if cached != nil && cached.StateFile == slot.StateFile && cached.Size == fi.Size() && cached.MtimeNS == fi.ModTime().UnixNano() {
 		return loginFrom(cached), nil
 	}
-	oa, err := ReadOAuth(s.FS, slot.StateFile)
+	e, err := s.reread(slot, cached, fi)
 	if err != nil {
 		return Login{}, err
+	}
+	// The cache is an optimisation: a read-only state folder must not break hooks.
+	_ = s.writeEntry(slot, e)
+	return loginFrom(e), nil
+}
+
+// reread reads the slot's oauthAccount into a new cache entry, keeping the cached auth
+// status. OAuthAt moves only when oauthAccount changed (a login), not on every rewrite of
+// the state file.
+func (s *Store) reread(slot Slot, cached *entry, fi os.FileInfo) (*entry, error) {
+	oa, err := ReadOAuth(s.FS, slot.StateFile)
+	if err != nil {
+		return nil, err
 	}
 	e := &entry{Slot: slot.Name}
 	if cached != nil {
 		e.AuthStatusAt, e.LoggedIn, e.Auth = cached.AuthStatusAt, cached.LoggedIn, cached.Auth
+		e.OAuthAt = cached.OAuthAt
+	}
+	// Bumped only against an oauthAccount that was really read before; unknown (an entry
+	// written by an older wy, or by RefreshAuthStatus alone) stays unknown, so an earlier
+	// "logged out" still holds until claude is asked again.
+	switch {
+	case cached == nil:
+		e.OAuthAt = s.now().UTC().Format(time.RFC3339Nano)
+	case (cached.Size != 0 || cached.MtimeNS != 0) && !sameOAuth(cached.OAuth, oa):
+		e.OAuthAt = s.now().UTC().Format(time.RFC3339Nano)
 	}
 	e.StateFile, e.Size, e.MtimeNS, e.OAuth = slot.StateFile, fi.Size(), fi.ModTime().UnixNano(), oa
-	// The cache is an optimisation: a read-only state folder must not break hooks.
-	_ = s.writeEntry(slot, e)
-	return loginFrom(e), nil
+	return e, nil
+}
+
+func sameOAuth(a, b *OAuth) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func loginFrom(e *entry) Login {
@@ -132,6 +177,9 @@ func loginFrom(e *entry) Login {
 	}
 	if t, err := time.Parse(time.RFC3339Nano, e.AuthStatusAt); err == nil {
 		l.AuthStatusAt = t
+	}
+	if t, err := time.Parse(time.RFC3339Nano, e.OAuthAt); err == nil {
+		l.OAuthAt = t
 	}
 	return l
 }
@@ -228,7 +276,14 @@ func (s *Store) RefreshAuthStatus(ctx context.Context, slot Slot, environ []stri
 		return st, fmt.Errorf("claude auth status: unreadable output: %w", jerr)
 	}
 	// A logged-out slot makes some versions exit non-zero but still print JSON: use it.
+	// The state file is read again first, so that a login it already shows (OAuthAt) is
+	// ordered before this answer rather than mistaken for a later one.
 	e, _ := s.readEntry(slot)
+	if fi, ferr := s.FS.Stat(slot.StateFile); ferr == nil {
+		if ne, rerr := s.reread(slot, e, fi); rerr == nil {
+			e = ne
+		}
+	}
 	if e == nil {
 		// Size and mtime stay zero, so the next Login() rereads the state file.
 		e = &entry{Slot: slot.Name, StateFile: slot.StateFile}

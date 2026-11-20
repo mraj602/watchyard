@@ -14,6 +14,14 @@ All notable changes to Watchyard are recorded here. The format follows
   `fill`, `sticky`), per-account modes, caps, hours and priorities under `[next]` in
   `config.toml`, short reservations so bursts of launches spread out, and `--env`, `--json`,
   `--explain` and `--exec` output. It only recommends.
+- Hub: `GET /v1/usage`, readable with a machine token: each seat's limit percentages, reset
+  times and recent samples, plus the calling machine's own folders, and nothing else.
+  `wy account next` reads it, so upgrade the hub before the machines.
+
+### Changed
+
+- `wy doctor` treats a folder as logged out when `claude auth status` last said so, even if
+  its `.claude.json` still holds the old `oauthAccount`.
 
 ## [1.0.0] - 2026-10-24
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mraj602/watchyard/internal/board"
+	"github.com/mraj602/watchyard/internal/client"
 	"github.com/mraj602/watchyard/internal/config"
 	"github.com/mraj602/watchyard/internal/identity"
 	"github.com/mraj602/watchyard/internal/paths"
@@ -32,6 +34,11 @@ type nextFixture struct {
 	hub     *httptest.Server
 	seats   []map[string]any
 	auth    []string
+	usage   bool // the hub serves GET /v1/usage (a hub as new as this wy)
+	// loggedOut: folders `claude auth status` (faked) reports logged out; by default the
+	// folders with an oauthAccount are logged in.
+	loggedOut map[string]bool
+	authRuns  int
 }
 
 func newNextFixture(t *testing.T) *nextFixture {
@@ -64,10 +71,23 @@ func newNextFixture(t *testing.T) *nextFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &nextFixture{t: t, home: home, dirs: d, machine: m.ID}
+	f := &nextFixture{t: t, home: home, dirs: d, machine: m.ID, loggedOut: map[string]bool{"~/.claude-3": true}}
 	f.hub = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.auth = append(f.auth, r.Header.Get("Authorization"))
 		switch {
+		case r.URL.Path == "/v1/usage" && f.usage:
+			// The /v1/usage shape: no email, places and signed-out folders of the caller only.
+			var seats []map[string]any
+			for _, x := range f.seats {
+				y := map[string]any{"samples": []any{}}
+				for k, v := range x {
+					if k != "email" {
+						y[k] = v
+					}
+				}
+				seats = append(seats, y)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"v": 1, "machine": f.machine, "seats": seats})
 		case r.URL.Path == "/v1/accounts":
 			_ = json.NewEncoder(w).Encode(map[string]any{"accounts": f.seats})
 		case strings.HasSuffix(r.URL.Path, "/windows") && r.URL.Query().Get("samples") == "true":
@@ -91,6 +111,28 @@ func newNextFixture(t *testing.T) *nextFixture {
 		t.Fatal(err)
 	}
 	return f
+}
+
+// authStatus fakes `claude auth status --json`; the real claude never runs in tests.
+func (f *nextFixture) authStatus(_ context.Context, env []string, name string, args ...string) ([]byte, error) {
+	if name != "claude" || strings.Join(args, " ") != "auth status --json" {
+		f.t.Errorf("ran %s %v", name, args)
+	}
+	f.authRuns++
+	folder := "~/.claude"
+	for _, kv := range env {
+		if dir, ok := strings.CutPrefix(kv, "CLAUDE_CONFIG_DIR="); ok {
+			folder = "~/" + filepath.Base(dir)
+		}
+	}
+	return []byte(fmt.Sprintf(`{"loggedIn":%v}`, !f.loggedOut[folder])), nil
+}
+
+// machineToken writes the machine token wy connect leaves in the state folder.
+func (f *nextFixture) machineToken() {
+	if err := os.WriteFile(filepath.Join(f.dirs.State.Path, client.TokenFile), []byte("wy_m_test\n"), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
 }
 
 func seat(id, account, org, email, label string, five, seven float64) map[string]any {
@@ -120,7 +162,8 @@ func (f *nextFixture) run(args ...string) nextRun {
 		exec: func(path string, argv, env []string) error {
 			r.exec, r.env = append([]string{path}, argv...), env
 			return nil
-		}}
+		},
+		authRun: f.authStatus}
 	err := accountNext(e, args)
 	var ee *exitError
 	switch {
@@ -280,5 +323,91 @@ func TestAccountNextHubUnreachable(t *testing.T) {
 	r = f.run("--no-hub", "--explain", "--no-reserve")
 	if !strings.Contains(r.out, "local data from this machine's status line (no hub is set up)") && !strings.Contains(r.out, "local data") {
 		t.Errorf("explain %s", r.out)
+	}
+}
+
+// With the machine token, GET /v1/usage gives the hub data (setup.md 8.5); places in it are
+// this machine's folders, so a seat is matched to a folder by place as well as by account.
+func TestAccountNextMachineTokenUsage(t *testing.T) {
+	f := newNextFixture(t)
+	f.machineToken()
+	f.usage = true
+	s2 := seat("seat_2", "a2", "o2", "", "", 10, 30)
+	s2["places"] = []any{map[string]any{"slot": "~/.claude-2"}}
+	f.seats = []map[string]any{seat("seat_1", "a1", "o1", "", "", 95, 20), s2}
+	r := f.run("--json", "--no-reserve")
+	var doc struct {
+		Data   string `json:"data"`
+		Picked *struct {
+			Folder string `json:"folder"`
+		} `json:"picked"`
+	}
+	if err := json.Unmarshal([]byte(r.out), &doc); err != nil {
+		t.Fatalf("json: %v\n%s", err, r.out)
+	}
+	if r.code != 0 || doc.Data != "hub" || doc.Picked == nil || doc.Picked.Folder != "~/.claude-2" {
+		t.Fatalf("code %d out %s err %s", r.code, r.out, r.errOut)
+	}
+	if len(f.auth) != 1 || f.auth[0] != "Bearer wy_m_test" {
+		t.Errorf("auth %v (one /v1/usage call with the machine token)", f.auth)
+	}
+}
+
+// An older hub answers 404 for /v1/usage: with a board token wy reads /v1/accounts; with
+// none it falls back to local data and says the hub needs an upgrade.
+func TestAccountNextOlderHub(t *testing.T) {
+	f := newNextFixture(t)
+	f.machineToken()
+	f.seats = []map[string]any{seat("seat_1", "a1", "o1", "one@example.test", "", 95, 20),
+		seat("seat_2", "a2", "o2", "two@example.test", "", 10, 30)}
+	r := f.run("--json", "--no-reserve")
+	if !strings.Contains(r.out, `"data": "hub"`) || len(f.auth) < 2 || f.auth[0] != "Bearer wy_m_test" || f.auth[1] != "Bearer wy_b_test" {
+		t.Fatalf("board fallback: auth %v out %s", f.auth, r.out)
+	}
+	if err := os.Remove(filepath.Join(f.dirs.State.Path, "board", "token.json")); err != nil {
+		t.Fatal(err)
+	}
+	r = f.run("--no-reserve")
+	if r.code != 0 || !strings.Contains(r.out, "[hub not read: the hub has no /v1/usage") || !strings.Contains(r.out, "upgrade the hub") {
+		t.Fatalf("code %d out %q err %q", r.code, r.out, r.errOut)
+	}
+}
+
+// The state file keeps oauthAccount after a logout; `claude auth status` saying logged out
+// makes the folder ineligible, as in wy account list and wy doctor (identity.md 4).
+func TestAccountNextOAuthAccountButLoggedOut(t *testing.T) {
+	f := newNextFixture(t)
+	f.loggedOut["~/.claude-2"] = true
+	f.seats = []map[string]any{seat("seat_1", "a1", "o1", "one@example.test", "", 20, 20),
+		seat("seat_2", "a2", "o2", "two@example.test", "", 0, 0)}
+	r := f.run("--json", "--no-reserve")
+	var doc struct {
+		Picked *struct {
+			Folder string `json:"folder"`
+		} `json:"picked"`
+		Accounts []struct {
+			Folder   string `json:"folder"`
+			Eligible bool   `json:"eligible"`
+			Excluded string `json:"excluded_reason"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal([]byte(r.out), &doc); err != nil {
+		t.Fatalf("json: %v\n%s", err, r.out)
+	}
+	if doc.Picked == nil || doc.Picked.Folder != "~/.claude" {
+		t.Fatalf("picked %+v\n%s", doc.Picked, r.out)
+	}
+	for _, a := range doc.Accounts {
+		if a.Folder == "~/.claude-2" && (a.Eligible || a.Excluded != "not logged in on this machine") {
+			t.Errorf("~/.claude-2 %+v", a)
+		}
+	}
+	if f.authRuns != 3 {
+		t.Errorf("auth status ran %d times, want once per folder", f.authRuns)
+	}
+	// A second run within a minute reuses the answers.
+	f.run("--no-reserve")
+	if f.authRuns != 3 {
+		t.Errorf("auth status reran: %d", f.authRuns)
 	}
 }

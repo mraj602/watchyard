@@ -531,6 +531,37 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
 
+  /v1/usage:
+    get:
+      tags: [read]
+      operationId: seatUsage
+      summary: Every seat's limit windows and recent samples (wy account next)
+      description: >-
+        setup.md 8.5, tokens.md 3. Readable with a machine token (scope write) as well as a read
+        token, so `wy account next` on any connected machine can rank its accounts. It is the
+        owner's own seat usage, percentages and times only: each seat has its id, account and
+        org uuids (to match local logins), label, current windows (as in /v1/accounts),
+        samples since `since`, live session count, and the folders of the calling machine
+        that are logged in to it (`places`) or signed out of it (`signed_out`). It never holds
+        an email, an org name, another machine's places, or any session, project or message
+        data. Hidden seats are included. A token without a machine gets empty `places` and
+        `signed_out`.
+      x-scopes: [read, write]
+      parameters:
+        - name: since
+          in: query
+          description: "Oldest sample to return. Default 26 hours ago; at most 8 days back (an older value is clamped)."
+          schema: {type: string, format: date-time}
+      responses:
+        "200":
+          description: The seats, in display order.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UsageDoc"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
   /v1/stream:
     get:
       tags: [live]
@@ -2371,6 +2402,57 @@ components:
         projects:
           type: array
           items: {type: string}
+
+    UsageDoc:
+      type: object
+      description: "GET /v1/usage (setup.md 8.5)."
+      required: [v, time, machine, since, seats]
+      additionalProperties: false
+      properties:
+        v: {type: integer, const: 1}
+        time: {type: string, format: date-time}
+        machine: {type: [string, "null"], description: The calling device's machine id.}
+        since: {type: string, format: date-time}
+        seats:
+          type: array
+          items: {$ref: "#/components/schemas/UsageSeat"}
+
+    UsageSeat:
+      type: object
+      required: [id, account, org, label, windows, samples, live_sessions, places, signed_out]
+      additionalProperties: false
+      properties:
+        id: {type: string}
+        account: {type: string, description: Account uuid.}
+        org: {type: string, description: Org uuid.}
+        label: {type: [string, "null"]}
+        windows:
+          type: array
+          items: {$ref: "#/components/schemas/Window"}
+        samples:
+          type: array
+          description: Newest first, at most 5000.
+          items: {$ref: "#/components/schemas/LimitSample"}
+        live_sessions: {type: integer}
+        places:
+          type: array
+          description: Folders of the calling machine logged in to this seat.
+          items:
+            type: object
+            required: [slot]
+            additionalProperties: false
+            properties:
+              slot: {type: string}
+        signed_out:
+          type: array
+          description: Folders of the calling machine signed out of this seat (as Seat.signed_out).
+          items:
+            type: object
+            required: [slot, since]
+            additionalProperties: false
+            properties:
+              slot: {type: string}
+              since: {type: string, format: date-time}
 
     DirectPolicy:
       type: object

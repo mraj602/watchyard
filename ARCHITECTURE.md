@@ -226,7 +226,7 @@ Client side (runs on every machine):
 | `internal/update` | `wy update`: release manifest, verified download, replace and rollback, post-update steps, `--machines` | brand |
 | `internal/doctor` | `wy doctor` (reach, held records, frozen hub, direct push, forward port; on the hub also push and pull-target checks, reading `hub.db` read-only with the SQLite driver, no hub package) | paths, config, identity, outbox, client, directpush, setup/ledger, setup/backup, share |
 | `internal/timer` | OS timer running `wy tick --quiet` every minute | brand |
-| `internal/picker` | `wy account next`: seat matching, projections, strategies, reservations and the pick log, hub reads with the board token, outbox limit samples | config, record, atomicfile |
+| `internal/picker` | `wy account next`: seat matching, projections, strategies, reservations and the pick log, hub reads (`/v1/usage` with the machine token, or the board token), outbox limit samples | config, record, atomicfile |
 
 Setup side (`wy setup`, `wy account`, `wy uninstall`, `wy tick`):
 

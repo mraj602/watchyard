@@ -3,6 +3,7 @@ package picker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -62,7 +63,8 @@ type HubData struct {
 	Samples map[string][]HubSample
 }
 
-// HubClient reads the hub with a read-scoped token (the board token).
+// HubClient reads the hub: /v1/usage with the machine token (or any read token), or
+// /v1/accounts and the windows history with the board token.
 type HubClient struct {
 	URL   string
 	Token string
@@ -114,6 +116,62 @@ func (h HubClient) Fetch(ctx context.Context, now time.Time, want func(HubSeat) 
 	return d, nil
 }
 
+// ErrNoUsageEndpoint: the hub answered 404 for GET /v1/usage, so it is older than this wy.
+var ErrNoUsageEndpoint = errors.New("the hub has no /v1/usage (it is older than this wy); upgrade the hub to give this machine hub data")
+
+// FetchUsage reads GET /v1/usage?since=now-HistoryFor (setup.md 8.5): the narrow read a
+// machine token may make. Places and signed-out folders in it are this machine's only.
+func (h HubClient) FetchUsage(ctx context.Context, now time.Time) (HubData, error) {
+	var doc struct {
+		Machine *string `json:"machine"`
+		Seats   []struct {
+			ID           string      `json:"id"`
+			Account      string      `json:"account"`
+			Org          string      `json:"org"`
+			Label        *string     `json:"label"`
+			Windows      []HubWindow `json:"windows"`
+			Samples      []HubSample `json:"samples"`
+			LiveSessions int         `json:"live_sessions"`
+			Places       []struct {
+				Slot string `json:"slot"`
+			} `json:"places"`
+			SignedOut []struct {
+				Slot  string    `json:"slot"`
+				Since time.Time `json:"since"`
+			} `json:"signed_out"`
+		} `json:"seats"`
+	}
+	q := url.Values{"since": {now.Add(-HistoryFor).UTC().Format(time.RFC3339)}}
+	if err := h.get(ctx, "/v1/usage?"+q.Encode(), &doc); err != nil {
+		return HubData{}, err
+	}
+	machine := ""
+	if doc.Machine != nil {
+		machine = *doc.Machine
+	}
+	d := HubData{Samples: map[string][]HubSample{}}
+	for _, x := range doc.Seats {
+		s := HubSeat{ID: x.ID, Account: x.Account, Org: x.Org, Label: x.Label, Windows: x.Windows, LiveSessions: x.LiveSessions}
+		for _, p := range x.Places {
+			slot := p.Slot
+			s.Places = append(s.Places, struct {
+				Machine string  `json:"machine"`
+				Slot    *string `json:"slot"`
+			}{machine, &slot})
+		}
+		for _, p := range x.SignedOut {
+			s.SignedOut = append(s.SignedOut, struct {
+				Machine string    `json:"machine"`
+				Slot    string    `json:"slot"`
+				Since   time.Time `json:"since"`
+			}{machine, p.Slot, p.Since})
+		}
+		d.Seats = append(d.Seats, s)
+		d.Samples[x.ID] = x.Samples
+	}
+	return d, nil
+}
+
 func (h HubClient) get(ctx context.Context, path string, into any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(h.URL, "/")+path, nil)
 	if err != nil {
@@ -135,7 +193,9 @@ func (h HubClient) get(ctx context.Context, path string, into any) error {
 	defer resp.Body.Close()
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return fmt.Errorf("the hub refused the board token (%d)", resp.StatusCode)
+		return fmt.Errorf("the hub refused this machine's token (%d)", resp.StatusCode)
+	case resp.StatusCode == http.StatusNotFound && strings.HasPrefix(path, "/v1/usage"):
+		return ErrNoUsageEndpoint
 	case resp.StatusCode != http.StatusOK:
 		return fmt.Errorf("the hub answered %d for %s", resp.StatusCode, strings.SplitN(path, "?", 2)[0])
 	}
