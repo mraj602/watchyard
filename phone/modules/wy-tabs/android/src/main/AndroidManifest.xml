@@ -1,5 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- phone.md P17. No permissions beyond INTERNET (wy-link asks for it too). -->
+<!-- phone.md P17. INTERNET (wy-link asks for it too); RECORD_AUDIO and CAMERA are asked at run time,
+     only when claude.ai's page asks for the mic or a photo (P17.5). The provider hands one camera
+     photo to the page's file chooser: private cache folder, per-URI grants only. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.INTERNET"/>
+  <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+  <uses-permission android:name="android.permission.CAMERA"/>
+  <application>
+    <provider
+      android:name="androidx.core.content.FileProvider"
+      android:authorities="${applicationId}.wytabs.files"
+      android:exported="false"
+      android:grantUriPermissions="true">
+      <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/wy_tabs_paths"/>
+    </provider>
+  </application>
 </manifest>

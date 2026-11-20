@@ -69,6 +69,8 @@ class WyTabsModule : Module() {
       true
     }.runOnQueue(Queues.MAIN)
 
+    OnActivityResult { _, payload -> TabMedia.onResult(payload.requestCode, payload.resultCode, payload.data) }
+
     // Cookies reach the disk when the app goes to the background (and when a tab closes).
     OnActivityEntersBackground { flushAll() }
 

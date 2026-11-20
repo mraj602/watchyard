@@ -185,4 +185,22 @@ class TabPolicyTest {
       assertNull(bad, TabPolicy.parseAccount(bad))
     }
   }
+
+  @Test fun grantsOnlyMediaCaptureForClaudeOrigins() {
+    val both = listOf(TabPolicy.AUDIO_CAPTURE, TabPolicy.VIDEO_CAPTURE, "android.webkit.resource.PROTECTED_MEDIA_ID")
+    assertEquals(listOf(TabPolicy.AUDIO_CAPTURE, TabPolicy.VIDEO_CAPTURE), TabPolicy.grantable("https://claude.ai", both))
+    assertEquals(listOf(TabPolicy.AUDIO_CAPTURE), TabPolicy.grantable("https://a.claude.ai", listOf(TabPolicy.AUDIO_CAPTURE)))
+    assertTrue(TabPolicy.grantable("https://claude.ai.evil.com", both).isEmpty())
+    assertTrue(TabPolicy.grantable("http://claude.ai", both).isEmpty())
+    assertTrue(TabPolicy.grantable("https://anthropic.com", both).isEmpty())
+    assertTrue(TabPolicy.grantable(null, both).isEmpty())
+  }
+
+  @Test fun offersTheCameraForImageTypes() {
+    assertTrue(TabPolicy.acceptsImages(listOf("image/png", "application/pdf")))
+    assertTrue(TabPolicy.acceptsImages(listOf(".jpg")))
+    assertTrue(TabPolicy.acceptsImages(listOf("*/*")))
+    assertFalse(TabPolicy.acceptsImages(listOf("application/pdf", ".txt")))
+    assertFalse(TabPolicy.acceptsImages(emptyList()))
+  }
 }
