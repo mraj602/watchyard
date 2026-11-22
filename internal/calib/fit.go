@@ -125,13 +125,30 @@ type State struct {
 func NewState() *State { return &State{V: 1, FUse: FallbackF} }
 
 // AddReadings folds readings (oldest first, newer than any folded before) with the seat's
-// meter, which must hold its token uses since the last used five_hour reading.
-func (s *State) AddReadings(rs []Reading, m *Meter) {
+// meter, which must hold its token uses since the last used five_hour reading. It returns the
+// 5-hour pairs it made.
+func (s *State) AddReadings(rs []Reading, m *Meter) []Pair { return s.AddReadingsMasked(rs, m, nil) }
+
+// AddReadingsMasked is AddReadings leaving out the readings inside masks (push.md 3.9): no
+// pair spans a mask, as the used readings before one are forgotten (their resets_at kept).
+func (s *State) AddReadingsMasked(rs []Reading, m *Meter, masks []Mask) []Pair {
+	var out []Pair
+	in := false
 	for _, r := range rs {
+		if masked(masks, r.At.UnixMilli()) {
+			if !in {
+				s.Tracker.Forget()
+				in = true
+			}
+			continue
+		}
+		in = false
 		if st := s.Tracker.Add(r, m); st.Five != nil {
 			s.AddPair(*st.Five)
+			out = append(out, *st.Five)
 		}
 	}
+	return out
 }
 
 // AddPair folds one pair: the miss run (which may restart the calibration), the clean sums

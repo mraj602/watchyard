@@ -24,6 +24,7 @@ var readingMin = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 type Reading struct {
 	At         time.Time
 	Source     string
+	Session    string // the status-line session, "" for claude.ai
 	Five       *float64
 	FiveReset  time.Time
 	Seven      *float64
@@ -205,6 +206,13 @@ func (t *Tracker) Add(r Reading, m *Meter) Step {
 		}
 	}
 	return st
+}
+
+// Forget drops the last used and held readings of both windows (their newest resets_at is
+// kept): the next reading starts no pair with them.
+func (t *Tracker) Forget() {
+	t.Five.Last, t.Five.Held = nil, nil
+	t.Seven.Last, t.Seven.Held = nil, nil
 }
 
 // SortReadings orders readings oldest first (ties: claude.ai readings first, then by source),
