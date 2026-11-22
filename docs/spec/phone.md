@@ -292,6 +292,7 @@ the permission prompt only once a channel exists):
 | `wy_needs_you` | Needs you | HIGH | `needs_permission`, `asked`, `failed`, summaries |
 | `wy_limits` | Limits | DEFAULT | `limit_80`, `limit_95`, `reset` |
 | `wy_machines` | Machines | LOW | `machine_silent` |
+| `wy_usage` | Usage changes | LOW | `limit_change`, `usage_reset`, `seat_change`, `weekly_drop` (push.md 3.9) |
 | `wy_test` | Test | DEFAULT | test pushes |
 | `wy_connection` | Connection (always on) | MIN | The link service's persistent notification (push.md 14.4) |
 
@@ -313,7 +314,7 @@ alert colour behind it is the brand gold `#E8B04B`; the always-on connection not
 | `connection` | hairline mark, no badge | none | the persistent note (14.4) and the "stopped" note |
 | `needs_you` | dot | gold | `needs_permission`, `asked` |
 | `failed` | exclamation | red `#E5534B` | `failed` |
-| `limit` | gauge | orange `#F0883E` | `limit_80`, `limit_95` |
+| `limit` | gauge | orange `#F0883E` | `limit_80`, `limit_95`, the usage notices |
 | `reset` | return arrow | green `#3FB68B` | `reset` |
 | `machine` | crescent | grey `#9AA4AE` | `machine_silent` |
 | `summary` | stacked ticks | gold | summaries |
@@ -1039,7 +1040,15 @@ Calm and compact: seven accounts fit on one screen.
   when you next use this account", peak, pace); **Signed in** (the Claude Code
   line per machine, the phone tab line with "as of the tab's last visit", and its action: **Open
   claude.ai**, **Sign in on this phone** or **Fix this tab**, which opens the sheet of
-  P17.7); then the plan and organisation, email, live sessions and when claude.ai usage was
-  read; and **Count down on Lock Screen** where the Live Activity qualifies (iOS, P12).
+  P17.7); then the details: the plan and organisation, email, live sessions and when claude.ai
+  usage was read, and under them **Usage and the picker**, a closed disclosure (the only place
+  these show; no screen or tab of its own) that loads `GET /v1/accounts/{seat}/relation` when
+  first opened (again when opened more than 5 minutes later) and shows what the board shows
+  (pwa.md 3.0a): the picker's newest verdict with its age and machine, the calibration factors
+  (measured, blending or fallback, with `n`), the 14 daily 5 h per 7 d bars with each day's model
+  initial and a legend, and per model the capacity index normalised to last week (bars with a
+  line at 1.0, muted with the note when the account is not Claude-Code-heavy). Its pure logic
+  is in `lib/format/relation.ts` (jest); and **Count down on Lock Screen** where the Live
+  Activity qualifies (iOS, P12).
 - **Under the list**, one muted line: "The bar shows the tighter of the 5 h and 7 d limits. Tap
   an account for everything else."

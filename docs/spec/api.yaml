@@ -427,6 +427,33 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
 
+  /v1/accounts/{seat}/relation:
+    get:
+      tags: [read]
+      operationId: seatRelation
+      summary: How one seat's 5-hour use, weekly use and API cost relate, its calibration and the picker's verdict
+      description: >-
+        For an account's Details (setup.md 8.5, Usage relation): the daily 5-hour to weekly
+        ratio with each day's most-used model, the 5-hour capacity index per model (API dollars
+        per 5-hour point, normalised to last week, with the weekly medians), whether the seat is
+        Claude-Code-heavy, its calibration factors and the newest verdict of `wy account next`
+        about it. Read from what the hub's calibration job stored; cheap.
+      x-scopes: [read]
+      parameters:
+        - name: seat
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: The seat's usage relation.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UsageRelation"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
   /v1/machines:
     get:
       tags: [read]
@@ -2508,6 +2535,105 @@ components:
         unexplained_pct_per_hour: {type: [number, "null"], description: "5-hour points per hour of use the meter cannot see, from clean pairs of the last 7 days."}
         unexplained_hours: {type: number, description: Hours of clean pairs behind it.}
 
+    UsageRelation:
+      type: object
+      description: One seat's usage relation (setup.md 8.5, Usage relation). Days are days of `tz`.
+      required: [seat, time, tz, today, days, heavy, models, calibration, verdict]
+      properties:
+        seat: {type: string}
+        time: {type: string, format: date-time}
+        tz: {type: string, description: "The hub's time zone (push.md 2)."}
+        today: {type: string, format: date}
+        days:
+          type: array
+          description: The 14 days ending today, oldest first, every day present.
+          items: {$ref: "#/components/schemas/RelationDay"}
+        heavy:
+          type: object
+          required: [this_week, last_week]
+          properties:
+            this_week: {$ref: "#/components/schemas/RelationHeavy"}
+            last_week: {$ref: "#/components/schemas/RelationHeavy"}
+        models:
+          type: array
+          description: Models with a capacity index on any of the 14 days, the most dollars first.
+          items: {$ref: "#/components/schemas/RelationModel"}
+        calibration:
+          description: The seat's calibration factors, null before the job's first run for it.
+          oneOf:
+            - {$ref: "#/components/schemas/Calibration"}
+            - {type: "null"}
+        verdict:
+          description: The newest verdict of `wy account next` about the seat, null when none has arrived.
+          oneOf:
+            - {$ref: "#/components/schemas/Verdict"}
+            - {type: "null"}
+
+    RelationDay:
+      type: object
+      required: [day, ratio, d5, d7, pairs, model, rise, rise_cc]
+      properties:
+        day: {type: string, format: date}
+        ratio: {type: [number, "null"], description: "Σ d5 / Σ d7 of the day's pairs with a weekly rise, when Σ d7 ≥ 2 points."}
+        d5: {type: number, description: 5-hour points of those pairs.}
+        d7: {type: number, description: Weekly points of those pairs.}
+        pairs: {type: integer}
+        model: {type: [string, "null"], description: "The day's most-used model (display label), by weighted units."}
+        rise: {type: number, description: 5-hour points the day's pairs rose in all.}
+        rise_cc: {type: number, description: Of which in pairs with token units (Claude Code sessions sent tokens).}
+
+    RelationHeavy:
+      type: object
+      required: [heavy, rise, cc_share]
+      properties:
+        heavy: {type: boolean, description: "Claude-Code-heavy: rise ≥ 20 points and cc_share ≥ 0.8."}
+        rise: {type: number}
+        cc_share: {type: [number, "null"]}
+
+    RelationModel:
+      type: object
+      required: [model, this_week, last_week, change, days]
+      properties:
+        model: {type: string, description: Display label (Opus 4.6).}
+        this_week: {type: [number, "null"], description: Median daily index of the last 7 days (at least 3 days), dollars per 5-hour point.}
+        last_week: {type: [number, "null"], description: The same for the 7 days before.}
+        change: {type: [number, "null"], description: this_week / last_week.}
+        days:
+          type: array
+          description: The 14 days, oldest first.
+          items:
+            type: object
+            required: [day, index, normalised, d5, usd]
+            properties:
+              day: {type: string, format: date}
+              index: {type: [number, "null"], description: "Dollars per 5-hour point (Σ d5 ≥ 5 points)."}
+              normalised: {type: [number, "null"], description: index / last_week.}
+              d5: {type: number}
+              usd: {type: number}
+
+    Verdict:
+      type: object
+      description: What one run of `wy account next` decided about the seat (record.md 4.11).
+      required: [at, machine, machine_name, strategy, eligible]
+      properties:
+        at: {type: string, format: date-time}
+        machine: {type: string}
+        machine_name: {type: [string, "null"]}
+        strategy: {type: string}
+        kind: {type: [string, "null"], enum: [aggressive, protected, null]}
+        eligible: {type: boolean}
+        reason: {type: [string, "null"]}
+        skip_level: {type: [integer, "null"]}
+        rank: {type: [integer, "null"]}
+        expiring: {type: boolean}
+        free_at: {type: [string, "null"], format: date-time}
+        next_free: {type: [string, "null"], format: date-time}
+        weekly_pct: {type: [number, "null"]}
+        five_hour_pct: {type: [number, "null"]}
+        burst: {type: [integer, "null"]}
+        burst_cap: {type: [integer, "null"]}
+        stale: {type: boolean}
+
     CalibrationFactor:
       type: object
       description: "One calibrated factor: `f` in 5-hour points per million weighted units, `ratio` in 5-hour points per weekly point, `lane_price` in 5-hour points."
@@ -3180,7 +3306,7 @@ components:
     RuleInput:
       type: object
       properties:
-        trigger: {type: string, enum: [needs_permission, asked, failed, limit_80, limit_95, reset, machine_silent]}
+        trigger: {type: string, enum: [needs_permission, asked, failed, limit_80, limit_95, reset, machine_silent, limit_change, usage_reset, seat_change, weekly_drop]}
         enabled: {type: boolean}
         delay_s: {type: integer, minimum: 0, maximum: 86400}
         bypass_quiet: {type: boolean}

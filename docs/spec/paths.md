@@ -139,6 +139,8 @@ one folder.
                                mode 0600, used for 7 days when the hub cannot be read (setup.md 8.5)
   next/hub_leases.json         wy account next: other machines' leases last read from the hub, per seat,
                                mode 0600, used for 7 days when the hub cannot be read (setup.md 8.5)
+  next/verdict.json            wy account next: digest and time of the last account_verdicts record it
+                               wrote, mode 0600, to skip repeats within 15 minutes (setup.md 8.5)
   board/last-view.json         last board view shown, mode 0600 (terminal.md T3)
   term/title-<session>.json    last tab title per session, pruned after 7 days by wy tick (terminal.md T6)
   keys/                        mode 0700: device.json, owner.sealed (owner machine), owner.pub, hub.pub,

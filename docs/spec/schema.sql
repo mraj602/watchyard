@@ -1,4 +1,4 @@
--- Watchyard hub schema, version 16.
+-- Watchyard hub schema, version 17.
 --
 -- One SQLite file (WAL mode). Applied by the hub at start inside one transaction
 -- after `PRAGMA foreign_keys = ON`. Later versions add numbered migrations
@@ -24,6 +24,8 @@
 --   v14 device_accounts (keys.md 4.3, peers.md 5.3).
 --   v15 account_lease (record.md 4.10, setup.md 8.5).
 --   v16 seat_calibration (setup.md 8.5, Calibration).
+--   v17 seat_watch, seat_verdict and the usage-notice base rules (setup.md 8.5, Usage relation;
+--       push.md 3.9; record.md 4.11).
 --
 -- Conventions
 --   * Times are INTEGER milliseconds since the Unix epoch, UTC (`*_at`, `ts`).
@@ -48,7 +50,7 @@ CREATE TABLE schema_version (
 ) STRICT;
 
 INSERT INTO schema_version (version, applied_at, wy_version)
-VALUES (16, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
+VALUES (17, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
 
 -- Hub-wide settings that are not secrets (retention days, last-message policy, …).
 CREATE TABLE setting (
@@ -442,6 +444,27 @@ CREATE TABLE seat_calibration (
   updated_at    INTEGER NOT NULL
 ) STRICT;
 
+-- One row per seat: what the calibration job watches for usage notices (push.md 3.9) and the
+-- usage relation it folds (setup.md 8.5, Usage relation), brought up to date with the
+-- calibration. GET /v1/accounts/{seat}/relation reads `relation`.
+CREATE TABLE seat_watch (
+  seat_id       TEXT    NOT NULL PRIMARY KEY REFERENCES seat(id),
+  cursor        INTEGER NOT NULL,                     -- samples up to here are watched
+  state         TEXT    NOT NULL CHECK (json_valid(state)),     -- internal/calib Watch: level, candidate, masks
+  relation      TEXT    NOT NULL CHECK (json_valid(relation)),  -- internal/calib Relation: 15 days of sums
+  updated_at    INTEGER NOT NULL
+) STRICT;
+
+-- The newest verdict of `wy account next` about each seat, from any machine (record.md 4.11).
+CREATE TABLE seat_verdict (
+  seat_id       TEXT    NOT NULL PRIMARY KEY REFERENCES seat(id),
+  machine_id    TEXT    NOT NULL REFERENCES machine(id),
+  ts            INTEGER NOT NULL,                     -- the run's time (record ts)
+  strategy      TEXT    NOT NULL,
+  verdict       TEXT    NOT NULL CHECK (json_valid(verdict)),   -- the account's item, plus next_free
+  record_id     TEXT    NOT NULL
+) STRICT;
+
 -- The full claude.ai usage response per seat per poll. Every field kept (iguana_necktie…).
 CREATE TABLE web_usage (
   seat_id       TEXT    NOT NULL REFERENCES seat(id),
@@ -510,6 +533,12 @@ INSERT INTO rule (id, trigger, base, enabled, delay_s, bypass_quiet, scope, upda
   ('rule_limit_95',         'limit_95',         1, 1,    0, 0, '{"windows":["five_hour","seven_day"]}', 0),
   ('rule_reset',            'reset',            1, 0,    0, 0, '{"windows":["five_hour","seven_day"]}', 0),
   ('rule_machine_silent',   'machine_silent',   1, 1, 3600, 0, '{}', 0);
+-- v17: the usage notices (push.md 3.9).
+INSERT INTO rule (id, trigger, base, enabled, delay_s, bypass_quiet, scope, updated_at) VALUES
+  ('rule_limit_change',     'limit_change',     1, 1,    0, 0, '{}', 0),
+  ('rule_usage_reset',      'usage_reset',      1, 1,    0, 0, '{}', 0),
+  ('rule_seat_change',      'seat_change',      1, 1,    0, 0, '{}', 0),
+  ('rule_weekly_drop',      'weekly_drop',      1, 1,    0, 0, '{}', 0);
 
 -- One row per episode (push.md 3.2 and 4).
 CREATE TABLE alert (

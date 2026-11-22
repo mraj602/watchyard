@@ -114,7 +114,8 @@ answer (a network error while the hub restarts) changes nothing. A `read`-only b
 screen; controls that need `push` or `owner` are hidden or show "Sign in as owner on the hub
 (`wy hub owner-link`)".
 
-Rules on the phone (`PhoneAlerts`): one row per base trigger with its global delay as text
+Rules on the phone (`PhoneAlerts`): one row per base trigger group (the two limit triggers share
+one row, and the four usage notices, push.md 3.9, share one: "Usage and limit changes") with its global delay as text
 ("· 30 s") and a switch. For a push-scoped device the switch edits `prefs.mute`
 (`PATCH /v1/devices/self`); for an owner session it edits the global rule (`PUT
 /v1/rules/{id}`), and the delay is editable. Overrides are listed (owner: add/remove with a
@@ -177,6 +178,33 @@ The desktop app's Hub tab shows this same page.
   extra usage and spend, open sessions, "claude.ai usage read N min ago") and, for the owner, **Edit
   label and colour**. Several rows can be open; the open rows are kept per browser in
   `localStorage` (`wy-accounts-open`, optional). **Expand all / Collapse all** sits at the top.
+- **Usage and the picker**, inside the Details section of an open row and nowhere else (no page
+  or tab of its own): a closed disclosure (`<details>`, kept open across redraws by its
+  `data-key`) that reads `GET /v1/accounts/{seat}/relation` (api.yaml `UsageRelation`, setup.md
+  8.5 Usage relation) when first opened, and again when opened more than 5 minutes later. Its
+  pure logic is in `components/relation-fmt.js` (tested in `relation-fmt.test.cjs`). Top to
+  bottom:
+  - **Picker**: the newest verdict of `wy account next` ("Eligible · next in line · aggressive",
+    "Eligible · 3rd in line", "Not picked: 7d 92% >= pace 85 (protected rule) · frees up Thu
+    14:00", the skip level in words: burst cap, stale, protected rule, limit) and, muted, "as of
+    12 min ago on gpu-box". A verdict over an hour old says "older than an hour". None: "No
+    verdict yet: `wy account next` has not reported this account."
+  - **Calibration**: one row each for the meter factor `f` (points per million units), the
+    ratio `ρ` and the lane charge `c` (with the lane price): the value in use, then *measured*
+    (weight 1), *blending, 40% measured* or *fallback* (weight 0), with `n` and the days; an
+    implausible measurement says so; the last restart and its reason when there was one. None:
+    "Not calibrated yet."
+  - **5 h per 7 d point, per day**: 14 bars of the daily ratio (gaps for days with none), each
+    with the initial of the day's most-used model under it and a legend ("O Opus 4.6 · S Sonnet
+    4.5"); each bar is a button whose value shows on tap ("12 Nov: 7.1 · Opus 4.6 · 30 pairs"),
+    as the Analytics bars (AN7).
+  - **5 h capacity, normalised to last week**: per model (most dollars first) a line "Opus 4.6 ·
+    $0.042 per 1% this week · 1.05× last week" (or "not enough days" when a week has fewer than
+    3) and 14 bars of the normalised daily index with a line at 1.0. When the seat is not
+    Claude-Code-heavy this week a muted note says so ("62% of the 5-hour rise had Claude Code
+    tokens: this index is not a fair measure and does not count toward limit-change alerts")
+    and the bars are muted.
+  - A load error shows in the disclosure with a **Try again** button.
 - Below the list one muted line: "The bar shows the tighter of the 5 h and 7 d limits. Select an
   account for everything else."
 - **Most room right now** ("Most room right now: claude-2 (5 h 0% · 7 d 3%)"): among non-hidden

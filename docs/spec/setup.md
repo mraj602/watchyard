@@ -1150,7 +1150,10 @@ reading of the same window. A reading more than 1 point under it is held: when t
 reading of that window is also more than 1 point under, the drop is confirmed (a server or
 owner reset of the usage): that next reading is used, and no pair spans the drop; otherwise
 the held reading is skipped (a session that reported an old value). A reading without a
-`resets_at` (an idle window) is not used.
+`resets_at` (an idle window) is not used. On the hub, readings inside the **mask** of a
+confirmed server or owner reset (push.md 3.9, `usage_reset`) are not used either, and no pair
+spans a mask: the last used readings are forgotten (their `resets_at` kept) before the first
+reading after it.
 
 *Pairs.* A pair is two consecutive used `five_hour` readings of the same 5-hour window
 (`resets_at` within 5 minutes): `d5` = the rise, `dt` = the time between them, `u` = the weighted
@@ -1224,7 +1227,58 @@ per seat, in `seat_calibration` (schema.sql), a state (cursors, the last used re
 pairs of the last 7 days that rose or used tokens, the clean pairs' sums, the lanes of the
 last 14 days, the miss run, the restart) and the computed factors, which `/v1/usage` returns
 as they are. Token rows that arrive more than 30 minutes after their time miss the pairs
-already folded. A seat with no row yet has `calibration: null`.
+already folded. A seat with no row yet has `calibration: null`. Before it folds a seat, the job
+watches the seat's newest readings for usage notices (push.md 3.9); while a drop to about 0
+waits for its decision there, the calibration folds only readings before it, and a confirmed
+reset masks its readings (above).
+
+#### Usage relation
+
+What the board shows in an account's Details (pwa.md 3.0a, phone.md P4) about how its 5-hour
+use, its weekly use and its API cost relate, worked out by the hub's calibration job from the
+same pairs as calibration (so a masked reset is left out of it too) and kept per seat in
+`seat_watch` (schema.sql), for 15 days of the hub's time zone (push.md 2). `GET
+/v1/accounts/{seat}/relation` (api.yaml `UsageRelation`) returns it, with the seat's
+calibration factors and the picker's latest verdict (below); nothing is recomputed per request
+but the weekly medians over those 15 stored days.
+
+- **Daily ratio.** Per day, from the pairs whose second reading is on that day and that have a
+  `d7`: `Σ d5 / Σ d7` when `Σ d7 ≥ 2` points (else none), with the number of pairs. Each day is
+  labelled with its **most-used model**: the model with the most weighted units in the seat's
+  token rows of that day (every row, not only those inside pairs), as its display label
+  (`Opus 4.6`: dated ids of one model count together; analytics.md 4).
+- **Capacity index.** The 5-hour capacity in API dollars per 5-hour point. Per day and model,
+  over the day's pairs with `u > 0` and `d5 ≥ 0` in which that model has at least 80 % of the
+  pair's API dollars (`api_usd` at list prices, analytics.md 1; a model with no price is left
+  out): `Σ dollars / Σ d5` (each pair's dollars of every priced model), when `Σ d5 ≥ 5` points
+  (else none).
+- **Weeks.** *This week* is the 7 days ending today, *last week* the 7 before. Per model, a
+  week's median is the median of its daily indexes, when it has at least 3. The index of a day
+  **normalised** to last week is the day's index / last week's median; `change` = this week's
+  median / last week's.
+- **Claude-Code-heavy.** A seat is Claude-Code-heavy in a week when its pairs of that week rose
+  at least 20 five-hour points in all and at least 80 % of that rise is in pairs with `u > 0`
+  (its Claude Code sessions sent tokens; the rest is claude.ai, the app, or another machine's
+  use without token rows). Only a heavy seat's index is a fair measure of the limit: the
+  board shows the index of a seat that is not heavy muted, and it never counts toward
+  `limit_change` (push.md 3.9).
+
+The job folds the pairs it makes and the seat's token rows after its cursor (their model and
+counters are read in the same index range as their units), and prices them with the analytics
+price table.
+
+**Verdicts to the hub.** Each run of `wy account next` records what it decided about every
+account it ranked, so the board can show why an account is or is not being picked:
+one `account_verdicts` record (record.md 4.11) per run, appended to the outbox with the same
+background flush as leases (never waited for), with per account (account and org uuids) its
+kind, whether it is eligible, the reason when it is not and its skip level, `free_at`, its rank
+among the eligible (1 = next), whether it is expiring, its effective weekly and 5-hour levels and
+its burst count and cap, plus the run's strategy and `next_free`; only accounts whose login is
+known. To keep the hub's load small the record is skipped when it says the same as the last one
+this machine wrote (levels rounded to whole points, times to the minute) less than 15 minutes
+ago; `<state>/next/verdict.json` (mode 0600) keeps that last one's digest and time. `--no-reserve`
+writes no record, nor does a machine with no hub set up. The hub keeps the newest verdict per seat (`seat_verdict`), whichever machine
+sent it, and `/relation` returns it with its time and machine.
 
 #### Leases and the ledger
 
