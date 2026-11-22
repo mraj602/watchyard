@@ -435,21 +435,23 @@ test('Electron smoke S1–S11, S14, S15', { timeout: 15 * 60_000 }, async (t) =>
     await run.shell.screenshot({ path: path.join(out, 's15-mismatch.png') });
 
     // Links: loads are recorded, never sent (the link is on the real claude.ai).
-    await main(run.app, (m) => {
+    // A tab made for a link loads it as its first page, so pages made from here on are wrapped
+    // as they are created (before their first load), not only the tabs that exist now.
+    await main(run.app, (m, e) => {
       globalThis.__loads = [];
-      const wrap = (id) => {
-        const wc = m.tabs.view(id)?.webContents;
+      const wrap = (wc) => {
         if (wc && !wc.__wrapped) {
           wc.__wrapped = true;
-          wc.loadURL = async (u) => { globalThis.__loads.push([id, u]); };
+          wc.loadURL = async (u) => { globalThis.__loads.push([wc, u]); };
         }
       };
-      for (const t of m.tabs.list()) wrap(t.id);
-      globalThis.__wrap = wrap;
+      for (const t of m.tabs.list()) wrap(m.tabs.view(t.id)?.webContents);
+      globalThis.__wrapNew = (_ev, wc) => wrap(wc);
+      e.app.on('web-contents-created', globalThis.__wrapNew);
     });
     const link = 'https://claude.ai/code/session_01AbCdEf';
     const open = (seat) => main(run.app, (m, _e, a) => m.tabs.openLink(a.link, a.seat), { link, seat });
-    const loads = () => main(run.app, () => globalThis.__loads);
+    const loads = () => main(run.app, (m) => globalThis.__loads.map(([wc, u]) => [m.tabs.list().find((t) => m.tabs.view(t.id)?.webContents === wc)?.id ?? null, u]));
     // Account 2's link goes to the tab made for it (its signed-in account is another one, but it is the tab for 2)...
     assert.equal(await open({ id: ids.seven, account: acct2, org: uuidOf('org', 7) }), true);
     assert.deepEqual(await loads(), [[ids.seventab, link]]);
@@ -462,6 +464,8 @@ test('Electron smoke S1–S11, S14, S15', { timeout: 15 * 60_000 }, async (t) =>
     const st = await shellState(run.shell);
     assert.equal(st.tabs.length, before + 1);
     assert.equal(st.view, st.tabs.at(-1).id, 'the new tab is shown');
+    await waitFor(async () => (await loads()).some(([id, u]) => id === st.tabs.at(-1).id && u === link), 10_000, 'the new tab opens the link');
+    await main(run.app, (_m, e) => e.app.off('web-contents-created', globalThis.__wrapNew));
     await waitFor(() => run.shell.evaluate((id) => document.querySelector(`[data-fk="tab-${id}"]`)?.getAttribute('aria-selected') === 'true', st.tabs.at(-1).id), 10_000, 'the new tab selected in the bar');
     await run.shell.screenshot({ path: path.join(out, 's15-new-tab-for-link.png') });
 
