@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -334,6 +335,9 @@ func writeStatusFile(dir string, st Status) {
 
 func (f *flusher) run(ctx context.Context, deadline time.Time) {
 	maxRec := f.MaxRecords
+	if f.cur.BatchMax > 0 && f.cur.BatchMax < maxRec {
+		maxRec = f.cur.BatchMax
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			f.res.Err = err
@@ -404,12 +408,25 @@ func (f *flusher) run(ctx context.Context, deadline time.Time) {
 					continue
 				}
 			}
+			if len(b.Items) > 1 && tooSlow(err) {
+				// The hub could not answer this batch in time: smaller batches until it can.
+				// Kept in the cursor, as one attempt can use up a whole run's budget.
+				maxRec = max(1, len(b.Items)/2)
+				f.cur.BatchMax = maxRec
+				f.Logf("hub too slow for %d records; next batches carry at most %d", len(b.Items), maxRec)
+			}
 			if !f.retryLater(ctx, err, deadline) {
 				return
 			}
 			continue
 		}
 
+		if f.cur.BatchMax > 0 {
+			f.cur.BatchMax += max(1, f.cur.BatchMax/4) // grow back slowly: halving was a timeout
+			if f.cur.BatchMax >= f.MaxRecords {
+				f.cur.BatchMax = 0
+			}
+		}
 		missing, err := f.apply(b, reply)
 		if err != nil {
 			f.res.Err = err
@@ -424,6 +441,9 @@ func (f *flusher) run(ctx context.Context, deadline time.Time) {
 		}
 		f.failures = 0
 		maxRec = f.MaxRecords
+		if f.cur.BatchMax > 0 {
+			maxRec = f.cur.BatchMax
+		}
 		if f.Now().After(deadline) {
 			return // budget used up; the next trigger continues
 		}
@@ -592,6 +612,20 @@ func (f *flusher) retryLater(ctx context.Context, cause error, deadline time.Tim
 		f.Logf("cursor: %v", err)
 	}
 	return false
+}
+
+// tooSlow tells a hub that could not answer a batch in time (a timeout, or a 5xx that does
+// not ask to come back much later, as a frozen hub's 503 does) from other failures.
+func tooSlow(err error) bool {
+	var se *StatusError
+	if errors.As(err, &se) {
+		return se.Status >= 500 && se.RetryAfter < time.Minute
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 func (f *flusher) saveCursor() error {

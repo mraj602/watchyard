@@ -31,7 +31,7 @@ import java.security.SecureRandom
  * One claude.ai tab (phone.md P17.1, P17.5, P17.7): a WebView bound to its seat's profile before
  * it loads anything. No JavaScript interface; the one script it runs is the account check
  * ([TabPolicy.accountStart]: claude.ai's /api/account, the uuid only); main-frame navigations go
- * through [TabPolicy.route]; downloads, file choosers and permission requests are refused.
+ * through [TabPolicy.route]; downloads and geolocation are refused; the mic and file chooser go through [TabMedia] (P17.5).
  */
 @SuppressLint("ViewConstructor", "SetJavaScriptEnabled")
 class WyTabView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
@@ -81,6 +81,7 @@ class WyTabView(context: Context, appContext: AppContext) : ExpoView(context, ap
     loaded = null
     checking = null
     lastUrl = null
+    TabMedia.cancel()
     removeView(w)
     closed?.let { WyTabsModule.closed(it) }
     w.stopLoading()
@@ -232,15 +233,15 @@ class WyTabView(context: Context, appContext: AppContext) : ExpoView(context, ap
     }
   }
 
-  private class Chrome : WebChromeClient() {
-    override fun onPermissionRequest(request: PermissionRequest) = request.deny()
+  private inner class Chrome : WebChromeClient() {
+    // P17.5: the mic (and camera) for claude.ai's own origin after the Android prompt; all else is denied.
+    override fun onPermissionRequest(request: PermissionRequest) = TabMedia.permission(appContext, request)
 
     override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback) =
       callback.invoke(origin, false, false)
 
     override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
-      callback.onReceiveValue(null)
-      return true
+      return TabMedia.chooseFile(appContext, callback, params)
     }
   }
 }

@@ -1,4 +1,4 @@
--- Version 15: peer_tag (peers.md 3.4): the tags a session gave itself, so other sessions can
+-- Version 16: peer_tag (peers.md 3.4): the tags a session gave itself, so other sessions can
 -- address it by role (`wy peers send tag:<tag>`). Cleared when the session ends or goes away.
 
 CREATE TABLE peer_tag (

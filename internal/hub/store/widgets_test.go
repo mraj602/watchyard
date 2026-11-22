@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/mraj602/watchyard/internal/hub/push/model"
 	"github.com/mraj602/watchyard/internal/hub/store"
@@ -82,5 +83,42 @@ func TestWidgetState(t *testing.T) {
 	}
 	if w := s.Windows[1]; w.Key != "seven_day" || w.Pct != 41 {
 		t.Fatalf("%+v", w)
+	}
+}
+
+// A seen alert on the session's current episode takes it out of the needs-you counts (widget
+// refresh, badge, overview) until its state changes; another episode's seen alert does not.
+func TestSeenLowersNeedsYouCounts(t *testing.T) {
+	st, ctx := openTargets(t)
+	execT(t, st, ctx, `INSERT INTO session (id) VALUES ('s1'), ('s2')`)
+	execT(t, st, ctx, `INSERT INTO session_state (session_id, state, since_at, needs_you, updated_at) VALUES
+		('s1', 'asked', 10, 1, 1), ('s2', 'asked', 20, 1, 1)`)
+	count := func() (widget, badge, overview int) {
+		t.Helper()
+		w, err := st.WidgetState(ctx, 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Write(ctx, func(tx *store.Tx) error { var e error; badge, e = tx.AlertNeedsYou(); return e }); err != nil {
+			t.Fatal(err)
+		}
+		c, err := st.Counts(ctx, time.UnixMilli(1000))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w.NeedsYou, badge, c.NeedsYou
+	}
+	if w, b, o := count(); w != 2 || b != 2 || o != 2 {
+		t.Fatalf("start: %d %d %d", w, b, o)
+	}
+	execT(t, st, ctx, `INSERT INTO alert (id, episode, trigger, session_id, status, created_at, updated_at) VALUES
+		('al_1', 's:s1:asked:10', 'asked', 's1', 'seen', 1, 1),
+		('al_2', 's:s2:asked:5', 'asked', 's2', 'seen', 1, 1)`) // al_2 is an older episode
+	if w, b, o := count(); w != 1 || b != 1 || o != 1 {
+		t.Fatalf("s1 seen: %d %d %d", w, b, o)
+	}
+	execT(t, st, ctx, `UPDATE session_state SET since_at = 30 WHERE session_id = 's1'`) // a new episode
+	if w, b, o := count(); w != 2 || b != 2 || o != 2 {
+		t.Fatalf("state changed: %d %d %d", w, b, o)
 	}
 }

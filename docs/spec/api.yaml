@@ -2402,7 +2402,7 @@ components:
           items: {$ref: "#/components/schemas/Seat"}
         needs_you:
           type: array
-          description: Sessions with needs_you, oldest first.
+          description: Sessions with needs_you, oldest first, except those whose current alert is seen (push.md 4), which are hidden until their state changes.
           items: {$ref: "#/components/schemas/Session"}
         machines:
           type: array

@@ -3,7 +3,7 @@
 Status: spec v1. The lab experiments are in section 13; delivery works across accounts on one machine, across machines over the link, and the matrix and audit have screens. Code: `internal/peers` (matrix,
 threads, loop guard, limits, wrapper, registry reader, ancestry; shared by `wy` and the hub),
 `internal/agent` (`wy agent`), `internal/hub/peers`. Keys and documents: [keys.md](keys.md).
-Transport: [link.md](link.md). Schema v9 (tags: v15). Unofficial; not affiliated with Anthropic.
+Transport: [link.md](link.md). Schema v9 (tags: v16). Unofficial; not affiliated with Anthropic.
 
 Claude Code's own `/peers` lets two sessions of **one** account on **one** machine message each
 other. Watchyard adds every other pair, across accounts and machines, with **no approvals**:
@@ -998,7 +998,7 @@ refuses first with a clear reason. `rate_limited` names when to retry.
   audit lines wait in `<state>/agent/audit-out.jsonl` and are sent as `peer_log` when the link is
   back. Remote messages are refused `hub_unreachable` (no local spool: the sender is told now).
 
-## 10. Audit and schema v9 (tags: v15)
+## 10. Audit and schema v9 (tags: v16)
 
 The hub stores **metadata only**:
 
@@ -1007,7 +1007,7 @@ The hub stores **metadata only**:
 | `matrix_doc` | Every matrix version: body, signer, fingerprint, signature, `widens`, who asked. |
 | `peer_thread` | Session pair, accounts, open/last/human times, `turns`, `paused_at`, `closed_at`. |
 | `peer_message` | Ids, thread, sender and receiver session/device/account, `kind`, `size`, `local`, `status`, `detail`, times. No text, no hash of the text. |
-| `peer_tag` | Session id, tag, the device that set it, when (3.4; schema v15). Deleted when the session ends or goes away. |
+| `peer_tag` | Session id, tag, the device that set it, when (3.4; schema v16). Deleted when the session ends or goes away. |
 | `peer_audit` | Matrix changes, pause/resume, loop-guard stops (`loop_guard`) and thread resumes (`thread_resume`, 6.3) and the machines that refused one (`thread_resume_refused`, 6.3), refusals at machines, `off`/`on`, revocations. |
 
 - Remote messages: the hub writes rows as it relays (8.3). Same-machine messages: the agent

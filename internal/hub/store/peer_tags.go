@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-// Session tags (schema v15, peers.md 3.4): short slugs a session gives itself. The relay
+// Session tags (schema v16, peers.md 3.4): short slugs a session gives itself. The relay
 // writes them on a machine's peer_tag frame; the directory carries them; PutFold clears a
 // session's tags when it ends or goes away, and the session's deletion cascades.
 
