@@ -88,6 +88,16 @@ func (s *Server) patchSeat(w http.ResponseWriter, r *http.Request, c *caller) {
 				return
 			}
 			next[k] = b
+		case "mode":
+			if v == nil {
+				next[k] = nil
+				break
+			}
+			if str, ok := v.(string); !ok || (str != "protected" && str != "aggressive") {
+				writeErr(w, 400, "bad_request", "mode must be protected, aggressive or null")
+				return
+			}
+			next[k] = v
 		default:
 			writeErr(w, 400, "bad_request", "unknown field "+k)
 			return

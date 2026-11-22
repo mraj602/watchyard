@@ -30,6 +30,7 @@ const ENDPOINTS: [string, (c: HubClient) => Promise<unknown>][] = [
   ['pausePeers', (c) => c.pausePeers(true)],
   ['peerAudit', (c) => c.peerAudit({ limit: 20 })],
   ['peerMessages', (c) => c.peerMessages()],
+  ['patchSeat', (c) => c.patchSeat('seat-1', { mode: 'protected' })],
   ['relation', (c) => c.relation('seat-1')],
 ];
 
@@ -58,6 +59,7 @@ describe('HubClient requests', () => {
     ['pausePeers', (c) => c.pausePeers(true), 'POST', '/v1/peers/pause'],
     ['peerAudit', (c) => c.peerAudit({ limit: 20 }), 'GET', '/v1/peers/audit?limit=20'],
     ['peerAudit bare', (c) => c.peerAudit(), 'GET', '/v1/peers/audit'],
+    ['patchSeat', (c) => c.patchSeat('a/b', { mode: null }), 'PATCH', '/v1/accounts/a%2Fb'],
     ['relation', (c) => c.relation('a/b'), 'GET', '/v1/accounts/a%2Fb/relation'],
     ['peerMessages', (c) => c.peerMessages({ limit: 5 }), 'GET', '/v1/peers/messages?limit=5'],
   ])('%s sends the bearer to the right path', async (_n, run, method, path) => {

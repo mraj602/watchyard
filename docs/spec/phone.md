@@ -1074,12 +1074,25 @@ Calm and compact: seven accounts fit on one screen.
   P17.7); then the details: the plan and organisation, email, live sessions and when claude.ai
   usage was read, and under them **Usage and the picker**, a closed disclosure (the only place
   these show; no screen or tab of its own) that loads `GET /v1/accounts/{seat}/relation` when
-  first opened (again when opened more than 5 minutes later) and shows what the board shows
-  (pwa.md 3.0a): the picker's newest verdict with its age and machine, the calibration factors
-  (measured, blending or fallback, with `n`), the 14 daily 5 h per 7 d bars with each day's model
-  initial and a legend, and per model the capacity index normalised to last week (bars with a
-  line at 1.0, muted with the note when the account is not Claude-Code-heavy). Its pure logic
-  is in `lib/format/relation.ts` (jest); and **Count down on Lock Screen** where the Live
+  first opened (again when opened more than 5 minutes later) and shows what the board shows,
+  in the same words and order (pwa.md 3.0a): the verdict in words (its place in line
+  explained, the kind with its definition, each rule with its value against its threshold,
+  when it frees up), the three tiles of the 5-hour limit and the week (stacked), the session
+  cost line, the charts (a title saying what a higher bar means, a y axis with values, "no
+  data" gaps, model colours with a legend of full names, a tapped day's value under the chart,
+  one "Tap a day to see its value." hint under the first chart only, an `accessibilityLabel`
+  summing each chart up; a chart with no data is replaced by one line), the capacity sentence
+  per model (a chart only once both weeks have a value) and **How this works** at the end. Its
+  pure logic
+  is in `lib/format/relation.ts` (jest), the same functions and strings as the board's
+  `relation-fmt.js`. Above the details, **How should the picker use this account?** (pwa.md
+  3.0a; setup.md 8.5 *Kind*): for the owner three options (Protected, Aggressive, Not chosen)
+  with their one-line definitions under each, saved at once with `PATCH /v1/accounts/{seat}`
+  `{"mode": …}` (a refusal puts the old choice back and says why); for anyone else the
+  current choice with its definition. "Not chosen yet; treated as aggressive." is highlighted
+  when no mode is set, and a local override on the verdict's machine is named as on the board.
+  The wording comes from one place, `lib/format/pickMode.ts` (`MODE_WORDS`), also used by the
+  verdict; and **Count down on Lock Screen** where the Live
   Activity qualifies (iOS, P12).
 - **Under the list**, one muted line: "The bar shows the tighter of the 5 h and 7 d limits. Tap
   an account for everything else."
