@@ -33,7 +33,17 @@ func (f *fx) doorbellVenv(dir string, shebang string) string {
 		shebang = "#!" + filepath.Join(dir, "bin", "python")
 	}
 	f.write(filepath.Join(dir, "bin", "doorbell"), shebang+"\nimport sys\nfrom doorbell.cli import main\nsys.exit(main())\n")
-	return real
+	return resolved(f.t, real)
+}
+
+// resolved is path with every symlink resolved (macOS's temp folder is under /private).
+func resolved(t *testing.T, path string) string {
+	t.Helper()
+	r, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
 }
 
 // procArgv adds a process with an exact argv and a working folder to the fake /proc.
@@ -55,6 +65,7 @@ func TestResolveDoorbellUVLayout(t *testing.T) {
 	venv := filepath.Join(f.home, ".local/share/uv/tools/agent-doorbell")
 	interp := f.doorbellVenv(venv, "")
 	link := filepath.Join(f.home, ".local/bin/doorbell")
+	venv = resolved(t, venv)
 	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +89,7 @@ func TestResolveDoorbellPipxTrampoline(t *testing.T) {
 	f := newFx(t)
 	venv := filepath.Join(f.home, ".local/pipx/venvs/agent-doorbell")
 	interp := f.doorbellVenv(venv, "#!/bin/sh")
+	venv = resolved(t, venv)
 	in, err := peers.ResolveDoorbellInstall(filepath.Join(venv, "bin/doorbell"))
 	if err != nil {
 		t.Fatal(err)
@@ -163,6 +175,7 @@ func newTrustWorld(t *testing.T) *trustWorld {
 	f.slot(".claude-2", "acc-work")
 	w.venv = filepath.Join(f.home, ".local/share/uv/tools/agent-doorbell")
 	w.interp = f.doorbellVenv(w.venv, "")
+	w.venv = resolved(t, w.venv)
 	w.script = filepath.Join(f.home, ".local/bin/doorbell")
 	if err := os.MkdirAll(filepath.Dir(w.script), 0o755); err != nil {
 		t.Fatal(err)

@@ -20,7 +20,10 @@ import (
 // The trusttest build (peers.md 15): approval and --off run where the guard would refuse and
 // ask nothing, and say so; the record is the normal one.
 func TestTrustTestBuildRelaxesGuard(t *testing.T) {
-	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(t.TempDir()) // macOS: /var is /private/var
+	if err != nil {
+		t.Fatal(err)
+	}
 	home, state := filepath.Join(base, "h"), filepath.Join(base, "s")
 	write := func(p, s string, m os.FileMode) {
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {

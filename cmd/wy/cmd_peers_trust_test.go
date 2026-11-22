@@ -33,7 +33,10 @@ type trustCLI struct {
 }
 
 func newTrustCLI(t *testing.T) *trustCLI {
-	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(t.TempDir()) // macOS: /var is /private/var
+	if err != nil {
+		t.Fatal(err)
+	}
 	c := &trustCLI{t: t, home: filepath.Join(base, "h"), state: filepath.Join(base, "s"), goos: "linux"}
 	for slot, acc := range map[string]string{".claude-2": "acc-work", ".claude-5": "acc-personal"} {
 		peersWriteFileT(t, filepath.Join(c.home, slot, ".claude.json"), fmt.Sprintf(`{"oauthAccount":{"accountUuid":%q,"organizationUuid":"o"}}`, acc), 0o600)

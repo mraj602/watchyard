@@ -830,6 +830,8 @@ async function peersChecks(page, sizeName, who, owner) {
     if (!(await page.$('[data-key=revoke-m_laptop]'))) fail(t('no Revoke button for the owner'));
     else {
       await shot(page, `${sizeName}-${who}-peers-trusted`);
+      // Revoke asks with window.confirm, a native dialog that would block the page.
+      await page.evaluate(() => { window.confirm = () => true; });
       await pressSel('[data-key=revoke-m_laptop]');
       try { await page.waitForFunction(() => /Revoked/.test((document.querySelector('[data-key=trusted-m_laptop]') || {}).textContent || '') && !document.querySelector('[data-key=revoke-m_laptop]'), { timeout: 4000 }); } catch (e) { fail(t('revoking Doorbell did not mark it revoked')); }
     }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ type trustAgent struct {
 	t                       *testing.T
 	base, home, state, proc string
 	venv, interp            string
-	pid                     int
+	pid                     atomic.Int64 // the caller the peer credentials report
 	r                       *running
 }
 
@@ -56,6 +57,9 @@ func newTrustAgent(t *testing.T) *trustAgent {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(base) })
+	if base, err = filepath.EvalSymlinks(base); err != nil { // macOS: /var is /private/var
+		t.Fatal(err)
+	}
 	a := &trustAgent{t: t, base: base, home: filepath.Join(base, "h"), state: filepath.Join(base, "s"), proc: filepath.Join(base, "p")}
 	slot := filepath.Join(a.home, ".claude-2")
 	a.write(filepath.Join(slot, "settings.json"), "{}", 0o600)
@@ -81,7 +85,7 @@ func newTrustAgent(t *testing.T) *trustAgent {
 			return peers.Env{Home: a.home, State: a.state, Machine: identity.Machine{ID: "m_TEST", Name: "laptop"},
 				Proc: peers.LinuxProc{Root: a.proc}, FS: identity.OSFS{}, SlotLabels: map[string]string{"~/.claude-2": "work"}}, true, nil
 		}
-		c.PeerCred = func(*net.UnixConn) (int, int, error) { return a.pid, os.Getuid(), nil }
+		c.PeerCred = func(*net.UnixConn) (int, int, error) { return int(a.pid.Load()), os.Getuid(), nil }
 	})
 	t.Cleanup(func() { a.r.stop(t) })
 	return a
@@ -112,7 +116,7 @@ func TestTrustRefusedInsideSession(t *testing.T) {
 	a.claude(500, 1)
 	a.addProc(501, 500, "bash", "/usr/bin/bash", []string{"bash"}, 4300)
 	a.addProc(502, 501, "wy", "/usr/local/bin/wy", []string{"wy", "peers", "trust", "doorbell"}, 4301)
-	a.pid = 502
+	a.pid.Store(502)
 	rep := a.call(Request{Op: OpTrust, TrustOp: TrustSet, Program: a.venv, Account: "acc-work"})
 	if rep.Error == nil || rep.Error.Code != peers.CodeNotASession || !strings.Contains(rep.Error.Detail, "pid 500") {
 		t.Fatalf("set: %+v", rep)
@@ -133,7 +137,7 @@ func TestTrustFromTerminal(t *testing.T) {
 	a := newTrustAgent(t)
 	a.addProc(900, 1, "bash", "/usr/bin/bash", []string{"bash"}, 9000)
 	a.addProc(901, 900, "wy", "/usr/local/bin/wy", []string{"wy"}, 9001)
-	a.pid = 901
+	a.pid.Store(901)
 	rep := a.call(Request{Op: OpTrust, TrustOp: TrustSet, Program: filepath.Join(a.venv, "bin/doorbell"), Account: "acc-work"})
 	if rep.Error != nil || rep.Trust == nil || rep.Trust.Venv != a.venv || rep.Trust.Interpreter != a.interp || rep.Warning != "" {
 		t.Fatalf("set: %+v", rep)
@@ -155,7 +159,7 @@ func TestTrustFromTerminal(t *testing.T) {
 func TestServiceSendIdentity(t *testing.T) {
 	a := newTrustAgent(t)
 	a.addProc(900, 1, "bash", "/usr/bin/bash", []string{"bash"}, 9000)
-	a.pid = 900
+	a.pid.Store(900)
 	if rep := a.call(Request{Op: OpTrust, TrustOp: TrustSet, Program: a.venv, Account: "acc-work"}); rep.Error != nil {
 		t.Fatalf("set: %+v", rep)
 	}
@@ -166,7 +170,7 @@ func TestServiceSendIdentity(t *testing.T) {
 		a.addProc(700, parent, "doorbell", a.interp, []string{filepath.Join(a.venv, "bin/python"), filepath.Join(a.venv, "bin/doorbell")}, 7000)
 		a.addProc(701, 700, "sh", "/usr/bin/sh", []string{"/bin/sh", "-c", "wy peers send tag:ci --stdin"}, 7001)
 		a.addProc(702, 701, "wy", "/usr/local/bin/wy", []string{"wy", "peers", "send", "tag:ci", "--stdin"}, 7002)
-		a.pid = 702
+		a.pid.Store(702)
 	}
 	tree(1)
 	rep := a.call(Request{Op: OpServiceSend, To: "tag:ci", Text: "x"})
@@ -189,7 +193,7 @@ func TestServiceSendIdentity(t *testing.T) {
 		t.Errorf("under claude: %+v", rep)
 	}
 	a.addProc(800, 1, "wy", "/usr/local/bin/wy", []string{"wy"}, 8000)
-	a.pid = 800
+	a.pid.Store(800)
 	rep = a.call(Request{Op: OpServiceSend, To: "tag:ci", Text: "x", Stdin: true})
 	if rep.Error == nil || rep.Error.Code != peers.CodeNotASession {
 		t.Errorf("plain terminal: %+v", rep)
