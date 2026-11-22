@@ -377,6 +377,7 @@ re-pairing.
 | `peer_result` | `msg`, `status`, `detail?`, `human_at?` | The receiving agent's verdict on a `peer_msg` it got (peers.md 8.4). |
 | `peer_log` | `msg`, `thread`, `from_session`, `to_session`, `kind`, `status`, `detail?`, `size`, `at`; or `event`, `thread`, `detail`, `at` | Metadata of a same-machine delivery, for the audit (peers.md 10). With `event` it is instead this machine's event about a thread: `thread_resume_refused` (`detail` `hub_may_widen`): it refused a `peer_thread_resume` and keeps its stop (peers.md 6.3). The hub records it only when a session of the thread runs on this device's machine. |
 | `peers_list` | `id` | Ask for the session directory (peers.md 3); the hub answers `peers` with the same `id`. |
+| `peer_tag` | `id`, `session`, `op` (`add` or `rm`), `tag` | Add or remove one tag of a session on this device's machine (peers.md 3.4). The hub answers `peers` with the same `id`: the directory after the change, with `tag` set. |
 
 Unknown `t` → the hub answers `notice` `{"code":"unknown_type"}` and carries on (forward
 compatibility). A device→hub frame that names a session not on that device's machine is
@@ -391,7 +392,7 @@ The fields below are the JSON object inside `body` (4.1), each with `"v":1`.
 | `challenge` | 3.1 (the one frame not in the 4.1 shape: it comes before the device is known) |
 | `welcome` | 3.3 |
 | `action_result` | `id`, `status` (HTTP-like: 200, 400, 401, 404, 410, 429), `applied`, `alert` (AlertBrief) |
-| `peers` | `id`, `sessions` (the other machines' sessions, peers.md 3.2 without `can`, with `machine_id`; each with its canonical `handle` and, when it has any, `aliases`), `mine` (the asking machine's own sessions in the same form, so its agent shows and signs the canonical handles; omitted when none), `certs` (device id → `device_cert` document of each machine's agent that a listed session runs on, and of the asking device itself, so its agent can tell that receivers will refuse it while its certificate has no owner signature; peers.md 3.2 `blocked`, 8.2) |
+| `peers` | `id`, `sessions` (the other machines' sessions, peers.md 3.2 without `can`, with `machine_id`; each with its canonical `handle` and, when it has any, `aliases`), `mine` (the asking machine's own sessions in the same form, so its agent shows and signs the canonical handles; omitted when none), `certs` (device id → `device_cert` document of each machine's agent that a listed session runs on, and of the asking device itself, so its agent can tell that receivers will refuse it while its certificate has no owner signature; peers.md 3.2 `blocked`, 8.2). Each session may carry `tags` (peers.md 3.4, omitted when none). The answer to a `peer_tag` also carries `tag`: `{"session","tags","changed","error?"}`, the session's tags after the change, whether it changed anything, and a refusal word (`bad_tag`, `too_many_tags`, `forbidden`: not a session of the asking machine, `unknown_session`: not a live session the hub knows) |
 | `peer_ack` | `msg`, `status` (`queued` or `refused`), `detail?` (the reason word, or `offline`), `exp?` (peers.md 8.2, 8.3) |
 | `notice` | `code`, `message`: `unknown_type`, `forbidden`, `rate_limited`, `queue_full`, `draining` (hub shutting down; reconnect in 5–15 s) |
 

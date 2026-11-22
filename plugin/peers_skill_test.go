@@ -22,7 +22,7 @@ func TestPeersSkill(t *testing.T) {
 		"name: peers\n",
 		"description: Message Claude Code sessions in other accounts or on other machines through Watchyard (`wy peers list`, `wy peers send`).",
 		"Also use it on your own when your work would go better by coordinating with other agents or sessions",
-		"allowed-tools: Bash(wy peers list:*), Bash(wy peers send:*), Bash(wy peers status:*), Bash(wy peers matrix:*)",
+		"allowed-tools: Bash(wy peers list:*), Bash(wy peers send:*), Bash(wy peers status:*), Bash(wy peers matrix:*), Bash(wy peers tag:*), Bash(wy peers tags:*)",
 	} {
 		if !strings.Contains(head+"\n", want) {
 			t.Errorf("front matter lacks %q", want)
@@ -43,6 +43,8 @@ func TestPeersSkill(t *testing.T) {
 		"usage limits",
 		"--stdin <<'EOF'",
 		"When you message a peer on your own",
+		"wy peers tag add <tag>",
+		"wy peers send tag:<tag> --stdin",
 	} {
 		if !strings.Contains(flat, rule) {
 			t.Errorf("skill lacks the rule %q", rule)

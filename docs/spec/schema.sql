@@ -1,4 +1,4 @@
--- Watchyard hub schema, version 14.
+-- Watchyard hub schema, version 16.
 --
 -- One SQLite file (WAL mode). Applied by the hub at start inside one transaction
 -- after `PRAGMA foreign_keys = ON`. Later versions add numbered migrations
@@ -22,6 +22,9 @@
 --   v12 indexes: alert_seat, alert_machine, delivery_target.
 --   v13 session_state.peers (states.md 3.1, push.md 3.5).
 --   v14 device_accounts (keys.md 4.3, peers.md 5.3).
+--   v15 indexes: record_machine_kind_slot_ts, token_row_session_ts, limit_sample_reset,
+--       limit_sample_idle (the hub's hot reads).
+--   v16 peer_tag (peers.md 3.4).
 --
 -- Conventions
 --   * Times are INTEGER milliseconds since the Unix epoch, UTC (`*_at`, `ts`).
@@ -46,7 +49,7 @@ CREATE TABLE schema_version (
 ) STRICT;
 
 INSERT INTO schema_version (version, applied_at, wy_version)
-VALUES (15, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
+VALUES (16, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
 
 -- Hub-wide settings that are not secrets (retention days, last-message policy, …).
 CREATE TABLE setting (
@@ -719,3 +722,14 @@ CREATE TABLE peer_audit (
   detail        TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(detail))
 ) STRICT;
 CREATE INDEX peer_audit_at ON peer_audit(at);
+
+-- The tags a session gave itself (peers.md 3.4), held per session so every machine's directory
+-- shows them. Cleared when the session ends or goes away (its state becomes ended or gone).
+CREATE TABLE peer_tag (
+  session_id    TEXT    NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+  tag           TEXT    NOT NULL CHECK (length(tag) BETWEEN 1 AND 40 AND tag NOT GLOB '*[^a-z0-9-]*'),
+  device_id     TEXT    NOT NULL,                  -- the agent device that set it
+  created_at    INTEGER NOT NULL,
+  PRIMARY KEY (session_id, tag)
+) STRICT;
+CREATE INDEX peer_tag_tag ON peer_tag(tag);
