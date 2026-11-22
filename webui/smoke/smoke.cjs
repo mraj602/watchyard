@@ -1174,19 +1174,40 @@ async function pwaFlow() {
   await sleep(500);
   const build1 = await page.evaluate(() => new Promise((res) => { navigator.serviceWorker.addEventListener('message', (e) => e.data.type === 'build' && res(e.data.build)); navigator.serviceWorker.controller.postMessage({ type: 'build' }); }));
   if (build1 !== 'ffffffffffff' || build1 === build0) fail(`reloaded page runs build ${build1}, expected ffffffffffff (was ${build0})`);
-  // A page that has only just started applies the next build without a tap.
-  await page.evaluate(() => sessionStorage.removeItem('wy.autoUpdateAt'));
-  // ...but not with a dialog open: the banner shows, the page is not reloaded, and the build is
-  // taken once the dialog is closed (the loop below).
-  await page.evaluate(() => { window.__alive = true; const d = document.createElement('dialog'); d.id = 'smoke-modal'; document.body.append(d); d.setAttribute('open', ''); });
+  // A page that has only just started applies the next build without a tap, but not with a
+  // dialog open. The policy's "just started" is FRESH_PAGE_MS (15 s) of page age, and the
+  // install of the new build can take most of that on a slow runner, so the build is
+  // installed first (on this page, held back by a recent auto-update) and the checks then run
+  // on a page loaded afterwards, whose age the waits below no longer depend on.
   await fetch(BASE + '/_dev/build', { method: 'POST', body: JSON.stringify({ hash: 'eeeeeeeeeeee' }), headers: { 'Content-Type': 'application/json' } });
+  await page.evaluate(() => sessionStorage.setItem('wy.autoUpdateAt', String(Date.now())));
   await page.evaluate(async () => { await (await navigator.serviceWorker.getRegistration()).update(); }).catch(() => {});
+  try {
+    await page.waitForFunction(async () => { const r = await navigator.serviceWorker.getRegistration(); return !!(r && r.waiting); }, { timeout: 20000, polling: 250 });
+  } catch (e) { fail('the next build did not install'); }
+  // The reloaded page opens with a dialog (added before the app's scripts run): the banner
+  // shows, the page is not reloaded, and the build is taken once the dialog is closed.
+  // (wy.autoUpdateAt is cleared there too: cleared here, this page could take the build first.)
+  await page.evaluate(() => sessionStorage.setItem('smoke.modal', '1'));
+  await page.evaluateOnNewDocument(() => {
+    if (sessionStorage.getItem('smoke.modal') !== '1') return;
+    sessionStorage.removeItem('smoke.modal');
+    sessionStorage.removeItem('wy.autoUpdateAt');
+    // The document is still empty here; the app's module scripts run once it is parsed.
+    const add = () => {
+      if (!document.documentElement || document.getElementById('smoke-modal')) return !!document.documentElement;
+      const d = document.createElement('dialog'); d.id = 'smoke-modal'; d.setAttribute('open', '');
+      document.documentElement.append(d);
+      return true;
+    };
+    if (!add()) new MutationObserver((_, o) => { if (add()) o.disconnect(); }).observe(document, { childList: true });
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.evaluate(() => { window.__alive = true; });
   try { await page.waitForSelector('.banner-update', { timeout: 8000 }); } catch (e) { fail('"Update ready" did not show while a dialog was open'); }
   await sleep(3500); // two re-checks of the guard: asserting that nothing happens takes a wait
   if (!(await page.evaluate(() => window.__alive === true && !!document.getElementById('smoke-modal')).catch(() => false))) fail('the page reloaded by itself while a dialog was open');
   await page.evaluate(() => document.getElementById('smoke-modal') && document.getElementById('smoke-modal').remove());
-  await fetch(BASE + '/_dev/build', { method: 'POST', body: JSON.stringify({ hash: 'eeeeeeeeeeee' }), headers: { 'Content-Type': 'application/json' } });
-  await page.evaluate(async () => { await (await navigator.serviceWorker.getRegistration()).update(); }).catch(() => {});
   let build2 = '';
   for (let i = 0; i < 40 && build2 !== 'eeeeeeeeeeee'; i++) {
     await sleep(250);
