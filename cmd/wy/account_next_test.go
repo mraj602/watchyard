@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +28,9 @@ var nextNow = time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
 // nextFixture is a temporary home with three folders (~/.claude logged in as a1,
 // ~/.claude-2 as a2, ~/.claude-3 logged out), wy folders under it and a fake hub.
 type nextFixture struct {
+	// mu guards the fields the fake hub and the fake `claude auth status` touch: wy
+	// refreshes the folders' logins and reads the hub's windows concurrently.
+	mu      sync.Mutex
 	t       *testing.T
 	home    string
 	dirs    paths.Dirs
@@ -74,6 +78,8 @@ func newNextFixture(t *testing.T) *nextFixture {
 	}
 	f := &nextFixture{t: t, home: home, dirs: d, machine: m.ID, loggedOut: map[string]bool{"~/.claude-3": true}}
 	f.hub = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
 		f.auth = append(f.auth, r.Header.Get("Authorization"))
 		switch {
 		case r.URL.Path == "/v1/usage" && f.usage:
@@ -119,6 +125,8 @@ func (f *nextFixture) authStatus(_ context.Context, env []string, name string, a
 	if name != "claude" || strings.Join(args, " ") != "auth status --json" {
 		f.t.Errorf("ran %s %v", name, args)
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.authRuns++
 	folder := "~/.claude"
 	for _, kv := range env {
