@@ -42,10 +42,26 @@ func seatHook(t *testing.T, machine, sid, event string, at time.Time) []byte {
 // The hub's calibration job folds a seat's samples, token rows and leases, and GET /v1/usage
 // returns the factors it stored (setup.md 8.5, Calibration). A second run with no new data
 // changes nothing; new data is folded from the cursor on.
+//
+// The hub runs on a fixed clock after every record of the test: ingest clamps a ts more than
+// five minutes ahead of the hub clock (record.md 1.6), so on the wall clock the "new" rows
+// below would be clamped unless the test happened to run late in the hour. Several bases
+// (hours of the day, minutes past the hour) show the result does not depend on the clock.
 func TestUsageCalibration(t *testing.T) {
-	h := startHub(t, "")
+	day := time.Now().UTC().Truncate(24 * time.Hour).Add(-48 * time.Hour)
+	for _, off := range []time.Duration{
+		0, 2*time.Hour + 7*time.Minute, 5*time.Hour + 59*time.Minute, 9 * time.Hour,
+		10*time.Hour + 31*time.Minute, 14*time.Hour + 3*time.Minute, 19*time.Hour + 45*time.Minute, 23 * time.Hour,
+	} {
+		base := day.Add(off)
+		t.Run(base.Format("15h04"), func(t *testing.T) { testUsageCalibrationAt(t, base) })
+	}
+}
+
+func testUsageCalibrationAt(t *testing.T, now time.Time) {
+	// Every record below is at or before now+61 min; the runs go to now+3 h.
+	h := startHubClock(t, func() time.Time { return now.Add(3 * time.Hour) })
 	machine := h.token("machine")
-	now := time.Now().UTC().Truncate(time.Hour)
 	start := now.Add(-4 * 24 * time.Hour)
 	const sid = "11111111-2222-4333-8444-555555555555"
 	const lane = "aaaaaaaa-2222-4333-8444-555555555555"
