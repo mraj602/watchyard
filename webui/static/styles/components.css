@@ -276,6 +276,17 @@ select, input[type="password"], input[type="text"] { border: 1px solid var(--btn
 .ana-legend .ana-cell { width: 12px; height: 12px; min-height: 0; aspect-ratio: auto; }
 .ana-bar.is-history { background: var(--track); }
 .ana-axis { display: flex; justify-content: space-between; margin-top: 4px; }
+/* An account's usage and the picker (pwa.md 3.0a): small bars inside Details. */
+.rel-body { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; }
+.rel-body h4 { margin: 10px 0 2px; font-size: .9rem; }
+.rel-bars { position: relative; height: 72px; padding-top: 0; }
+.rel-bars .ana-bar.is-empty { background: var(--track); min-height: 2px; }
+.rel-line { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--muted, #888); pointer-events: none; }
+.rel-initials { display: flex; gap: 2px; padding: 0 10px; }
+.rel-initials span { flex: 1 1 0; text-align: center; min-width: 1px; overflow: hidden; }
+.rel-chart.is-muted .ana-bar { opacity: .45; }
+.rel-state { margin-left: 8px; }
+.rel-model { margin-top: 6px; }
 .ana-list { list-style: none; padding: 0; margin: 0; }
 .ana-row { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-top: 1px solid var(--hair-soft); }
 .ana-row:first-child { border-top: 0; }

@@ -11,7 +11,8 @@ import { liveCounts } from '../components/state.js';
 import { agoLabel, pct, clock } from '../format.js';
 import { isOwner, ensureSessions, reorderSeats } from '../store.js';
 import { moveBy, dropTarget, dropOrder, moveSentence } from '../components/order.js';
-import { patchJSON } from '../api.js';
+import { patchJSON, getRelation } from '../api.js';
+import { verdictLine, verdictAge, calibRows, ratioBars, capacityLine, capacityBars, heavyNote, shortDay } from '../components/relation-fmt.js';
 import { toast } from '../components/ui.js';
 
 // Owner edit of a seat's label and colour (desktop.md C10): PATCH /v1/accounts/{seat}. The
@@ -280,5 +281,99 @@ function accountDetail(seat, colour, now, live, name, detailId) {
       h('dl', { class: 'kv' }, rows.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),
       extra ? h('details', { class: 'extra', open: true }, h('summary', {}, 'Extra usage'), extra) : null,
       spend ? h('details', { class: 'extra' }, h('summary', {}, 'Spend'), spend) : null,
-      seat.web_raw_at ? h('p', { class: 'muted small' }, `claude.ai usage read ${agoLabel(seat.web_raw_at, now)}`) : null));
+      seat.web_raw_at ? h('p', { class: 'muted small' }, `claude.ai usage read ${agoLabel(seat.web_raw_at, now)}`) : null,
+      relationBox(seat, now)));
+}
+
+// ---- usage and the picker (pwa.md 3.0a) -----------------------------------------------------
+// A closed disclosure inside Details: it reads GET /v1/accounts/{seat}/relation when first
+// opened, and again when opened more than 5 minutes later. A redraw re-opens it (app.js), which
+// fires `toggle` again: the age check keeps that from reading the hub every time.
+const REL_FRESH = 5 * 60 * 1000;
+const rel = new Map(); // seat id -> { at, data, error, busy, bar: { ratio, [model]: index } }
+
+function relState(id) {
+  if (!rel.has(id)) rel.set(id, { at: 0, data: null, error: '', busy: false, bar: {} });
+  return rel.get(id);
+}
+
+async function loadRelation(id) {
+  const st = relState(id);
+  if (st.busy) return;
+  st.busy = true; st.error = ''; again();
+  try {
+    st.data = await getRelation(id);
+    st.at = Date.now();
+  } catch (ex) {
+    st.error = ex.status === 404 ? 'This account is not on the hub any more.' : (ex.message || 'Could not load.');
+    if (ex.name === 'AuthError') toast(ex.message);
+  }
+  st.busy = false;
+  again();
+}
+
+function onRelToggle(e, id) {
+  if (!e.target.open) return;
+  const st = relState(id);
+  if (!st.busy && (!st.data || Date.now() - st.at > REL_FRESH) && !st.error) loadRelation(id);
+}
+
+// bars draws tap-to-show bars (as the Analytics bars, AN7): items of { height, label, initial? }.
+function relBars(st, key, items, opts = {}) {
+  const picked = st.bar[key];
+  const chosen = picked != null && items[picked] ? items[picked] : null;
+  return h('div', { class: `rel-chart${opts.muted ? ' is-muted' : ''}` },
+    h('div', { class: 'ana-bars rel-bars', role: 'group', 'aria-label': opts.label, 'data-key': `rel-bars-${key}` },
+      opts.line != null ? h('span', { class: 'rel-line', style: { bottom: `${opts.line}%` }, 'aria-hidden': 'true' }) : null,
+      items.map((x, i) => h('button', {
+        type: 'button', class: `ana-bar${picked === i ? ' is-picked' : ''}${x.height ? '' : ' is-empty'}`,
+        style: { height: `${x.height}%` }, title: x.label, 'aria-label': x.label, 'aria-pressed': String(picked === i),
+        onclick: () => { st.bar[key] = picked === i ? null : i; again(); } }))),
+    opts.initials ? h('div', { class: 'rel-initials muted small', 'aria-hidden': 'true' }, items.map((x) => h('span', {}, x.initial || ''))) : null,
+    h('div', { class: 'ana-axis muted small' }, h('span', {}, shortDay(items.length ? items[0].day : '')),
+      h('span', {}, shortDay(items.length ? items[items.length - 1].day : ''))),
+    h('p', { class: 'small ana-picked', role: 'status' }, chosen ? chosen.label : h('span', { class: 'muted' }, 'Tap a bar to see its day.')));
+}
+
+function relationBody(seat, st, now) {
+  const d = st.data;
+  const nowMs = now instanceof Date ? now.getTime() : Date.now();
+  const v = d.verdict;
+  const cal = calibRows(d.calibration, nowMs);
+  const ratio = ratioBars(d.days);
+  const note = heavyNote(d.heavy);
+  return [
+    h('h4', {}, 'Picker'),
+    h('p', { 'data-key': `rel-verdict-${seat.id}` }, verdictLine(v, nowMs)),
+    v ? h('p', { class: 'muted small' }, verdictAge(v, nowMs)) : null,
+    h('h4', {}, 'Calibration'),
+    cal ? h('dl', { class: 'kv' }, cal.rows.flatMap((r) => [h('dt', {}, r.name),
+      h('dd', {}, r.value, h('span', { class: 'muted small rel-state' }, r.state))])) : h('p', { class: 'muted small' }, 'Not calibrated yet.'),
+    cal && cal.restart ? h('p', { class: 'muted small' }, cal.restart) : null,
+    h('h4', {}, '5 h per 7 d point, per day'),
+    relBars(st, 'ratio', ratio.bars, { initials: true, label: `5-hour points per 7-day point, per day, for ${seatName(seat)}` }),
+    ratio.legend ? h('p', { class: 'muted small' }, ratio.legend) : null,
+    h('h4', {}, '5 h capacity, normalised to last week'),
+    note ? h('p', { class: 'muted small' }, note) : null,
+    d.models.length ? d.models.map((m) => {
+      const b = capacityBars(m);
+      return h('div', { class: 'rel-model' }, h('p', { class: 'small' }, capacityLine(m)),
+        relBars(st, `cap-${m.model}`, b.bars, { line: b.line, muted: !!note, label: `${m.model}: 5-hour capacity per day, normalised to last week` }));
+    }) : h('p', { class: 'muted small' }, 'No capacity index yet: it needs Claude Code use with token rows.'),
+  ];
+}
+
+function relationBox(seat, now) {
+  const st = relState(seat.id);
+  let body;
+  if (st.error) {
+    body = [h('p', { class: 'form-error', role: 'alert' }, st.error),
+      h('button', { type: 'button', class: 'btn btn-sm', 'data-key': `rel-retry-${seat.id}`, onclick: () => loadRelation(seat.id) }, 'Try again')];
+  } else if (!st.data) {
+    body = h('p', { class: 'muted small' }, 'Loading…');
+  } else {
+    body = relationBody(seat, st, now);
+  }
+  return h('details', { class: 'extra rel', 'data-key': `rel-${seat.id}`, ontoggle: (e) => onRelToggle(e, seat.id) },
+    h('summary', {}, 'Usage and the picker'), h('div', { class: 'rel-body' }, body));
 }

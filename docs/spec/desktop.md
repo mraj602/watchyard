@@ -533,7 +533,9 @@ account in a hidden or background start until the window is shown.
   question cut to 140 characters (`shared/notify-text.js`, golden tests). Clicking it shows
   the window and runs `hub:route #/sessions/<id>?alert=<al>`, or `#/accounts?seat=<id>` for
   limit triggers and the usage notices (`#/accounts` for `limit_change`, which has no seat;
-  push.md 3.9). A usage notice's body is the hub's own push title ("7-day dropped 64% → 31%")
+  push.md 3.9). A usage notice's title is the account (the seat label or email), or "Usage and
+  limit changes" when it has none (`limit_change`); its body is the hub's own push title
+  ("7-day dropped 64% → 31%", without the leading account name the title already says)
   when the alert carries one, else its trigger in words ("usage reset", "changed account",
   "weekly use dropped: something changed, check", "limits changed"). An alert id is notified once per run. No notification is shown when
   `settings.notifications` is false, or when the window is focused and showing the Hub view

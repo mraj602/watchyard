@@ -227,7 +227,7 @@ Client side (runs on every machine):
 | `internal/doctor` | `wy doctor` (reach, held records, frozen hub, direct push, forward port; on the hub also push and pull-target checks, reading `hub.db` read-only with the SQLite driver, no hub package) | paths, config, identity, outbox, client, directpush, setup/ledger, setup/backup, share |
 | `internal/timer` | OS timer running `wy tick --quiet` every minute | brand |
 | `internal/picker` | `wy account next`: seat matching, the `lanes` ranker (readings, token meter, leases, burst caps, batches) and the projection strategies, hub reads (`/v1/usage` with the machine token, or the board token), one outbox pass for limit samples, token rows and hook events; each account's calibration (the hub's, the kept copy in `next/calibration.json`, or a local fit) and its meter margins; each leased session counted once from its local rows or the hub's burn, and other machines' leases kept in `next/hub_leases.json` | config, record, leases, calib, atomicfile |
-| `internal/calib` | Online calibration of `wy account next` (setup.md 8.5, Calibration): used readings and pairs, the meter factor, ratio and lane price with their blending and restarts, the meter-margin corrector; pure, shared by the hub and the picker | — (leaf) |
+| `internal/calib` | Online calibration of `wy account next` (setup.md 8.5, Calibration): used readings and pairs, the meter factor, ratio and lane price with their blending and restarts, the meter-margin corrector; the usage watch (weekly drops, server resets and their masks) and the usage relation (daily 5 h per 7 d ratio, capacity index per model, limit changes); pure, shared by the hub and the picker | — (leaf) |
 | `internal/leases` | The lease ledger of `wy account next`: append-only day files with an fsync per line, the ledger lock, the hook's `launched`/`ended` marks | — (leaf) |
 
 Setup side (`wy setup`, `wy account`, `wy uninstall`, `wy tick`):
@@ -273,7 +273,7 @@ Hub side (same binary, `wy hub …`):
 | `internal/hub/auth` | Tokens, scopes, `wy hub token` | hub/store |
 | `internal/hub/state` | Session state fold, question detector, gone | record (+ hub/store for persistence) |
 | `internal/hub/usage` | Windows, resets, pace | record, hub/store |
-| `internal/hub/calibrate` | The calibration job: every 15 minutes folds each seat's new samples, token rows and leases (by cursor and index) into `seat_calibration` | calib, hub/store |
+| `internal/hub/calibrate` | The calibration job: every 15 minutes watches each seat's new samples (resets, drops) into `seat_watch`, folds samples, token rows and leases (by cursor and index, outside the reset masks) into `seat_calibration` and the usage relation, and hands the usage notices (push.md 3.9) to the engine | calib, scan, hub/store, hub/push/{model,rules} |
 | `internal/hub/ingest` | `POST /v1/ingest` | record, hub/store, hub/auth, hub/state, hub/usage |
 | `internal/hub/events` | Stream broker (SSE fan-out) | — |
 | `internal/hub/api` | Read API, SSE, mounts ingest and webui; pairing, devices, push targets, rules and alerts handlers | hub/store, hub/auth, hub/ingest, hub/events, hub/state, hub/usage, hub/pair, hub/push/{model,rules,webpush,ntfy,link,refresh}, webui |

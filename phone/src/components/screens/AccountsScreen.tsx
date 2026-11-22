@@ -4,14 +4,19 @@
 // Tapping a row opens it in place: every window with its reset, pace and peak, where the login
 // is signed in (Claude Code on each machine, from the hub, and this phone's claude.ai tab, P17.7)
 // with the matching action (Open claude.ai, Sign in on this phone, Fix this tab: its
-// sheet), the details, and "Count down on Lock Screen" where the Live Activity qualifies (iOS).
+// sheet), the details with "Usage and the picker" (a closed disclosure that loads the seat's usage
+// relation: the picker's verdict, calibration and per-day bars), and "Count down on Lock Screen" where the Live Activity qualifies (iOS).
 // "+ Add account" is in the header (a tab for a hub account this phone has none for).
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { LayoutAnimation, Modal, Pressable, Text, View } from 'react-native';
-import type { Seat } from '../../contract/api';
+import type { Seat, UsageRelation } from '../../contract/api';
 import {
   agoLabel, mostRoom, paceInfo, pct, planLabel, plural, resetWords, seatIndex, seatName, shownUse, sortWindows, tighterWindow, windowLabel, windowPhase, worstPace,
 } from '../../lib/format';
+import {
+  calibrationRestart, calibrationRows, capacityBars, capacityLine, heavyNote, legend, NO_VERDICT, NOT_CALIBRATED, ratioBars, relationStale, verdictAge, verdictLine,
+} from '../../lib/format/relation';
+import { errorText } from '../../lib/hub';
 import {
   attention, codeLine, fixChoices, phoneTab, phoneTabLine, TAB_LOGIN, TAB_PRIVACY_NOTE, tabAction, type Line, type PhoneTab,
 } from '../../lib/tabs';
@@ -310,9 +315,200 @@ function AccountRow({ seat, colour, now, highlight, expanded, onToggle, canCount
             <Muted>{seat.live_sessions ? plural(seat.live_sessions, 'live session') : 'No live sessions'}</Muted>
             <Muted>{webAt ? `claude.ai usage read ${agoLabel(webAt, now)}` : 'No claude.ai web usage: figures come from the status line only.'}</Muted>
           </View>
+          <UsageDisclosure seat={seat.id} now={now} />
           {canCountdown ? <Btn label="Count down on Lock Screen" testID={`countdown-${seat.id}`} onPress={onCountdown} /> : null}
         </View>
       ) : null}
+    </View>
+  );
+}
+
+type RelationState = { status: 'idle' | 'loading' | 'ok' | 'error'; rel: UsageRelation | null; error?: string };
+
+/**
+ * "Usage and the picker" (phone.md P17.8, pwa.md 3.0a): a closed disclosure inside an open row.
+ * GET /v1/accounts/{seat}/relation when first opened, and again when opened more than 5 minutes
+ * after the last load. The words and bar sizes are lib/format/relation.ts.
+ */
+function UsageDisclosure({ seat, now }: { seat: string; now: number }) {
+  const t = useTheme();
+  const api = useHubApi();
+  const client = api.client;
+  const [open, setOpen] = useState(false);
+  const [st, setSt] = useState<RelationState>({ status: 'idle', rel: null });
+  const loadedAt = useRef<number | null>(null);
+  const seq = useRef(0);
+  const busy = useRef(false);
+
+  const load = () => {
+    if (!client || busy.current) return;
+    busy.current = true;
+    const n = ++seq.current;
+    setSt((p) => ({ status: 'loading', rel: p.rel }));
+    client.relation(seat).then(
+      (rel) => {
+        busy.current = false;
+        if (n !== seq.current) return;
+        loadedAt.current = Date.now();
+        setSt({ status: 'ok', rel });
+      },
+      (e: unknown) => {
+        busy.current = false;
+        if (n !== seq.current) return;
+        setSt((p) => ({ status: 'error', rel: p.rel, error: errorText(e, 'Could not load the usage figures') }));
+      },
+    );
+  };
+  const toggle = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    const next = !open;
+    setOpen(next);
+    if (next && relationStale(loadedAt.current, Date.now())) load();
+  };
+
+  return (
+    <View testID={`usage-${seat}`} style={{ gap: 8 }}>
+      <Pressable
+        testID={`usage-toggle-${seat}`}
+        accessibilityRole="button"
+        accessibilityLabel="Usage and the picker"
+        accessibilityState={{ expanded: open }}
+        onPress={toggle}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 }}
+      >
+        <Text accessibilityElementsHidden style={{ color: t.muted, fontSize: 16, width: 12 }}>{open ? '⌄' : '›'}</Text>
+        <Text style={{ color: t.text, fontWeight: '700' }}>Usage and the picker</Text>
+      </Pressable>
+      {open ? (
+        st.rel ? (
+          <UsageBody rel={st.rel} now={now} />
+        ) : st.status === 'error' ? (
+          <View style={{ gap: 6 }}>
+            <Text testID={`usage-error-${seat}`} style={{ color: t.bad, fontSize: 14 }}>{st.error}</Text>
+            <Btn label="Try again" testID={`usage-retry-${seat}`} onPress={load} />
+          </View>
+        ) : (
+          <Muted>Loading…</Muted>
+        )
+      ) : null}
+      {open && st.rel && st.status === 'error' ? (
+        <View style={{ gap: 6 }}>
+          <Text style={{ color: t.bad, fontSize: 14 }}>{st.error}</Text>
+          <Btn label="Try again" testID={`usage-retry-${seat}`} onPress={load} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function UsageBody({ rel, now }: { rel: UsageRelation; now: number }) {
+  const t = useTheme();
+  const v = rel.verdict;
+  const age = verdictAge(v, now);
+  const cal = calibrationRows(rel.calibration);
+  const restart = calibrationRestart(rel.calibration, now, rel.tz);
+  const ratio = ratioBars(rel.days);
+  const lg = legend(rel.days);
+  const note = heavyNote(rel.heavy.this_week);
+  const sub = { color: t.text, fontWeight: '600', fontSize: 14 } as const;
+  return (
+    <View testID="usage-body" style={{ gap: 12 }}>
+      <View style={{ gap: 2 }}>
+        <Text style={sub}>Picker</Text>
+        <Text testID="usage-verdict" style={{ color: t.text, fontSize: 14 }}>{v ? verdictLine(v, now, rel.tz) : NO_VERDICT}</Text>
+        {age ? <Muted>{age}</Muted> : null}
+      </View>
+      <View style={{ gap: 2 }}>
+        <Text style={sub}>Calibration</Text>
+        {cal.length ? (
+          <>
+            {cal.map((r) => (
+              <Text key={r.id} testID={`usage-cal-${r.id}`} style={{ color: r.implausible ? t.needs : t.text, fontSize: 14 }}>{r.text}</Text>
+            ))}
+            {restart ? <Muted>{restart}</Muted> : null}
+          </>
+        ) : (
+          <Muted>{NOT_CALIBRATED}</Muted>
+        )}
+      </View>
+      <View style={{ gap: 4 }}>
+        <Text style={sub}>5 h per 7 d point, per day</Text>
+        <Bars
+          testID="usage-ratio"
+          bars={ratio.map((b) => ({ key: b.day, pct: b.pct, label: b.label, under: b.initial }))}
+          a11y="Daily 5-hour points per weekly point, last 14 days"
+        />
+        {lg ? <Muted>{lg}</Muted> : null}
+      </View>
+      <View style={{ gap: 6 }}>
+        <Text style={sub}>5 h capacity, normalised to last week</Text>
+        {rel.models.length ? (
+          rel.models.map((m) => {
+            const cb = capacityBars(m);
+            return (
+              <View key={m.model} style={{ gap: 4 }}>
+                <Text testID="usage-capacity" style={{ color: t.text, fontSize: 14 }}>{capacityLine(m)}</Text>
+                <Bars
+                  testID={`usage-capacity-${m.model}`}
+                  bars={cb.bars.map((b) => ({ key: b.day, pct: b.pct, label: b.label }))}
+                  ref1={cb.ref}
+                  muted={!!note}
+                  a11y={`${m.model} capacity index, last 14 days`}
+                />
+              </View>
+            );
+          })
+        ) : (
+          <Muted>No capacity index yet: it needs Claude Code use with token rows.</Muted>
+        )}
+        {note ? <Muted>{note}</Muted> : null}
+      </View>
+    </View>
+  );
+}
+
+/** Small bar chart of tappable bars; the tapped bar's label shows below. `ref1` draws the 1.0 line (percent of the height). */
+function Bars({ bars, ref1, muted, a11y, testID }: {
+  bars: { key: string; pct: number; label: string; under?: string }[]; ref1?: number; muted?: boolean; a11y: string; testID: string;
+}) {
+  const t = useTheme();
+  const [sel, setSel] = useState<string | null>(null);
+  const picked = bars.find((b) => b.key === sel);
+  return (
+    <View style={{ gap: 4 }}>
+      <View testID={testID} accessibilityLabel={a11y} style={{ flexDirection: 'row', alignItems: 'flex-end', height: 64, gap: 2 }}>
+        {bars.map((b) => (
+          <Pressable
+            key={b.key}
+            testID={`${testID}-${b.key}`}
+            accessibilityRole="button"
+            accessibilityLabel={b.label}
+            onPress={() => setSel(sel === b.key ? null : b.key)}
+            style={{ flex: 1, height: '100%', justifyContent: 'flex-end' }}
+          >
+            <View
+              style={{
+                height: `${b.pct}%`,
+                backgroundColor: muted ? t.muted : t.accent,
+                opacity: muted ? 0.45 : sel === b.key || !sel ? 1 : 0.6,
+                borderTopLeftRadius: 2,
+                borderTopRightRadius: 2,
+              }}
+            />
+          </Pressable>
+        ))}
+        {ref1 != null ? (
+          <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, bottom: `${ref1}%`, borderTopWidth: 1, borderTopColor: t.muted, borderStyle: 'dashed' }} />
+        ) : null}
+      </View>
+      {bars.some((b) => b.under) ? (
+        <View style={{ flexDirection: 'row', gap: 2 }}>
+          {bars.map((b) => (
+            <Text key={b.key} accessibilityElementsHidden style={{ flex: 1, textAlign: 'center', color: t.muted, fontSize: 10 }}>{b.under ?? ''}</Text>
+          ))}
+        </View>
+      ) : null}
+      <Text testID={`${testID}-label`} style={{ color: t.muted, fontSize: 12, minHeight: 16 }}>{picked ? picked.label : ' '}</Text>
     </View>
   );
 }

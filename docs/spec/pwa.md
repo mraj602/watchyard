@@ -186,11 +186,13 @@ The desktop app's Hub tab shows this same page.
   bottom:
   - **Picker**: the newest verdict of `wy account next` ("Eligible · next in line · aggressive",
     "Eligible · 3rd in line", "Not picked: 7d 92% >= pace 85 (protected rule) · frees up Thu
-    14:00", the skip level in words: burst cap, stale, protected rule, limit) and, muted, "as of
+    14:00", the skip level in words: burst cap, stale, protected rule, limit; when the run had no
+    eligible account and another frees up first, "· no account was free, the first frees up
+    11:30" from `next_free`) and, muted, "as of
     12 min ago on gpu-box". A verdict over an hour old says "older than an hour". None: "No
     verdict yet: `wy account next` has not reported this account."
   - **Calibration**: one row each for the meter factor `f` (points per million units), the
-    ratio `ρ` and the lane charge `c` (with the lane price): the value in use, then *measured*
+    ratio `ρ` (labelled "Ratio 5 h : 7 d": the board fonts carry no Greek) and the lane charge `c` (with the lane price): the value in use, then *measured*
     (weight 1), *blending, 40% measured* or *fallback* (weight 0), with `n` and the days; an
     implausible measurement says so; the last restart and its reason when there was one. None:
     "Not calibrated yet."

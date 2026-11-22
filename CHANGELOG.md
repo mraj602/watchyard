@@ -42,6 +42,21 @@ All notable changes to Watchyard are recorded here. The format follows
   leases come from a copy kept at the last hub read (`<state>/next/hub_leases.json`) and stop
   charging at the first reading 10 minutes after their pick. `--json` (`lease_charges`) and
   `--explain` show each lease's state, where its burned units came from and its charge.
+- Usage and the picker, per account, in the Details section of an open account on the board
+  and in the phone app: the newest verdict of `wy account next` (eligible or not, why, when it
+  frees up), the calibration factors (measured, blending or fallback, with `n`), 14 days of
+  the 5-hour-to-weekly ratio labelled with each day's most-used model, and the 5-hour
+  capacity index per model (API dollars per 1 % of the 5-hour window, normalised to last
+  week). The hub keeps it up to date in its 15-minute calibration job (`GET
+  /v1/accounts/{seat}/relation`), and `wy account next` sends its verdicts as an
+  `account_verdicts` record (at most every 15 minutes unless they change).
+- Four low-urgency usage notices, on by default: `limit_change` (a model's 5-hour capacity
+  moved more than 1.2× or under 0.83× on most Claude-Code-heavy accounts), `usage_reset` (a
+  server or owner reset put both windows back to about 0 %; the reset is kept out of
+  calibration), `seat_change` (a folder logged in to another account or org) and
+  `weekly_drop` (the 7-day window fell more than 10 points without a reset: something
+  changed, check). Each expires 24 hours after it fires. Schema version 17 adds `seat_watch`,
+  `seat_verdict` and their rules.
 
 ### Changed
 

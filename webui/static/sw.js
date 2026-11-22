@@ -36,6 +36,7 @@ const ASSETS = [
   'components/keys-fmt.js',
   'components/qr.js',
   'components/quiet.js',
+  'components/relation-fmt.js',
   'components/rings.js',
   'components/seat.js',
   'components/state.js',

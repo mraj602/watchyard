@@ -85,6 +85,7 @@ const enc = encodeURIComponent;
 export const getOverview = () => getJSON('/v1/overview');
 export const getSessions = () => getJSON('/v1/sessions', { include_ended: 'true', days: '2', limit: '500' });
 export const getSession = (id) => getJSON(`/v1/sessions/${enc(id)}`);
+export const getRelation = (seat) => getJSON(`/v1/accounts/${enc(seat)}/relation`);
 
 export const login = (token) => postJSON('/v1/session/login', { token }, { anon: true });
 

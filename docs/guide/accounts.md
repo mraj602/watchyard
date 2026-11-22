@@ -107,6 +107,14 @@ Also `cap_5h`, `cap_7d` and `reserve_pct` (which `lanes` reads too), and for the
 strategies `cap_model`, `priority` (for `fill`) and `weight`.
 The full rules are in [setup.md 8.5](../spec/setup.md#85-wy-account-next).
 
+**Why an account was or was not picked:** open the account on the board or in the phone app,
+then **Usage and the picker** in its Details. It shows the newest verdict a machine sent (for
+example "Not picked: 7d 92% >= pace 85 (protected rule) · frees up Thu 14:00"), how far each
+calibration factor is measured, the daily 5-hour-to-weekly ratio with the day's main model,
+and the 5-hour capacity index per model. The capacity index only counts for weeks when
+Claude Code made most of the account's use; otherwise it says so. A machine without a hub
+sends no verdicts.
+
 **Agents that start other agents** should ask first, once for the whole batch:
 `wy account next --n 3 --session-id <uuid> --session-id <uuid> --session-id <uuid>`, then start
 each printed folder with `claude --session-id <its uuid>` (or one at a time with
