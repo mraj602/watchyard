@@ -152,6 +152,7 @@ one folder.
   peers/sessions/<session>.json  written by wy hook when peers are on: mode, human_at (peers.md 2.4)
   peers/delivered/<session>    time of the agent's last delivery into that session
   peers/threads.json, peers/seen.json, peers/audit.jsonl, peers/off   (peers.md 6.2, 8.4, 10, 11)
+  peers/trusted.json           mode 0600: the trusted sender (Doorbell) this machine approved (peers.md 4.1a)
   logs/agent.log               rotated like wy.log
 
 <data>/                        mode 0700, hub only

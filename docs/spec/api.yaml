@@ -1915,6 +1915,62 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "501": {$ref: "#/components/responses/NotImplemented"}
 
+  /v1/peers/trusted:
+    get:
+      tags: [peers]
+      operationId: listTrustedSenders
+      summary: The trusted sender (Doorbell) of each machine, with its recent use
+      description: |
+        peers.md 4.1a, 10. One entry per machine that ever reported a record, revoked ones
+        included (with `revoked_at`). Metadata only: no message text.
+      x-scopes: [owner, read]
+      responses:
+        "200":
+          description: Trusted senders.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [senders]
+                properties:
+                  senders:
+                    type: array
+                    items: {$ref: "#/components/schemas/TrustedSender"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /v1/peers/trusted/revoke:
+    post:
+      tags: [peers]
+      operationId: revokeTrustedSender
+      summary: Revoke a machine's trusted sender (narrows)
+      description: |
+        peers.md 4.1a. Sets `revoked_at` (idempotent: an already revoked one keeps its time),
+        writes a `trust_revoke` audit row, and refuses that machine's trusted envelopes from
+        then on (8.3). The machine's agent deletes its record at its next directory read.
+        Owner session or the owner's paired phone; never a read-only sign-in or a machine.
+      x-scopes: [owner, push]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [machine, sender]
+              properties:
+                machine: {type: string, description: Machine id.}
+                sender: {type: string, enum: [doorbell]}
+      responses:
+        "200":
+          description: The entry after the change.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TrustedSender"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
   /v1/peers/audit:
     get:
       tags: [peers]
@@ -2218,6 +2274,10 @@ components:
           oneOf:
             - {$ref: "#/components/schemas/AlertBrief"}
             - {type: "null"}
+        tags:
+          type: array
+          description: "The tags the session gave itself (peers.md 3.4), sorted; omitted when none. An ended or gone session has none. The session list shows them as chips and its search matches them (pwa.md 3.0b)."
+          items: {type: string, pattern: "^[a-z0-9-]{1,40}$"}
 
     SessionDetail:
       allOf:
@@ -3664,10 +3724,40 @@ components:
         kind: {type: string, enum: [start, reply]}
         size: {type: integer}
         local: {type: boolean}
+        from_kind: {type: [string, "null"], enum: ["service:doorbell", null], description: "The trusted sender (peers.md 4.1a); null for a session."}
+        via_tag: {type: [string, "null"], description: "The tag a trusted send went to."}
         status: {type: string, enum: [queued, delivered, refused, rejected, expired, target_gone, failed]}
         detail: {type: [string, "null"]}
         created_at: {type: string, format: date-time}
         final_at: {type: [string, "null"], format: date-time}
+
+    TrustedSender:
+      type: object
+      description: peers.md 4.1a.
+      required: [sender, machine, account, program, approved_at, sent_today, recent_tags]
+      properties:
+        sender: {type: string, enum: [doorbell]}
+        machine: {type: string, description: Machine id.}
+        machine_name: {type: string}
+        account: {type: string, description: Account uuid it sends as.}
+        account_label: {type: [string, "null"]}
+        program: {type: string, description: The resolved console script.}
+        interpreter: {type: string}
+        venv: {type: string}
+        approved_at: {type: string, format: date-time}
+        revoked_at: {type: [string, "null"], format: date-time}
+        revoked_by: {type: [string, "null"], description: "A device id, or `cli` (wy peers trust doorbell --off)."}
+        last_send_at: {type: [string, "null"], format: date-time}
+        sent_today: {type: integer, minimum: 0, description: "Messages since midnight in the hub's time zone."}
+        recent_tags:
+          type: array
+          description: Tags it sent to in the last 7 days, newest first.
+          items:
+            type: object
+            required: [tag, at]
+            properties:
+              tag: {type: string}
+              at: {type: string, format: date-time}
 
     PeerAuditEntry:
       type: object
