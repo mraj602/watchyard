@@ -33,9 +33,28 @@ export function alertText(a: AlertBrief | null | undefined, now: number, tz?: st
   }
 }
 
-/** An alert the person can still Seen or Snooze (store.js actionable). */
+/** An alert that can still push: Seen and Snooze both apply (the board's alerts-fmt.js actionable). */
 export const actionable = (a: AlertBrief | null | undefined): boolean =>
   !!a && (a.status === 'pending' || a.status === 'fired' || a.status === 'snoozed');
+
+/** What Seen acts on for a row: an alert's own Seen, or the session's (POST /v1/sessions/{id}/seen). */
+export type SeenTarget = { alert: string } | { session: string };
+
+/**
+ * Seen for a session row (push.md 4; the board's seenTarget): an alert that can still push; a
+ * skipped one (stale, rule_off, peers, …) while the session needs you; a Needs-you row with no
+ * alert at all through the session. A seen row, or one that does not need you, has none.
+ */
+export function seenTarget(s: { id: string; needs_you?: boolean; alert?: AlertBrief | null } | null | undefined): SeenTarget | null {
+  const a = s?.alert;
+  if (a && actionable(a)) return { alert: a.id };
+  if (!s || !s.needs_you) return null;
+  if (!a) return { session: s.id };
+  return a.status === 'skipped' ? { alert: a.id } : null;
+}
+
+/** Snooze is only for an alert that can still push. */
+export const canSnoozeRow = (s: { alert?: AlertBrief | null } | null | undefined): boolean => actionable(s?.alert);
 
 export const OUTCOME: Record<string, string> = {
   fired: 'open', seen: 'seen', snoozed: 'snoozed', cancelled: 'cancelled', closed: 'closed', pending: 'waiting', skipped: 'skipped',

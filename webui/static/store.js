@@ -3,10 +3,11 @@
 
 import {
   AuthError, getMe, getOverview, getSessions, getSession, openStream, setCachedHandler,
-  snoozeAlert, seenAlert, putJSON, authReason,
+  snoozeAlert, seenAlert, seenSession, putJSON, authReason,
 } from './api.js';
 import { applyOrder } from './components/order.js';
 import { meInApp, markerInApp } from './components/notif-note.js';
+import { actionable } from './components/alerts-fmt.js';
 
 const listeners = new Set();
 
@@ -186,8 +187,8 @@ function patchSessionAlert(sessionId, brief) {
   }
 }
 
-// The brief of the alert on a session, only while it can still push or be acknowledged.
-export const actionable = (a) => !!a && (a.status === 'pending' || a.status === 'fired' || a.status === 'snoozed');
+// The brief of the alert on a session, only while it can still push (components/alerts-fmt.js).
+export { actionable };
 
 // Seen and Snooze come back as the whole Alert; keep its brief on the session.
 async function act(call, sessionId) {
@@ -196,6 +197,8 @@ async function act(call, sessionId) {
   return a;
 }
 export const markSeen = (alertId, sessionId) => act(() => seenAlert(alertId), sessionId);
+// A Needs-you row with no alert: the hub marks (or creates) the episode's alert seen (push.md 4).
+export const markSessionSeen = (sessionId) => act(() => seenSession(sessionId), sessionId);
 export const snooze = (alertId, sessionId, minutes) => act(() => snoozeAlert(alertId, minutes), sessionId);
 
 // ---- stream events -----------------------------------------------------------------------

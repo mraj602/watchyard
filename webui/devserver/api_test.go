@@ -308,6 +308,13 @@ wait:
 		t.Errorf("pending alerts after promote = %v", all)
 	}
 	phone.want(200, "POST", "/v1/alerts/"+all[0].(map[string]any)["id"].(string)+"/seen", nil)
+
+	// Seen on a session (push.md 4): its alert's Seen; 409 when it does not need you.
+	if a := phone.want(200, "POST", "/v1/sessions/c41e0000-0000-4000-8000-000000000003/seen", nil); a["id"] != "al_pending" || a["status"] != "seen" {
+		t.Errorf("session seen = %v", a)
+	}
+	phone.want(409, "POST", "/v1/sessions/c41e0000-0000-4000-8000-000000000008/seen", nil)
+	phone.want(404, "POST", "/v1/sessions/nope/seen", nil)
 	_ = hub
 }
 

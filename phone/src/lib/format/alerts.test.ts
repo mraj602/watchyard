@@ -1,5 +1,6 @@
 import type { Alert } from '../../contract/api';
-import { reasonText, recentAlerts, RULE_GROUPS } from './alerts';
+import type { AlertBrief } from '../../contract/api';
+import { canSnoozeRow, reasonText, recentAlerts, RULE_GROUPS, seenTarget } from './alerts';
 
 describe('reasonText', () => {
   it('labels the peers skip reason', () => {
@@ -32,5 +33,33 @@ describe('recentAlerts', () => {
       a('oldfired', 'cancelled', '2026-11-01T00:00:00Z'),
     ];
     expect(recentAlerts(list, now).map((x) => x.id)).toEqual(['new', 'open']);
+  });
+});
+
+describe('seenTarget and canSnoozeRow (push.md 4)', () => {
+  const skipped = (id: string, reason: string): AlertBrief => ({ id, status: 'skipped', reason } as AlertBrief);
+  // The three Needs-you cards seen live on 1.1.0 with neither Seen nor the menu.
+  const live = [
+    { id: 's-stale-asked', needs_you: true, alert: skipped('al_a', 'stale') },
+    { id: 's-stale-perm', needs_you: true, alert: skipped('al_b', 'stale') },
+    { id: 's-peers', needs_you: true, alert: skipped('al_c', 'peers') },
+  ];
+  it.each(live)('$id: Seen on its skipped alert, no Snooze', (s) => {
+    expect(seenTarget(s)).toEqual({ alert: s.alert.id });
+    expect(canSnoozeRow(s)).toBe(false);
+  });
+  it('a Needs-you row with no alert is seen through the session', () => {
+    expect(seenTarget({ id: 's1', needs_you: true, alert: null })).toEqual({ session: 's1' });
+    expect(canSnoozeRow({ alert: null })).toBe(false);
+  });
+  it('alerts that can push get both; seen rows and rows that do not need you get none', () => {
+    for (const status of ['pending', 'fired', 'snoozed'] as const) {
+      const s = { id: 's1', needs_you: true, alert: { id: 'al_1', status } as AlertBrief };
+      expect(seenTarget(s)).toEqual({ alert: 'al_1' });
+      expect(canSnoozeRow(s)).toBe(true);
+    }
+    expect(seenTarget({ id: 's1', needs_you: true, alert: { id: 'al_1', status: 'seen' } as AlertBrief })).toBeNull();
+    expect(seenTarget({ id: 's1', needs_you: false, alert: skipped('al_1', 'stale') })).toBeNull();
+    expect(seenTarget({ id: 's1', needs_you: false, alert: null })).toBeNull();
   });
 });

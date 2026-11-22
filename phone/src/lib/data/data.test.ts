@@ -83,6 +83,17 @@ describe('reduce', () => {
     expect(reduce(initialData, { type: 'seen', alert: 'x' })).toEqual(initialData);
   });
 
+  it('seenSession marks a Needs-you row with no alert seen, and leaves rows with an alert alone', () => {
+    const before = reduce(initialData, loaded());
+    const ov = before.overview!;
+    const bare = { ...ov.needs_you[0]!, id: 's-none', alert: null };
+    const withBare = { ...before, overview: { ...ov, needs_you: [...ov.needs_you, bare] } };
+    const after = reduce(withBare, { type: 'seenSession', session: 's-none' });
+    expect(after.overview!.needs_you.find((s) => s.id === 's-none')!.alert).toMatchObject({ status: 'seen' });
+    const withAlert = ov.needs_you.find((s) => s.alert)!;
+    expect(reduce(withBare, { type: 'seenSession', session: withAlert.id }).overview!.needs_you).toEqual(withBare.overview.needs_you);
+  });
+
   it('reset returns the empty state', () => {
     expect(reduce(reduce(initialData, loaded()), { type: 'reset' })).toBe(initialData);
   });

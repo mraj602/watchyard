@@ -15,7 +15,7 @@ const mod = (f) => {
   return vm.runInNewContext(`(function () {\n${body}\nreturn { ${names.join(', ')} };\n})()`, { String });
 };
 
-const { reasonText, REASONS } = mod('components/alerts-fmt.js');
+const { reasonText, REASONS, actionable, seenTarget, canSnoozeRow } = mod('components/alerts-fmt.js');
 
 test('peers has its own label', () => {
   assert.equal(reasonText('peers'), 'talking to another session (peers)');
@@ -29,4 +29,38 @@ test('every known reason has a label, an unknown one reads as spaced words, none
   assert.equal(reasonText('some_new_reason'), 'some new reason');
   assert.equal(reasonText(null), '');
   assert.equal(reasonText(''), '');
+});
+
+// The three Needs-you cards seen live on 1.1.0 with neither Seen nor the ⋯ menu (push.md 4).
+const skipped = (id, reason) => ({ id: `al_${id}`, trigger: 'asked', status: 'skipped', reason });
+const live = [
+  { id: 's-stale-asked', state: 'asked', needs_you: true, state_since: '2026-11-18T09:00:00.000Z', alert: skipped('a', 'stale') },
+  { id: 's-stale-perm', state: 'needs_permission', needs_you: true, state_since: '2026-11-19T09:00:00.000Z', alert: { ...skipped('b', 'stale'), trigger: 'needs_permission' } },
+  { id: 's-peers', state: 'asked', needs_you: true, state_since: '2026-11-06T09:00:00.000Z', alert: skipped('c', 'peers') },
+];
+
+test('every live Needs-you card with a skipped alert can be marked seen, none snoozed', () => {
+  for (const s of live) {
+    assert.deepEqual({ ...seenTarget(s) }, { alert: s.alert.id }, s.id);
+    assert.equal(canSnoozeRow(s), false, s.id);
+  }
+});
+
+test('a Needs-you row with no alert is seen through the session', () => {
+  assert.deepEqual({ ...seenTarget({ id: 's1', state: 'asked', needs_you: true, alert: null }) }, { session: 's1' });
+  assert.deepEqual({ ...seenTarget({ id: 's1', state: 'asked', needs_you: true }) }, { session: 's1' });
+});
+
+test('alerts that can still push get Seen and Snooze; seen rows and rows that do not need you get neither', () => {
+  for (const status of ['pending', 'fired', 'snoozed']) {
+    const s = { id: 's1', needs_you: true, alert: { id: 'al_1', status } };
+    assert.ok(actionable(s.alert));
+    assert.deepEqual({ ...seenTarget(s) }, { alert: 'al_1' });
+    assert.equal(canSnoozeRow(s), true);
+  }
+  assert.equal(seenTarget({ id: 's1', needs_you: true, alert: { id: 'al_1', status: 'seen' } }), null);
+  assert.equal(seenTarget({ id: 's1', needs_you: false, alert: skipped('d', 'stale') }), null);
+  assert.equal(seenTarget({ id: 's1', needs_you: false, alert: null }), null);
+  assert.equal(seenTarget({ id: 's1', needs_you: true, alert: { id: 'al_1', status: 'cancelled' } }), null);
+  assert.equal(canSnoozeRow({ id: 's1', needs_you: true, alert: null }), false);
 });

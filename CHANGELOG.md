@@ -6,6 +6,19 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `POST /v1/sessions/{id}/seen`: marks a session's current Needs-you episode seen even when it
+  has no alert (a hub run with `--no-push`, or before the engine reached the episode); the
+  board and the phone app use it for such rows.
+
+### Fixed
+
+- Needs-you rows whose alert was not pushed (`stale`, `rule_off`, `peers`, `remote_control`,
+  `baseline`) had neither Seen nor the ⋯ menu on the board, in the desktop app and on the
+  phone, so they could never be dismissed. The read API now carries their skipped alert as the
+  session's `alert`, and Seen on them works; Snooze stays for alerts that can still push.
+
 ## [1.1.0] - 2026-11-22
 
 ### Added

@@ -47,6 +47,7 @@ describe('HubClient requests', () => {
     ['alert', (c) => c.alert('al_1'), 'GET', '/v1/alerts/al_1'],
     ['rules', (c) => c.rules(), 'GET', '/v1/rules'],
     ['seen', (c) => c.seen('al_1'), 'POST', '/v1/alerts/al_1/seen'],
+    ['seenSession', (c) => c.seenSession('c41e/0'), 'POST', '/v1/sessions/c41e%2F0/seen'],
     ['snooze default', (c) => c.snooze('al_1'), 'POST', '/v1/alerts/al_1/snooze'],
     ['deviceSelf', (c) => c.deviceSelf(), 'GET', '/v1/devices/self'],
     ['patchSelf', (c) => c.patchSelf({ tap: 'claude' }), 'PATCH', '/v1/devices/self'],

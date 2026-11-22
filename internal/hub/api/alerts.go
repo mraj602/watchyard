@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/mraj602/watchyard/internal/hub/auth"
+	"github.com/mraj602/watchyard/internal/hub/events"
+	"github.com/mraj602/watchyard/internal/hub/push/engine"
 	"github.com/mraj602/watchyard/internal/hub/push/model"
 	"github.com/mraj602/watchyard/internal/hub/push/rules"
 	"github.com/mraj602/watchyard/internal/hub/store"
@@ -27,6 +30,7 @@ func init() {
 	Register("GET", "/v1/alerts/{id}", func(s *Server) http.Handler { return http.HandlerFunc(s.alertGet) })
 	Register("POST", "/v1/alerts/{id}/snooze", func(s *Server) http.Handler { return http.HandlerFunc(s.alertSnooze) })
 	Register("POST", "/v1/alerts/{id}/seen", func(s *Server) http.Handler { return http.HandlerFunc(s.alertSeen) })
+	Register("POST", "/v1/sessions/{id}/seen", func(s *Server) http.Handler { return http.HandlerFunc(s.sessionSeen) })
 	Register("POST", "/v1/actions/{token}", func(s *Server) http.Handler { return http.HandlerFunc(s.alertAction) })
 }
 
@@ -201,6 +205,44 @@ func (s *Server) alertSeen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.alertWrite(w, r, id)
+}
+
+// sessionSeener is the engine's Seen on a session's current episode (push.md 4).
+type sessionSeener interface {
+	SeenSession(ctx context.Context, sessionID, by string) (model.AlertBrief, error)
+}
+
+// sessionSeen is POST /v1/sessions/{id}/seen (push.md 4, "Seen on a session"): for a
+// Needs-you row with no alert. Through the engine when there is one; without it (pushes
+// off) the same change is made here and its event published on the stream.
+func (s *Server) sessionSeen(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var b model.AlertBrief
+	var err error
+	if ss, ok := s.cfg.Engine.(sessionSeener); ok && s.cfg.Engine != nil {
+		b, err = ss.SeenSession(r.Context(), id, alertBy(r))
+	} else {
+		var a model.Alert
+		var evs []events.Event
+		a, evs, err = engine.SeenSessionNoEngine(r.Context(), s.store, s.now(), id, alertBy(r))
+		b = a.AlertBrief
+		for _, ev := range evs {
+			s.Broker.Publish(ev)
+		}
+	}
+	if errors.Is(err, model.ErrNotFound) {
+		auth.WriteError(w, http.StatusNotFound, "not_found", "no such session")
+		return
+	}
+	if errors.Is(err, model.ErrConflict) {
+		auth.WriteError(w, http.StatusConflict, "conflict", "this session does not need you now")
+		return
+	}
+	if err != nil {
+		alertError(w, err)
+		return
+	}
+	s.alertWrite(w, r, b.ID)
 }
 
 // alertAction is POST /v1/actions/{token} (push.md 8): the token is the only credential.

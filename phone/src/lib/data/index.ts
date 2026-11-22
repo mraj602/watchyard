@@ -22,6 +22,7 @@ export type DataAction =
   | { type: 'loaded'; at: number; overview?: Overview; sessions?: Session[]; accounts?: Seat[]; alerts?: Alert[] }
   | { type: 'offline'; at: number }
   | { type: 'seen'; alert: string }
+  | { type: 'seenSession'; session: string }
   | { type: 'snoozed'; alert: string; until: string }
   | { type: 'reset' };
 
@@ -54,6 +55,16 @@ function patchAll(state: HubData, id: string, patch: Partial<AlertBrief>): HubDa
   };
 }
 
+/** Optimistic Seen on a Needs-you row with no alert: a seen brief until the next refresh. */
+function seenSessionAll(state: HubData, id: string): HubData {
+  const mark = (s: Session): Session => (s.id === id && !s.alert ? { ...s, alert: { id: '', status: 'seen' } as AlertBrief } : s);
+  return {
+    ...state,
+    overview: state.overview ? { ...state.overview, needs_you: state.overview.needs_you.map(mark) } : null,
+    sessions: state.sessions.map(mark),
+  };
+}
+
 /** Every list of accounts follows the owner's order (`seat.order`), whatever the reply's order. */
 function inHubOrder(o: Overview): Overview {
   const seats = orderSeats(o.seats ?? []);
@@ -75,6 +86,8 @@ export function reduce(state: HubData, action: DataAction): HubData {
       return state.offline ? state : { ...state, offline: true };
     case 'seen':
       return patchAll(state, action.alert, { status: 'seen' });
+    case 'seenSession':
+      return seenSessionAll(state, action.session);
     case 'snoozed':
       return patchAll(state, action.alert, { status: 'snoozed', snoozed_until: action.until });
     case 'reset':

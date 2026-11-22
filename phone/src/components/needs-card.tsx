@@ -3,8 +3,8 @@
 import { useEffect, useState } from 'react';
 import { Animated, PanResponder, Text, View } from 'react-native';
 import type { Session } from '../contract/api';
-import { alertText, ago, httpsUrl, projectOf, sessionSeat, stateInfo, type SeatIndex } from '../lib/format';
-import { AlertButtons } from './alert-actions';
+import { alertText, ago, canSnoozeRow, httpsUrl, seenTarget, projectOf, sessionSeat, stateInfo, type SeatIndex } from '../lib/format';
+import { AlertButtons, type ActFn } from './alert-actions';
 import { useHubApi } from './hub-api';
 import { copyText } from './links';
 import { go } from './nav';
@@ -48,7 +48,7 @@ export function NeedsCard({ session, seats, now, act, canAct, snoozeMin, toast }
   session: Session;
   seats: SeatIndex;
   now: number;
-  act: (kind: 'seen' | 'snooze', alertId: string) => void;
+  act: ActFn;
   canAct: (s: Session) => boolean;
   snoozeMin: number;
   toast: (m: string) => void;
@@ -64,9 +64,9 @@ export function NeedsCard({ session, seats, now, act, canAct, snoozeMin, toast }
   const [x] = useState(() => new Animated.Value(0));
 
   // Latest props for the gesture handlers (created once).
-  const [latest] = useState(() => ({ a, acting, act }));
+  const [latest] = useState(() => ({ session, acting, act }));
   useEffect(() => {
-    Object.assign(latest, { a, acting, act });
+    Object.assign(latest, { session, acting, act });
   });
   const [pan] = useState(() =>
       PanResponder.create({
@@ -74,10 +74,11 @@ export function NeedsCard({ session, seats, now, act, canAct, snoozeMin, toast }
         onPanResponderMove: (_e, g) => x.setValue(Math.max(-140, Math.min(140, g.dx))),
         onPanResponderRelease: (_e, g) => {
           Animated.spring(x, { toValue: 0, useNativeDriver: true }).start();
-          const { a: al, acting: ok, act: run } = latest;
-          if (!ok || !al) return;
+          const { session: row, acting: ok, act: run } = latest;
+          if (!ok) return;
           const what = swipeAction(g.dx);
-          if (what) run(what, al.id);
+          // A row whose alert cannot push (skipped, or none) swipes to Seen only.
+          if (what && (what === 'seen' ? seenTarget(row) : canSnoozeRow(row))) run(what, row);
         },
         onPanResponderTerminate: () => Animated.spring(x, { toValue: 0, useNativeDriver: true }).start(),
       }),
