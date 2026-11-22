@@ -45,6 +45,9 @@ type PeerLogUp struct {
 	Detail      string `json:"detail,omitempty"`
 	Size        int    `json:"size"`
 	At          string `json:"at"`
+	// FromKind ("service:doorbell") and Tag mark a trusted send (peers.md 4.1a, 10).
+	FromKind string `json:"from_kind,omitempty"`
+	Tag      string `json:"tag,omitempty"`
 }
 
 // EventThreadResumeRefused is the peer_log event of a machine that refused the owner's
@@ -97,6 +100,28 @@ type PeersReply struct {
 	// Tag is the outcome of the peer_tag this reply answers (peers.md 3.4); absent for a
 	// peers_list.
 	Tag *TagAnswer `json:"tag,omitempty"`
+	// Trust is the asking machine's trusted-sender rows at the hub, by sender (peers.md 4.1a,
+	// link.md 6.3); absent when there are none (or from a hub older than it).
+	Trust map[string]TrustState `json:"trust,omitempty"`
+}
+
+// TrustState is the hub's view of one machine's trusted sender: when the record it holds was
+// approved, and when the owner revoked it (nil: not revoked).
+type TrustState struct {
+	ApprovedAt string  `json:"approved_at"`
+	RevokedAt  *string `json:"revoked_at,omitempty"`
+}
+
+// PeerTrustUp is the device→hub `peer_trust` (link.md 6.2): Op "set" with the record, or "off".
+type PeerTrustUp struct {
+	T           string `json:"t"`
+	Op          string `json:"op"`
+	Sender      string `json:"sender"`
+	Account     string `json:"account,omitempty"`
+	Program     string `json:"program,omitempty"`
+	Interpreter string `json:"interpreter,omitempty"`
+	Venv        string `json:"venv,omitempty"`
+	ApprovedAt  string `json:"approved_at,omitempty"`
 }
 
 // PeerTagUp adds or removes one tag of a session on the sending machine (link.md 6.2,

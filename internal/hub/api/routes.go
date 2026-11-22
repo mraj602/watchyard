@@ -136,6 +136,8 @@ var handlerRoutes = []Route{
 	{Method: "POST", Path: "/v1/peers/threads/{id}/resume", Scopes: []string{"owner"}},
 	{Method: "GET", Path: "/v1/peers/messages", Scopes: []string{"owner", "read"}},
 	{Method: "GET", Path: "/v1/peers/audit", Scopes: []string{"owner", "read"}},
+	{Method: "GET", Path: "/v1/peers/trusted", Scopes: []string{"owner", "read"}},
+	{Method: "POST", Path: "/v1/peers/trusted/revoke", Scopes: []string{"owner", "push"}},
 
 	// Android app updates (phone.md P16).
 	{Method: "GET", Path: "/v1/app/android", Scopes: []string{"owner", "read", "push"}},

@@ -129,6 +129,16 @@ func (e Env) SendWith(c Caller, to, text string, o SendOpts) (SendResult, *Refus
 	if target.Remote && target.Device == "" {
 		return SendResult{}, Refuse(CodeUnknownTarget, "%s runs on %s, which has no wy agent (wy agent enable there)", target.Handle, target.MachineName)
 	}
+	o.Service, o.Tag = "", "" // a session never sends as the trusted sender
+	return e.sendTo(sender, target, dir, text, o)
+}
+
+// sendTo runs the checks of 4.2 from the content on (content, TTL, rates, matrix, loop guard)
+// and delivers: into a local target's inbox, or to the hub for a remote one. sender is a
+// session, or the trusted sender's pseudo-session when o.Service is set (peers.md 4.1a): then
+// the reply rule of 5.3 never applies, the thread must be one it opened, and the header names
+// the program.
+func (e Env) sendTo(sender *Session, target Session, dir []Session, text string, o SendOpts) (SendResult, *Refusal) {
 	clean, rf := CheckText(text)
 	if rf != nil {
 		return SendResult{}, rf
@@ -162,7 +172,15 @@ func (e Env) SendWith(c Caller, to, text string, o SendOpts) (SendResult, *Refus
 	}
 	threads.Expire(now, func(id string) bool { return live[id] })
 	th := threads.FindOpen(sender.Entry.SessionID, target.Entry.SessionID)
-	if d := m.Allowed(party(*sender), party(target), th); !d.Allowed {
+	mth := th
+	if o.Service != "" {
+		// Doorbell never replies into a thread: only a start the matrix allows as such.
+		if th != nil && th.A != sender.Entry.SessionID {
+			return SendResult{}, Refuse(CodeNotAllowed, "Doorbell never replies into a thread another session opened")
+		}
+		mth = nil
+	}
+	if d := m.Allowed(party(*sender), party(target), mth); !d.Allowed {
 		reason := d.Reason
 		if reason == "" {
 			reason = CodeNotAllowed
@@ -184,16 +202,20 @@ func (e Env) SendWith(c Caller, to, text string, o SendOpts) (SendResult, *Refus
 	kind := th.KindFor(sender.Entry.SessionID)
 	if target.Remote {
 		return e.sendRemote(&unlock, Outgoing{Msg: msg, Thread: th.ID, Kind: kind, From: *sender, To: target,
-			HumanAt: newestHuman(sender, sender), Text: clean, TTL: ttl, Now: now}, *th)
+			HumanAt: newestHuman(sender, sender), Text: clean, TTL: ttl, Now: now, Service: o.Service, Tag: o.Tag}, *th)
 	}
 
 	from, err := UDSAddress(ReplySocketPath(e.Runtime, sender.Entry.SessionID))
 	if err != nil {
 		return SendResult{}, Refuse(CodeFailed, "%v", err)
 	}
+	header := Header(sender.Handle, sender.AccountLabel, e.Machine.Name, th.ID)
+	if o.Service != "" {
+		header = ServiceHeader(e.Machine.Name, sender.AccountLabel, o.Tag, th.ID)
+	}
 	w := Wrapper{
 		From: from, FromSession: sender.Entry.SessionID, FromName: sender.Handle, FromMode: sender.Mode,
-		Body: Header(sender.Handle, sender.AccountLabel, e.Machine.Name, th.ID) + "\n\n" + clean,
+		Body: header + "\n\n" + clean,
 	}
 	frame := NewFrame(msg, target.Entry.SessionID, w)
 	if err := WriteFrame(target.Entry.SocketOf(e.Runtime), frame); err != nil {
@@ -207,10 +229,10 @@ func (e Env) SendWith(c Caller, to, text string, o SendOpts) (SendResult, *Refus
 	_ = threads.Save(e.ThreadsPath())
 	_ = MarkDelivered(e.State, target.Entry.SessionID, now)
 	e.audit(auditLine{Msg: msg, Thread: th.ID, From: sender.Entry.SessionID, To: target.Entry.SessionID, FromA: sender.Account,
-		ToA: target.Account, Size: len(clean), Local: true, Status: "delivered"}, now)
+		ToA: target.Account, Size: len(clean), Local: true, Status: "delivered", FromKind: o.Service, Tag: o.Tag}, now)
 	if e.Remote != nil {
 		e.Remote.Log(LocalLog{Msg: msg, Thread: th.ID, FromSession: sender.Entry.SessionID, ToSession: target.Entry.SessionID,
-			Kind: kind, Status: "delivered", Size: len(clean), At: now})
+			Kind: kind, Status: "delivered", Size: len(clean), At: now, FromKind: o.Service, Tag: o.Tag})
 	}
 	return SendResult{Msg: msg, Thread: th.ID, Target: target, Sender: *sender, HeldLikely: sender.Mode != target.Mode}, nil
 }
@@ -224,7 +246,7 @@ func (e Env) sendRemote(unlock *func(), out Outgoing, thread Thread) (SendResult
 	p, rf := e.Remote.Send(out)
 	*unlock = lockState(e.State)
 	line := auditLine{Msg: out.Msg, Thread: thread.ID, From: out.From.Entry.SessionID, To: out.To.Entry.SessionID,
-		FromA: out.From.Account, ToA: out.To.Account, Size: len(out.Text)}
+		FromA: out.From.Account, ToA: out.To.Account, Size: len(out.Text), FromKind: out.Service, Tag: out.Tag}
 	if rf != nil {
 		line.Status, line.Detail = "refused", rf.Code
 		e.audit(line, out.Now)
@@ -273,6 +295,10 @@ type auditLine struct {
 	Local  bool   `json:"local"`
 	Status string `json:"status"`
 	Detail string `json:"detail,omitempty"`
+	// FromKind is "service:doorbell" for the trusted sender (peers.md 4.1a, 10); Tag the tag
+	// it sent to.
+	FromKind string `json:"from_kind,omitempty"`
+	Tag      string `json:"tag,omitempty"`
 }
 
 func (e Env) audit(l auditLine, now time.Time) {

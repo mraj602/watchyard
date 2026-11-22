@@ -480,10 +480,13 @@ phone (Settings → Peers → Trusted senders; `POST /v1/peers/trusted/revoke`, 
 sign-ins: an owner session or the owner's paired phone, never a read-only sign-in), which sets
 the hub's `revoked_at`. The machine's agent learns it the way it learns other owner settings,
 on its next read from the hub: the `peers` answer carries `trust` for the asking machine
-(link.md 6.3), and a record approved at or before the hub's `revoked_at` is deleted. A trusted
+(link.md 6.3), and when that row is revoked and holds this record's approval (or a newer
+one) the record is deleted. Both approval times come from the machine's own clock, so clock
+skew between the machine and the hub does not matter. A trusted
 send always asks the hub for the directory first (tags live there, 3.4), so a revocation
 applies before the next send; the hub also refuses a revoked machine's trusted envelopes
-itself (8.3). Approving again after a revocation makes a newer record, which the hub takes.
+itself (8.3). Approving again after a revocation makes a newer record, which the hub takes:
+only a strictly newer approval replaces a revoked row.
 `wy peers trust` alone prints the record (or "Doorbell is not approved on this machine").
 
 **The identity check, per send** (the agent, never the CLI). The agent takes the requester's

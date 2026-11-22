@@ -238,6 +238,10 @@ func (s *server) dispatch(req Request, pid int) Reply {
 			return fail(peers.CodeFailed, "%v", err)
 		}
 		return Reply{OK: true}
+	case OpTrust:
+		return s.trust(env, req, pid)
+	case OpServiceSend:
+		return s.serviceSend(env, req)
 	case OpWhoami, OpList, OpSend, OpTag:
 	default:
 		return fail(peers.CodeUnsupported, "op %q is not supported by this agent", req.Op)

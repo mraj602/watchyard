@@ -140,6 +140,7 @@ func (r *Remote) directory() (*peers.PeersReply, error) {
 		r.mu.Lock()
 		r.cache.at, r.cache.reply = r.now(), rep
 		r.mu.Unlock()
+		r.reconcileTrust(rep)
 		return rep, nil
 	case <-time.After(wait):
 		return nil, errors.New("the hub did not answer")
@@ -344,6 +345,11 @@ func (r *Remote) Send(o peers.Outgoing) (*peers.Pending, *peers.Refusal) {
 	if !o.HumanAt.IsZero() {
 		e.From.HumanAt = o.HumanAt.UTC().Format(time.RFC3339Nano)
 	}
+	if o.Service != "" {
+		// The trusted sender (peers.md 4.1a, 8.2): its kind and the tag; never bypass, no
+		// human prompt of its own.
+		e.From.Kind, e.Tag, e.From.Mode, e.From.HumanAt = o.Service, o.Tag, peers.ModePrompting, ""
+	}
 	doc, err := peers.SealEnvelope(e, o.Text, cert, sign)
 	if err != nil {
 		return nil, peers.Refuse(peers.CodeFailed, "sealing: %v", err)
@@ -419,7 +425,8 @@ func (r *Remote) spoolPath() string { return filepath.Join(r.Env.State, "agent",
 // cannot be reached; the spool goes out with the next report that gets through.
 func (r *Remote) Log(l peers.LocalLog) {
 	up := peers.PeerLogUp{T: link.TypePeerLog, Msg: l.Msg, Thread: l.Thread, FromSession: l.FromSession, ToSession: l.ToSession,
-		Kind: l.Kind, Status: l.Status, Detail: l.Detail, Size: l.Size, At: l.At.UTC().Format(time.RFC3339Nano)}
+		Kind: l.Kind, Status: l.Status, Detail: l.Detail, Size: l.Size, At: l.At.UTC().Format(time.RFC3339Nano),
+		FromKind: l.FromKind, Tag: l.Tag}
 	r.sendLog(up)
 }
 
