@@ -62,8 +62,8 @@ type WidgetState struct {
 // visible seats (resets_at after now).
 func (s *Store) WidgetState(ctx context.Context, now int64) (WidgetState, error) {
 	var out WidgetState
-	if err := s.r.QueryRowContext(ctx, `SELECT count(*) FROM session_state WHERE needs_you = 1
-		AND state NOT IN ('ended', 'gone')`).Scan(&out.NeedsYou); err != nil {
+	if err := s.r.QueryRowContext(ctx, `SELECT count(*) FROM session_state st JOIN session s ON s.id = st.session_id
+		WHERE st.needs_you = 1 AND st.state NOT IN ('ended', 'gone') AND NOT `+sessionSeenExpr).Scan(&out.NeedsYou); err != nil {
 		return out, err
 	}
 	rows, err := s.r.QueryContext(ctx, `SELECT w.seat_id, w.window_key, coalesce(w.final_pct, w.peak_pct, 0), w.resets_at
