@@ -127,6 +127,8 @@ export interface Session {
   activity_at?: Iso | null;
   machine_stale?: boolean;
   alert?: AlertBrief | null;
+  /** The tags the session gave itself (peers.md 3.4), sorted; omitted when none. */
+  tags?: string[];
 }
 
 /** api.yaml SessionDetail (GET /v1/sessions/{id}). */
@@ -460,10 +462,50 @@ export interface PeerMessage {
   kind: 'start' | 'reply';
   size: number;
   local?: boolean;
+  /** The trusted sender (peers.md 4.1a); null for a session. */
+  from_kind?: 'service:doorbell' | null;
+  /** The tag a trusted send went to. */
+  via_tag?: string | null;
   status: 'queued' | 'delivered' | 'refused' | 'rejected' | 'expired' | 'target_gone' | 'failed';
   detail?: string | null;
   created_at: Iso;
   final_at?: Iso | null;
+}
+
+/** api.yaml PeerSession (GET /v1/peers): a live session and whether peers can reach it. */
+export interface PeerSession {
+  session: string;
+  handle: string;
+  name?: string;
+  account: string;
+  account_label?: string | null;
+  machine: string;
+  machine_name?: string;
+  project?: string | null;
+  state: SessionState;
+  agent?: boolean;
+  /** Sorted; empty when none. */
+  tags?: string[];
+}
+
+/** api.yaml TrustedSender (peers.md 4.1a): a machine's Doorbell, with its recent use. Metadata only. */
+export interface TrustedSender {
+  sender: 'doorbell';
+  machine: string;
+  machine_name?: string;
+  account: string;
+  account_label?: string | null;
+  program: string;
+  interpreter?: string;
+  venv?: string;
+  approved_at: Iso;
+  revoked_at?: Iso | null;
+  /** A device id, or `cli`. */
+  revoked_by?: string | null;
+  last_send_at?: Iso | null;
+  sent_today: number;
+  /** Tags it sent to in the last 7 days, newest first. */
+  recent_tags: { tag: string; at: Iso }[];
 }
 
 /** api.yaml AnalyticsTokens: counters and the API-equivalent price (analytics.md). */

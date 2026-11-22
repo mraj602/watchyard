@@ -30,6 +30,9 @@ const ENDPOINTS: [string, (c: HubClient) => Promise<unknown>][] = [
   ['pausePeers', (c) => c.pausePeers(true)],
   ['peerAudit', (c) => c.peerAudit({ limit: 20 })],
   ['peerMessages', (c) => c.peerMessages()],
+  ['peers', (c) => c.peers()],
+  ['trustedSenders', (c) => c.trustedSenders()],
+  ['revokeTrustedSender', (c) => c.revokeTrustedSender('m1')],
   ['patchSeat', (c) => c.patchSeat('seat-1', { mode: 'protected' })],
   ['relation', (c) => c.relation('seat-1')],
 ];
@@ -62,6 +65,9 @@ describe('HubClient requests', () => {
     ['patchSeat', (c) => c.patchSeat('a/b', { mode: null }), 'PATCH', '/v1/accounts/a%2Fb'],
     ['relation', (c) => c.relation('a/b'), 'GET', '/v1/accounts/a%2Fb/relation'],
     ['peerMessages', (c) => c.peerMessages({ limit: 5 }), 'GET', '/v1/peers/messages?limit=5'],
+    ['peers', (c) => c.peers(), 'GET', '/v1/peers'],
+    ['trustedSenders', (c) => c.trustedSenders(), 'GET', '/v1/peers/trusted'],
+    ['revokeTrustedSender', (c) => c.revokeTrustedSender('m/1'), 'POST', '/v1/peers/trusted/revoke'],
   ])('%s sends the bearer to the right path', async (_n, run, method, path) => {
     const f = fakeFetch(() => response(200, {}));
     await run(client(f));
@@ -77,11 +83,13 @@ describe('HubClient requests', () => {
     const c = client(f);
     await c.editMatrix({ base_version: 2, deny: [['a', 'b']] });
     await c.pausePeers(true);
+    await c.revokeTrustedSender('m1');
     await c.snooze('al_1', 30);
     await c.patchSelf({ private: true, widgets: true });
     expect(f.calls.map((x) => JSON.parse(x.init.body!))).toEqual([
       { edit: { base_version: 2, deny: [['a', 'b']] } },
       { paused: true },
+      { machine: 'm1', sender: 'doorbell' },
       { minutes: 30 },
       { prefs: { private: true, widgets: true } },
     ]);

@@ -1,7 +1,9 @@
 // Text and matrix arithmetic of the Peers screen (docs/spec/peers.md 5, 10, 11; a port of
 // webui/static/components/peers-fmt.js). The phone only narrows, so `narrowings` is the one
 // edit helper it needs.
-import type { MatrixEdit, PeerAuditEntry, PeerMatrix, PeerMessage, Seat } from '../../contract/api';
+import type { MatrixEdit, PeerAuditEntry, PeerMatrix, PeerMessage, PeerSession, Seat, TrustedSender } from '../../contract/api';
+import { agoLabel, plural } from './core';
+import { stateInfo } from './state';
 
 export type CellState = 'none' | 'out' | 'in' | 'both';
 
@@ -116,6 +118,9 @@ const EVENTS: Record<string, string> = {
   rejected: 'Message rejected by a machine',
   off: 'Peers turned off on a machine',
   on: 'Peers turned on on a machine',
+  trust: 'Doorbell approved as a trusted sender on a machine',
+  trust_off: 'Doorbell turned off as a trusted sender at a machine',
+  trust_revoke: 'Doorbell revoked as a trusted sender',
 };
 
 /**
@@ -166,3 +171,98 @@ const OUTCOME: Record<string, string> = {
   expired: 'expired', target_gone: 'target gone', failed: 'failed',
 };
 export const outcomeLabel = (s: string): string => OUTCOME[s] ?? String(s || '');
+
+/** The board's confirm for Revoke (pwa.md 3.1). */
+export const revokeConfirm = (machine: string): string =>
+  `Stop Doorbell on ${machine} from sending to sessions? It can be approved again only from that machine's terminal.`;
+/** Shown when no machine approved Doorbell (pwa.md 3.1). */
+export const NO_TRUSTED =
+  'Doorbell is not approved on any machine. To let it wake sessions by tag, run `wy peers trust doorbell` in a terminal on the machine it runs on (Linux).';
+/** Shown when no session holds a tag and no trusted sender used one (pwa.md 3.1). */
+export const NO_TAGS = 'No session has a tag. A session gives itself one with `wy peers tag add <tag>`.';
+/** A tag only a trusted sender used, with no holder now. */
+export const NO_HOLDER = 'No session holds it now.';
+
+const machineOf = (x: { machine: string; machine_name?: string }): string => x.machine_name || x.machine;
+
+export interface TrustedLines {
+  /** "Doorbell on <machine>". */
+  title: string;
+  machine: string;
+  revoked: boolean;
+  /** The detail lines under the title, in order. */
+  lines: string[];
+}
+
+/**
+ * One trusted sender as the board words it (pwa.md 3.1): the program, who it sends as, when it
+ * was approved and last sent, and how many it sent today; a revoked one says when and how to
+ * approve it again instead.
+ */
+export function trustedSenderLines(s: TrustedSender, now: number): TrustedLines {
+  const machine = machineOf(s);
+  const account = s.account_label || s.account.slice(0, 8);
+  const lines = [s.program, `sends as ${account}`];
+  const revoked = !!s.revoked_at;
+  if (revoked) {
+    lines.push(`Revoked ${agoLabel(s.revoked_at, now)}. To approve it again, run \`wy peers trust doorbell\` in a terminal on that machine.`);
+  } else {
+    lines.push(`approved ${agoLabel(s.approved_at, now)}`.trim());
+    lines.push(s.last_send_at ? `last sent ${agoLabel(s.last_send_at, now)}`.trim() : 'has not sent yet');
+    lines.push(`${plural(s.sent_today, 'message')} today`);
+  }
+  return { title: `Doorbell on ${machine}`, machine, revoked, lines };
+}
+
+export interface TagHolder {
+  /** The session id (`/sessions/<id>`). */
+  id: string;
+  name: string;
+  /** Account, machine and state, as one line. */
+  detail: string;
+  /** What holders are ordered by: name, machine, session id (the board's order). */
+  key: string;
+}
+
+export interface TagGroup {
+  tag: string;
+  holders: TagHolder[];
+  /** "Sent to recently by Doorbell on <machine>", one per trusted sender that used the tag. */
+  recent: string[];
+  /** Only a trusted sender used it: nobody holds it now. */
+  noHolder: boolean;
+}
+
+/**
+ * Every tag a live session holds, sorted, with its holders; a tag only a trusted sender used in
+ * the last 7 days is listed too (pwa.md 3.1).
+ */
+export function tagGroups(sessions: PeerSession[], senders: TrustedSender[]): TagGroup[] {
+  const by = new Map<string, TagGroup>();
+  const group = (tag: string): TagGroup => {
+    let g = by.get(tag);
+    if (!g) by.set(tag, (g = { tag, holders: [], recent: [], noHolder: true }));
+    return g;
+  };
+  for (const p of sessions) {
+    for (const tag of new Set(p.tags ?? [])) {
+      const g = group(tag);
+      g.noHolder = false;
+      g.holders.push({
+        id: p.session,
+        key: `${p.name || ''}\u0000${machineOf(p)}\u0000${p.session}`,
+        name: p.name || p.project || p.handle,
+        detail: [p.account_label || p.account.slice(0, 8), machineOf(p), stateInfo({ state: p.state, detail: null, needs_you: false }).label].join(' · '),
+      });
+    }
+  }
+  for (const x of senders) {
+    for (const tag of new Set(x.recent_tags.map((r) => r.tag))) {
+      const line = `Sent to recently by Doorbell on ${machineOf(x)}`;
+      const g = group(tag);
+      if (!g.recent.includes(line)) g.recent.push(line);
+    }
+  }
+  for (const g of by.values()) g.holders.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return [...by.values()].sort((a, b) => (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
+}

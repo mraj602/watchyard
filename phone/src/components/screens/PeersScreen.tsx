@@ -1,16 +1,19 @@
 // Peers (PE3; peers.md 5, 10, 11): the matrix, Pause all peers and the audit list. Read-only
 // except narrowing: a tapped cell can only lose pairs, Block all removes every pair, and the pause
 // switch only pauses. The turn limit (6.3) is shown, not edited.
+// Below them, as on the board: the trusted senders (Doorbell; Revoke narrows, so the paired phone
+// may) and the tags sessions gave themselves (peers.md 3.4, 4.1a).
 // Allowing, and resuming after a pause, need the owner on the board or at a terminal.
 import { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, Switch, Text, View } from 'react-native';
-import type { MatrixInfo, PeerAuditEntry, PeerMessage } from '../../contract/api';
+import type { MatrixInfo, PeerAuditEntry, PeerMessage, PeerSession, TrustedSender } from '../../contract/api';
 import {
   agoLabel, auditWho, ALLOW_FROM_COMPUTER, BLOCK_ALL_CONFIRM, blockAllEdit, blockedAll, TURNS_HELP, TURNS_NONE, NO_LIMIT_HELP, turnsLabel, cellLabel, cellState, CELL_GLYPH, CELL_WORD, detailText, eventLabel, messageWho, narrowings,
-  outcomeLabel, peerAccounts, sizeLabel,
+  outcomeLabel, peerAccounts, sizeLabel, NO_TAGS, NO_HOLDER, NO_TRUSTED, revokeConfirm, tagGroups, trustedSenderLines,
 } from '../../lib/format';
 import { HubError, OWNER_ONLY, errorText } from '../../lib/hub';
 import { useHubApi } from '../hub-api';
+import { go } from '../nav';
 import { switchColors, useTheme } from '../theme';
 import { Btn, Calm, Card, Muted, Page, Section, useToast } from '../ui';
 
@@ -24,6 +27,9 @@ export default function PeersScreen() {
   const [info, setInfo] = useState<MatrixInfo | null>(null);
   const [audit, setAudit] = useState<PeerAuditEntry[] | null>(null);
   const [messages, setMessages] = useState<PeerMessage[] | null>(null);
+  // null: the hub does not serve it (404), or it could not be read; the section is then hidden.
+  const [trusted, setTrusted] = useState<TrustedSender[] | null>(null);
+  const [live, setLive] = useState<PeerSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pick, setPick] = useState<{ from: string; to: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -34,9 +40,9 @@ export default function PeersScreen() {
 
   useEffect(() => {
     if (!client) return;
-    let live = true;
-    void Promise.allSettled([client.matrix(), client.peerAudit({ limit: 50 }), client.peerMessages({ limit: 50 })]).then(([m, a, msg]) => {
-      if (!live) return;
+    let alive = true;
+    void Promise.allSettled([client.matrix(), client.peerAudit({ limit: 50 }), client.peerMessages({ limit: 50 }), client.trustedSenders(), client.peers()]).then(([m, a, msg, tr, ps]) => {
+      if (!alive) return;
       if (m.status === 'fulfilled') {
         setInfo(m.value);
         setError(null);
@@ -46,11 +52,31 @@ export default function PeersScreen() {
       if (a.status === 'fulfilled') setAudit(a.value.entries ?? []);
       // Optional: a hub that does not serve it answers 404 or 501.
       setMessages(msg.status === 'fulfilled' ? msg.value.messages ?? [] : null);
+      // A 404 from a hub without the endpoint hides the section.
+      setTrusted(tr.status === 'fulfilled' ? tr.value.senders ?? [] : null);
+      setLive(ps.status === 'fulfilled' ? ps.value.sessions ?? [] : null);
     });
     return () => {
-      live = false;
+      alive = false;
     };
   }, [client, tick]);
+
+  const revoke = async (x: TrustedSender) => {
+    setBusy(true);
+    try {
+      const next = await client!.revokeTrustedSender(x.machine);
+      setTrusted((cur) => (cur ? cur.map((y) => (y.machine === next.machine ? next : y)) : cur));
+      load();
+    } catch (e) {
+      if (e instanceof HubError && e.status === 404) {
+        toast.show('Doorbell is no longer approved on that machine.');
+        load();
+      } else {
+        toast.show(errorText(e, 'Could not revoke Doorbell'));
+      }
+    }
+    setBusy(false);
+  };
 
   const run = async (send: () => Promise<MatrixInfo>) => {
     setBusy(true);
@@ -85,6 +111,9 @@ export default function PeersScreen() {
   const label = (id: string) => names.get(id) ?? id.slice(0, 8);
   const off = busy || offline || !client;
   const owner = api.me?.owner === true;
+  // Revoke narrows, so the paired phone (push scope) may; a read-only sign-in may not.
+  const canRevoke = !api.me || api.me.device.scopes.includes('push');
+  const tags = tagGroups(live ?? [], trusted ?? []);
   const picked = pick ? { from: accounts.find((a) => a.account === pick.from), to: accounts.find((a) => a.account === pick.to) } : null;
   const options = pick ? narrowings(m.allow, pick.from, pick.to, m.version) : [];
   const word = (target: 'none' | 'out' | 'in' | 'both', from: string, to: string) =>
@@ -246,6 +275,68 @@ export default function PeersScreen() {
                     <Muted>{[x.kind, sizeLabel(x.size), outcomeLabel(x.status)].filter(Boolean).join(' · ')}</Muted>
                   </View>
                   <Muted>{agoLabel(x.created_at, api.now)}</Muted>
+                </View>
+              ))}
+            </Card>
+          )}
+        </Section>
+      ) : null}
+
+      {trusted ? (
+        <Section title="Trusted senders">
+          {trusted.length === 0 ? (
+            <Calm>{NO_TRUSTED}</Calm>
+          ) : (
+            <Card>
+              {trusted.map((x) => {
+                const l = trustedSenderLines(x, api.now);
+                return (
+                  <View key={x.machine} testID={`trusted-${x.machine}`} style={{ gap: 2, paddingVertical: 4 }}>
+                    <Text style={{ color: l.revoked ? t.muted : t.text, fontWeight: '600' }}>{l.title}</Text>
+                    {l.lines.map((line) => (
+                      <Muted key={line}>{line}</Muted>
+                    ))}
+                    {!l.revoked && canRevoke ? (
+                      <Btn
+                        testID={`revoke-${x.machine}`}
+                        kind="danger"
+                        label="Revoke"
+                        disabled={off}
+                        onPress={() =>
+                          Alert.alert('Revoke?', revokeConfirm(l.machine), [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: 'Revoke', style: 'destructive', onPress: () => void revoke(x) },
+                          ])
+                        }
+                      />
+                    ) : null}
+                  </View>
+                );
+              })}
+            </Card>
+          )}
+        </Section>
+      ) : null}
+
+      {live ? (
+        <Section title="Tags">
+          {tags.length === 0 ? (
+            <Calm>{NO_TAGS}</Calm>
+          ) : (
+            <Card>
+              {tags.map((g) => (
+                <View key={g.tag} testID={`tag-${g.tag}`} style={{ gap: 2, paddingVertical: 4 }}>
+                  <Text style={{ color: t.text, fontWeight: '600' }}>{g.tag}</Text>
+                  {g.holders.map((h) => (
+                    <Pressable key={h.id} accessibilityRole="button" accessibilityLabel={`Open session ${h.name}`} testID={`tag-${g.tag}-holder-${h.id}`} onPress={() => go.session(h.id)} style={{ minHeight: 44, justifyContent: 'center' }}>
+                      <Text style={{ color: t.accent }}>{h.name}</Text>
+                      <Muted>{h.detail}</Muted>
+                    </Pressable>
+                  ))}
+                  {g.noHolder ? <Muted>{NO_HOLDER}</Muted> : null}
+                  {g.recent.map((r) => (
+                    <Muted key={r}>{r}</Muted>
+                  ))}
                 </View>
               ))}
             </Card>

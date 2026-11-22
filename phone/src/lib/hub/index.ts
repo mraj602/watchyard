@@ -17,6 +17,8 @@ import type {
   Overview,
   PeerAuditEntry,
   PeerMessage,
+  PeerSession,
+  TrustedSender,
   PushTarget,
   PushTestResult,
   RulesReply,
@@ -114,6 +116,12 @@ export interface HubClient {
   peerAudit(q?: { limit?: number }): Promise<{ entries: PeerAuditEntry[] }>;
   /** GET /v1/peers/messages: who messaged whom, size and outcome; the hub may not serve it yet (404, 501). */
   peerMessages(q?: { limit?: number }): Promise<{ messages: PeerMessage[] }>;
+  /** GET /v1/peers: the live sessions peers can reach, with their tags (peers.md 3). */
+  peers(): Promise<{ sessions: PeerSession[] }>;
+  /** GET /v1/peers/trusted: each machine's trusted sender (Doorbell), revoked ones included; an older hub answers 404. */
+  trustedSenders(): Promise<{ senders: TrustedSender[] }>;
+  /** POST /v1/peers/trusted/revoke (peers.md 4.1a): narrows, so the paired phone may; 404 when nothing is there. */
+  revokeTrustedSender(machine: string): Promise<TrustedSender>;
   /** GET /v1/analytics/{report} (analytics.md): tokens, API-equivalent cost, models, projects, heatmap, sessions, limit windows and hits. */
   analytics<R extends keyof AnalyticsReplies>(report: R, q?: AnalyticsQuery): Promise<AnalyticsReplies[R]>;
   /** PATCH /v1/accounts/{seat}: label, colour, order, hidden or picker mode; owner only (403 for a phone without an owner session). */
@@ -310,6 +318,9 @@ export function createHubClient(deps: HubClientDeps): HubClient {
     editMatrix: (edit) => call<MatrixInfo>('PUT', '/v1/peers/matrix', { edit }),
     pausePeers: (paused) => call<MatrixInfo>('POST', '/v1/peers/pause', { paused }),
     peerAudit: (q = {}) => call<{ entries: PeerAuditEntry[] }>('GET', `/v1/peers/audit${query({ limit: q.limit })}`),
+    peers: () => call<{ sessions: PeerSession[] }>('GET', '/v1/peers'),
+    trustedSenders: () => call<{ senders: TrustedSender[] }>('GET', '/v1/peers/trusted'),
+    revokeTrustedSender: (machine) => call<TrustedSender>('POST', '/v1/peers/trusted/revoke', { machine, sender: 'doorbell' }),
     peerMessages: (q = {}) => call<{ messages: PeerMessage[] }>('GET', `/v1/peers/messages${query({ limit: q.limit })}`),
     relation: (seat) => call<UsageRelation>('GET', `/v1/accounts/${seg(seat)}/relation`),
     analytics: (report, q = {}) => call<AnalyticsReplies[typeof report]>('GET', `/v1/analytics/${seg(report)}${query({ days: q.days, seat: q.seat })}`),
