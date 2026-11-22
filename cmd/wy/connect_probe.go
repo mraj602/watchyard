@@ -58,10 +58,10 @@ func probeRecords(deps connectDeps) ([][]byte, error) {
 		return nil, nil
 	}
 	var extra []string
-	var labels, colours map[string]string
+	var labels, colours, modes map[string]string
 	if f, err := config.Load(deps.dirs.Config.Path); err == nil {
 		if cfg, err := f.Typed(); err == nil {
-			extra, labels, colours = cfg.Slots.Extra, cfg.Slots.Labels, cfg.Slots.Colours
+			extra, labels, colours, modes = cfg.Slots.Extra, cfg.Slots.Labels, cfg.Slots.Colours, cfg.Slots.Modes
 		}
 	}
 	slots, err := (identity.Locator{Home: home, FS: identity.OSFS{}}).Discover(extra, deps.timer.Getenv)
@@ -81,9 +81,9 @@ func probeRecords(deps connectDeps) ([][]byte, error) {
 			meta.Seat = &record.Seat{Account: l.Seat.Account, Org: l.Seat.Org, Email: l.Seat.Email, Src: l.Seat.Src}
 			p.LoggedIn = true
 		}
-		// The labels and colours wy setup wrote reach the hub here (setup.md 8.4); an
-		// invalid hand-edited one is left out rather than failing the connect.
-		if x, err := account.SlotInfoExtra(labels[s.Name], colours[s.Name]); err == nil && len(x) > 0 {
+		// The labels, colours and modes wy setup wrote reach the hub here (setup.md 8.4, 8.5
+		// Kind); an invalid hand-edited one is left out rather than failing the connect.
+		if x, err := account.SlotInfoExtra(labels[s.Name], colours[s.Name], modes[s.Name]); err == nil && len(x) > 0 {
 			p.Extra = x
 		}
 		r, err := record.NewSlotInfo(meta, p)

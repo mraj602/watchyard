@@ -41,6 +41,9 @@ func Candidates(slots []Slot, src Sources) []Candidate {
 				if seat.Label != nil {
 					c.HubLabel = *seat.Label
 				}
+				if seat.Mode != nil && ValidHubMode(*seat.Mode) {
+					c.HubMode = *seat.Mode
+				}
 				if c.Email == "" && seat.Email != nil {
 					c.Email = *seat.Email
 				}

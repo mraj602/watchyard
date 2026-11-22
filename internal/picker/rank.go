@@ -54,6 +54,7 @@ type Ranked struct {
 	Excluded  string       `json:"excluded_reason,omitempty"`
 	Score     float64      `json:"score"`
 	Mode      string       `json:"mode"`
+	ModeFrom  string       `json:"mode_from"` // local, hub, proposed or none (setup.md 8.5, Kind)
 	Settings  string       `json:"settings_key,omitempty"`
 	Live      int          `json:"live_sessions"`
 	Pending   int          `json:"pending_reservations"`
@@ -151,7 +152,7 @@ func Rank(in Input) Result {
 		pol, warn := s.PolicyFor(c)
 		res.Warnings = append(res.Warnings, warn...)
 		r := Ranked{Label: c.Label, Folder: c.Folder, Dir: c.Dir, Default: c.Default, Seat: c.SeatID, Email: c.Email,
-			MatchedBy: c.MatchedBy, LoggedIn: c.LoggedIn, Mode: pol.Mode, Settings: pol.Key, Live: c.LiveSessions,
+			MatchedBy: c.MatchedBy, LoggedIn: c.LoggedIn, Mode: pol.Mode, ModeFrom: pol.ModeFrom, Settings: pol.Key, Live: c.LiveSessions,
 			Pending: in.Pending[c.Key()], Source: c.Source, key: c.Key(), policy: pol, cand: c, Windows: []Projection{}}
 		if r.Source == "" {
 			r.Source = "none"

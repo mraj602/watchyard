@@ -135,11 +135,16 @@ func NextColour(used []string) string {
 	return best
 }
 
-// SlotInfoExtra returns the optional `label` and `colour` fields of a slot_info payload
-// (record.md 4.7), validated; empty values are left out. It is the same type as
-// record.Extra, for SlotInfoPayload.Extra.
-func SlotInfoExtra(label, colour string) (map[string]json.RawMessage, error) {
+// SlotInfoExtra returns the optional `label`, `colour` and `mode` fields of a slot_info
+// payload (record.md 4.7), validated; empty values are left out, and so is a mode other than
+// protected or aggressive (the hub would ignore it). It is the same type as record.Extra, for
+// SlotInfoPayload.Extra.
+func SlotInfoExtra(label, colour, mode string) (map[string]json.RawMessage, error) {
 	out := map[string]json.RawMessage{}
+	if mode == "protected" || mode == "aggressive" {
+		b, _ := json.Marshal(mode)
+		out["mode"] = b
+	}
 	if label != "" {
 		if err := ValidateLabel(label); err != nil {
 			return nil, err

@@ -209,6 +209,8 @@ type LaneRow struct {
 	Meter7       float64 // the meter's weekly points
 	Margin5      float64 // the meter margin g5, 5-hour points
 	Margin7      float64 // the meter margin g7, weekly points
+	WeeklyCap    float64 // the weekly level at which it takes no new session now (caps)
+	FiveHourCap  float64 // the 5-hour level at which it takes no new session
 	SampleAgeMin float64
 	SampleAt     time.Time // zero: no reading time
 	FiveReset    time.Time
@@ -458,6 +460,19 @@ func (p LaneParams) limits(acc LaneAccount) (lim7, lim5 float64) {
 	return lim7, lim5
 }
 
+// caps are the weekly and 5-hour levels at which an account takes no new session when its
+// week resets in hrs hours (record.md 4.11 weekly_cap, five_hour_cap): for a protected account
+// the pace line min(T, T × (1 − hrs/168) + headstart) and the 5-hour floor, for an aggressive
+// one its limits; reserve_pct is already off them (laneLimits).
+func (p LaneParams) caps(acc LaneAccount, hrs float64) (cap7, cap5 float64) {
+	lim7, lim5 := p.limits(acc)
+	if !acc.Protected {
+		return lim7, lim5
+	}
+	frac := 1 - math.Min(hrs, weekH)/weekH
+	return math.Min(lim7, lim7*frac+p.Headstart), lim5
+}
+
 func (p LaneParams) burstCap(protected bool) int {
 	if protected && p.BurstProt > 0 {
 		return p.BurstProt
@@ -485,8 +500,7 @@ func laneScore(acc LaneAccount, w, h, hrs float64, p LaneParams) (float64, bool,
 		minH = p.MinHours
 	}
 	score := damp * p.Handicap * (T - w) / math.Max(hrs, minH)
-	frac := 1 - math.Min(hrs, weekH)/weekH
-	allowed := math.Min(T, T*frac+p.Headstart)
+	allowed, _ := p.caps(acc, hrs)
 	if w >= allowed {
 		return score, true, fmt.Sprintf("7d %s%% >= pace %s", f0(w), f0(allowed))
 	}
@@ -622,6 +636,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 			prot := acc.Protected
 			sc, skip, why := laneScore(acc, v.w, v.h, v.hrs, p)
 			lim7, _ := p.limits(acc)
+			cap7, cap5 := p.caps(acc, v.hrs)
 			level := 0
 			if skip {
 				level = 2
@@ -663,7 +678,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 			}
 			row := LaneRow{Key: acc.Key, Protected: prot, Score: sc, Skip: skip, Reason: why, Weekly: v.w, FiveHour: v.h,
 				Reserve: v.wRes, HoursToReset: v.hrs, Leases: v.leaseN, Burst: v.capN, BurstCap: cp, Capped: capped,
-				Added5: v.add5, Meter5: v.m5, Meter7: v.m7, Margin5: v.g5, Margin7: v.g7, SampleAgeMin: v.ageMin, FiveReset: v.fiveRst,
+				Added5: v.add5, Meter5: v.m5, Meter7: v.m7, Margin5: v.g5, Margin7: v.g7, WeeklyCap: cap7, FiveHourCap: cap5, SampleAgeMin: v.ageMin, FiveReset: v.fiveRst,
 				Stale: v.stale, Unknown: v.unknown, SkipLevel: level, Last: last, Expiring: expiring && !skip,
 				LeaseCharges: v.charges}
 			if !v.noTS {

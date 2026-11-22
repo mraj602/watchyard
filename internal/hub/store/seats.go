@@ -35,11 +35,22 @@ type SeatPatch struct {
 	Colour    *string
 	Order     *int64
 	Hidden    *bool
+	ModeSet   bool    // the mode key was present (setup.md 8.5, Kind)
+	Mode      *string // protected, aggressive; nil with ModeSet clears it (not chosen)
 }
+
+// Seat pick modes (seat.pick_mode, schema v20; setup.md 8.5, Kind).
+const (
+	PickProtected  = "protected"
+	PickAggressive = "aggressive"
+)
+
+// ValidPickMode reports whether s is a seat pick mode.
+func ValidPickMode(s string) bool { return s == PickProtected || s == PickAggressive }
 
 // Validate applies the label and colour rules. It needs at least one key.
 func (p SeatPatch) Validate() error {
-	if !p.LabelSet && !p.ColourSet && p.Order == nil && p.Hidden == nil {
+	if !p.LabelSet && !p.ColourSet && p.Order == nil && p.Hidden == nil && !p.ModeSet {
 		return fmt.Errorf("%w: no field to change", ErrBadSeatPatch)
 	}
 	if p.Label != nil && !ValidSeatLabel(*p.Label) {
@@ -51,11 +62,14 @@ func (p SeatPatch) Validate() error {
 	if p.Order != nil && (*p.Order < 0 || *p.Order > 1_000_000) {
 		return fmt.Errorf("%w: order out of range", ErrBadSeatPatch)
 	}
+	if p.Mode != nil && !ValidPickMode(*p.Mode) {
+		return fmt.Errorf("%w: mode must be protected, aggressive or null", ErrBadSeatPatch)
+	}
 	return nil
 }
 
-// PatchSeat applies p to the seat; touching label or colour sets look_src to 'ui'. It
-// returns ErrNotFound for an unknown seat.
+// PatchSeat applies p to the seat; touching label or colour sets look_src to 'ui', touching
+// mode sets pick_mode_src to 'ui'. It returns ErrNotFound for an unknown seat.
 func (tx *Tx) PatchSeat(id string, p SeatPatch) error {
 	if err := p.Validate(); err != nil {
 		return err
@@ -73,6 +87,11 @@ func (tx *Tx) PatchSeat(id string, p SeatPatch) error {
 	}
 	if p.ColourSet {
 		if _, err := tx.exec(`UPDATE seat SET colour = ?, look_src = 'ui' WHERE id = ?`, p.Colour, id); err != nil {
+			return err
+		}
+	}
+	if p.ModeSet {
+		if _, err := tx.exec(`UPDATE seat SET pick_mode = ?, pick_mode_src = 'ui' WHERE id = ?`, p.Mode, id); err != nil {
 			return err
 		}
 	}
@@ -121,6 +140,22 @@ func (tx *Tx) SeatSlotLook(seatID, label, colour string) (bool, error) {
 	}
 	res, err := tx.exec(`UPDATE seat SET label = coalesce(?, label), colour = coalesce(?, colour), look_src = 'slot'
 		WHERE id = ? AND (look_src IS NULL OR look_src = 'slot')`, nullStr(label), nullStr(colour), seatID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// SeatSlotMode applies a slot_info mode (record.md 4.7) only while nobody has chosen for the
+// seat (pick_mode and pick_mode_src NULL: an owner's Not chosen keeps pick_mode_src 'ui'), and
+// then sets pick_mode_src to 'slot'. Any other value is ignored. It reports whether it was
+// applied.
+func (tx *Tx) SeatSlotMode(seatID, mode string) (bool, error) {
+	if !ValidPickMode(mode) {
+		return false, nil
+	}
+	res, err := tx.exec(`UPDATE seat SET pick_mode = ?, pick_mode_src = 'slot' WHERE id = ? AND pick_mode IS NULL AND pick_mode_src IS NULL`, mode, seatID)
 	if err != nil {
 		return false, err
 	}

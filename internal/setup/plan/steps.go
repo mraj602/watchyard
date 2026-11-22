@@ -222,6 +222,13 @@ func (p *planner) planConfig() error {
 			want["slots.colours."+n.f.Folder] = n.colour
 		}
 	}
+	// The picker modes answered in an interactive run (setup.md 8.5, Choosing in wy setup).
+	for k, v := range p.c.Modes {
+		if !model.ValidModeKey(k) || (v != "protected" && v != "aggressive") {
+			return fmt.Errorf("mode %s = %q: want slots.modes.<folder> or next.accounts.<key>.mode, protected or aggressive", k, v)
+		}
+		want[k] = v
+	}
 	if len(want) == 0 {
 		return nil
 	}

@@ -222,10 +222,13 @@ func explainLanes(w io.Writer, res Result) error {
 				why += ", expiring first"
 			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n, r.Label, r.Folder, r.Kind, ok, seven, five, ls, dataCol, why)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n, r.Label, r.Folder, KindText(r), ok, seven, five, ls, dataCol, why)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
+	}
+	for _, l := range kindLines(res.Ranked) {
+		fmt.Fprintln(w, l)
 	}
 	seen := map[string]bool{}
 	for _, r := range res.Ranked {
@@ -327,4 +330,82 @@ func dash(xs []string) string {
 		return "-"
 	}
 	return strings.Join(xs, ", ")
+}
+
+// KindText is the --explain kind of a lanes account with where it came from (setup.md 8.5,
+// --explain): "protected (hub)", "protected (set on this machine); hub says aggressive",
+// "aggressive (proposed here)" or "not chosen (treated as aggressive)".
+func KindText(r Ranked) string {
+	kind := r.Kind
+	if kind == "" {
+		kind = laneKind(r.policy)
+	}
+	switch r.ModeFrom {
+	case ModeFromNone:
+		return "not chosen (treated as aggressive)"
+	case ModeFromHub:
+		if r.cand.HubModeCached {
+			return kind + " (hub, cached)"
+		}
+		return kind + " (hub)"
+	case ModeFromProposed:
+		return kind + " (proposed here)"
+	case ModeFromLocal:
+		s := kind + " (set on this machine)"
+		if h := r.policy.HubMode; h != "" && h != kind {
+			s += "; hub says " + h
+		}
+		return s
+	}
+	return kind
+}
+
+// kindLines are the lines under the --explain table: one definition per kind shown
+// (ModeWords), then, when a logged-in account is not chosen, how to choose (with its email,
+// else its label, when it is the only one).
+func kindLines(rs []Ranked) []string {
+	var prot, aggr, none bool
+	var unchosen []Ranked
+	seen := map[string]bool{}
+	for _, r := range rs {
+		kind := r.Kind
+		if kind == "" {
+			kind = laneKind(r.policy)
+		}
+		switch {
+		case r.ModeFrom == ModeFromNone:
+			if r.LoggedIn && !seen[r.key] { // a folder with no login is no account to choose for
+				seen[r.key] = true
+				unchosen = append(unchosen, r)
+			}
+			none = true
+		case kind == config.NextModeProtected:
+			prot = true
+		default:
+			aggr = true
+		}
+	}
+	var out []string
+	if prot {
+		out = append(out, "Protected: "+ModeWords.Protected)
+	}
+	if aggr {
+		out = append(out, "Aggressive: "+ModeWords.Aggressive)
+	}
+	if none {
+		out = append(out, "Not chosen: "+ModeWords.NotChosen)
+	}
+	if len(unchosen) > 0 {
+		key := "<email>"
+		if len(unchosen) == 1 {
+			switch {
+			case unchosen[0].Email != "":
+				key = unchosen[0].Email
+			case unchosen[0].Label != "":
+				key = unchosen[0].Label
+			}
+		}
+		out = append(out, "Choose on the board (Accounts, the account, How should the picker use this account?) or: wy config set next.accounts."+key+".mode protected")
+	}
+	return out
 }

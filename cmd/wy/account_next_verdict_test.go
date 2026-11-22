@@ -67,6 +67,15 @@ func TestAccountNextVerdicts(t *testing.T) {
 	if a := byAcct["a1"]; a.Eligible || a.SkipLevel == nil || *a.SkipLevel != 3 {
 		t.Errorf("full account %+v", a)
 	}
+	// mode_from and the caps (record.md 4.11): a2 protected on this machine, its weekly cap the
+	// pace line 85 × (1 − 72/168) + 10, 5-hour floor 45; a1 not chosen, aggressive 98 and 98.
+	if p.ModeFrom != "local" || p.WeeklyCap == nil || *p.WeeklyCap != 58.6 || p.FiveHourCap == nil || *p.FiveHourCap != 45 {
+		t.Errorf("protected mode_from %q caps %v %v", p.ModeFrom, p.WeeklyCap, p.FiveHourCap)
+	}
+	if a := byAcct["a1"]; a.ModeFrom != "none" || a.Kind != "aggressive" || a.WeeklyCap == nil || *a.WeeklyCap != 98 ||
+		a.FiveHourCap == nil || *a.FiveHourCap != 98 {
+		t.Errorf("unchosen mode_from %q caps %v %v", a.ModeFrom, a.WeeklyCap, a.FiveHourCap)
+	}
 	if len(f.spawns) != 1 {
 		t.Errorf("spawns %v, want one background flush", f.spawns)
 	}
@@ -120,5 +129,93 @@ func TestVerdictDigestRounds(t *testing.T) {
 	}
 	if verdictDigest(base(&w1, &t1)) == verdictDigest(base(&w3, &t1)) {
 		t.Error("a level a point away is the same")
+	}
+}
+
+// The seat's hub mode (UsageSeat.mode with the machine token, Seat.mode with the board token)
+// makes an account protected on this machine; this machine's next.accounts mode wins over it,
+// and slots.modes counts only while the hub has none (setup.md 8.5, Kind).
+func TestAccountNextHubMode(t *testing.T) {
+	for _, usage := range []bool{true, false} {
+		f := newNextFixture(t)
+		if usage {
+			f.machineToken()
+			f.usage = true
+		}
+		s1 := seat("seat_1", "a1", "o1", "one@example.test", "", 10, 10)
+		s1["mode"] = "protected"
+		s2 := seat("seat_2", "a2", "o2", "two@example.test", "", 10, 10)
+		s2["mode"] = nil
+		f.seats = []map[string]any{s1, s2}
+		f.set("slots.modes.~/.claude-2", "protected")
+		r := f.run("--json", "--no-reserve")
+		var doc struct {
+			Accounts []struct {
+				Folder   string `json:"folder"`
+				Kind     string `json:"kind"`
+				ModeFrom string `json:"mode_from"`
+			} `json:"accounts"`
+		}
+		if err := json.Unmarshal([]byte(r.out), &doc); err != nil {
+			t.Fatalf("%v: %s %s", err, r.out, r.errOut)
+		}
+		got := map[string]string{}
+		for _, a := range doc.Accounts {
+			got[a.Folder] = a.Kind + "/" + a.ModeFrom
+		}
+		if got["~/.claude"] != "protected/hub" || got["~/.claude-2"] != "protected/proposed" {
+			t.Errorf("usage %v: %v", usage, got)
+		}
+		f.set("next.accounts.one@example.test.mode", "aggressive")
+		r = f.run("--explain", "--no-reserve")
+		if !strings.Contains(r.out, "aggressive (set on this machine); hub says protected") ||
+			!strings.Contains(r.out, "protected (proposed here)") || strings.Contains(r.out, "Choose on the board") {
+			t.Errorf("usage %v explain:\n%s", usage, r.out)
+		}
+	}
+}
+
+// Each hub read keeps the seats' hub modes in <state>/next/modes.json (0600; not with
+// --no-reserve); with the hub down the kept mode still applies, from "hub", and --explain says
+// it is the cached one (setup.md 8.5, Kind).
+func TestAccountNextHubModeCached(t *testing.T) {
+	f := newNextFixture(t)
+	f.machineToken()
+	f.usage = true
+	s1 := seat("seat_1", "a1", "o1", "one@example.test", "", 10, 10)
+	s1["mode"] = "protected"
+	f.seats = []map[string]any{s1, seat("seat_2", "a2", "o2", "two@example.test", "", 10, 10)}
+	path := filepath.Join(f.dirs.State.Path, "next", "modes.json")
+	f.run("--json", "--no-reserve")
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("--no-reserve kept the hub modes")
+	}
+	f.run("--json")
+	fi, err := os.Stat(path)
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("modes.json %v %v", fi, err)
+	}
+	f.hub.Close()
+	r := f.run("--json", "--no-reserve")
+	var doc struct {
+		HubError string `json:"hub_error"`
+		Accounts []struct {
+			Folder   string `json:"folder"`
+			Kind     string `json:"kind"`
+			ModeFrom string `json:"mode_from"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal([]byte(r.out), &doc); err != nil {
+		t.Fatalf("%v: %s %s", err, r.out, r.errOut)
+	}
+	got := map[string]string{}
+	for _, a := range doc.Accounts {
+		got[a.Folder] = a.Kind + "/" + a.ModeFrom
+	}
+	if doc.HubError == "" || got["~/.claude"] != "protected/hub" || got["~/.claude-2"] != "aggressive/none" {
+		t.Fatalf("hub down: %q %v", doc.HubError, got)
+	}
+	if r = f.run("--explain", "--no-reserve"); !strings.Contains(r.out, "protected (hub, cached)") {
+		t.Fatalf("explain:\n%s", r.out)
 	}
 }

@@ -139,6 +139,8 @@ one folder.
                                mode 0600, used for 7 days when the hub cannot be read (setup.md 8.5)
   next/hub_leases.json         wy account next: other machines' leases last read from the hub, per seat,
                                mode 0600, used for 7 days when the hub cannot be read (setup.md 8.5)
+  next/modes.json              wy account next: each seat's picker mode last read from the hub, mode 0600,
+                               used with no age limit when the hub cannot be read (setup.md 8.5, Kind)
   next/verdict.json            wy account next: digest and time of the last account_verdicts record it
                                wrote, mode 0600, to skip repeats within 15 minutes (setup.md 8.5)
   board/last-view.json         last board view shown, mode 0600 (terminal.md T3)
@@ -223,6 +225,7 @@ keep_days = 7
 extra = []                                   # extra config folders outside ~/.claude*
 labels = { "~/.claude-2" = "work" }          # local fallback; the hub's seat label wins
 colours = { "~/.claude-2" = "#f59e0b" }      # (setup.md 9.2)
+modes = { "~/.claude-2" = "protected" }      # proposed picker mode, sent to the hub (setup.md 8.5, Kind)
 
 [share]                                      # (setup.md 9.2)
 primary = "~/.claude"

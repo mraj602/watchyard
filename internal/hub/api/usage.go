@@ -46,6 +46,7 @@ type UsageSeat struct {
 	Account      string            `json:"account"`
 	Org          string            `json:"org"`
 	Label        *string           `json:"label"`
+	Mode         *string           `json:"mode"`
 	Windows      []Window          `json:"windows"`
 	Samples      []store.SampleRow `json:"samples"`
 	LiveSessions int               `json:"live_sessions"`
@@ -122,7 +123,7 @@ func (s *Server) machineUsage(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		seat := UsageSeat{ID: x.ID, Account: x.Account, Org: x.Org, Label: x.Label, Windows: windowsOf(ws, now),
+		seat := UsageSeat{ID: x.ID, Account: x.Account, Org: x.Org, Label: x.Label, Mode: x.Mode, Windows: windowsOf(ws, now),
 			Samples: sm, LiveSessions: x.LiveSessions, Places: []UsageSlot{}, SignedOut: []UsageSlot{}, Leases: ls,
 			OwnLeases: own, Calibration: cal[x.ID]}
 		if seat.Samples == nil {

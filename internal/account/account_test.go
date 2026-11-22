@@ -174,17 +174,20 @@ func TestLabelsAndColours(t *testing.T) {
 }
 
 func TestSlotInfoExtra(t *testing.T) {
-	x, err := SlotInfoExtra("work", "teal")
-	if err != nil || string(x["label"]) != `"work"` || string(x["colour"]) != `"#14b8a6"` {
+	x, err := SlotInfoExtra("work", "teal", "protected")
+	if err != nil || string(x["label"]) != `"work"` || string(x["colour"]) != `"#14b8a6"` || string(x["mode"]) != `"protected"` {
 		t.Fatalf("%v %v", x, err)
 	}
-	if x, _ = SlotInfoExtra("", ""); len(x) != 0 {
+	if x, _ = SlotInfoExtra("", "", ""); len(x) != 0 {
 		t.Fatal(x)
 	}
-	if _, err = SlotInfoExtra("Bad", ""); err == nil {
+	if x, _ = SlotInfoExtra("", "", "normal"); len(x) != 0 {
+		t.Fatal("a mode other than protected or aggressive is sent", x)
+	}
+	if _, err = SlotInfoExtra("Bad", "", ""); err == nil {
 		t.Fatal("bad label")
 	}
-	if _, err = SlotInfoExtra("ok", "nope"); err == nil {
+	if _, err = SlotInfoExtra("ok", "nope", ""); err == nil {
 		t.Fatal("bad colour")
 	}
 }

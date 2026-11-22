@@ -188,6 +188,7 @@ func accountNext(e nextEnv, args []string) error {
 		warns = append(warns, err.Error())
 	}
 	settings := picker.SettingsFrom(cfg.Next)
+	settings.Proposed = cfg.Slots.Modes
 	strat := *strategy
 	if strat == "" {
 		strat = settings.Strategy
@@ -224,6 +225,17 @@ func accountNext(e nextEnv, args []string) error {
 	src.Local = ob.Samples
 	in := picker.Input{Now: now, Strategy: strat, Model: *model, Settings: settings, Candidates: picker.Candidates(slots, src),
 		Outbox: ob, N: k, SIDs: sids, Urgent: *urgent}
+	// The seats' hub modes: kept after each hub read, used when the hub could not be read (a
+	// setting: no age limit; setup.md 8.5, Kind).
+	modesPath := filepath.Join(e.dirs.State.Path, "next", "modes.json")
+	switch {
+	case src.Hub != nil && !*noReserve:
+		if err := picker.SaveHubModes(modesPath, picker.LoadHubModes(modesPath), in.Candidates); err != nil {
+			warns = append(warns, "hub modes copy: "+err.Error())
+		}
+	case src.Hub == nil && cfg.Hub.URL != "":
+		picker.UseHubModes(in.Candidates, picker.LoadHubModes(modesPath))
+	}
 
 	if lanes {
 		// The hub's calibration factors: kept for when the hub cannot be read (setup.md 8.5).

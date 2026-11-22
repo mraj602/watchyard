@@ -339,11 +339,12 @@ paths:
     patch:
       tags: [read]
       operationId: patchSeat
-      summary: Set a seat's label, colour, order or hidden flag
+      summary: Set a seat's label, colour, order, hidden flag or picker mode
       description: |
         desktop.md C10. `null` clears `label` or `colour`; a missing key leaves it.
         Sets `seat.look_src = 'ui'`, so a later `slot_info` label or colour no longer applies
-        (record.md 4.7). Publishes a `usage` stream event.
+        (record.md 4.7). `mode` (setup.md 8.5, Kind) is `protected`, `aggressive` or `null`
+        (not chosen) and sets `seat.pick_mode_src = 'ui'`. Publishes a `usage` stream event.
       x-scopes: [owner]
       parameters:
         - {name: seat, in: path, required: true, schema: {type: string}}
@@ -2273,6 +2274,13 @@ components:
         label: {type: [string, "null"]}
         colour: {type: [string, "null"]}
         order: {type: integer, description: "Display position: seats are listed by it (PUT /v1/seats/order sets it, 0..n-1)."}
+        mode:
+          type: [string, "null"]
+          enum: [protected, aggressive, null]
+          description: >-
+            How `wy account next` should use the account (setup.md 8.5, Kind), the same on every
+            machine; null: not chosen, treated as aggressive. A machine's own
+            `next.accounts.<key>.mode` wins on that machine.
         hidden: {type: boolean}
         windows:
           type: array
@@ -2416,6 +2424,7 @@ components:
         colour: {type: [string, "null"], pattern: "^#[0-9a-f]{6}$"}
         order: {type: integer}
         hidden: {type: boolean}
+        mode: {type: [string, "null"], enum: [protected, aggressive, null], description: "The picker's use of the account (Seat.mode); null: not chosen."}
       additionalProperties: false
 
     MachinePatch:
@@ -2476,13 +2485,14 @@ components:
 
     UsageSeat:
       type: object
-      required: [id, account, org, label, windows, samples, live_sessions, places, signed_out, leases, own_leases, calibration]
+      required: [id, account, org, label, mode, windows, samples, live_sessions, places, signed_out, leases, own_leases, calibration]
       additionalProperties: false
       properties:
         id: {type: string}
         account: {type: string, description: Account uuid.}
         org: {type: string, description: Org uuid.}
         label: {type: [string, "null"]}
+        mode: {type: [string, "null"], enum: [protected, aggressive, null], description: "The seat's hub setting for the picker (Seat.mode); null: not chosen."}
         windows:
           type: array
           items: {$ref: "#/components/schemas/Window"}
@@ -2656,6 +2666,9 @@ components:
         burst: {type: [integer, "null"]}
         burst_cap: {type: [integer, "null"]}
         stale: {type: boolean}
+        mode_from: {type: [string, "null"], enum: [local, hub, proposed, none, null], description: "Where the kind came from on that machine (record.md 4.11); null from an older wy."}
+        weekly_cap: {type: [number, "null"], description: "The weekly level at which it takes no new session now (protected: the pace line); null from an older wy."}
+        five_hour_cap: {type: [number, "null"], description: "The 5-hour level at which it takes no new session; null from an older wy."}
 
     CalibrationFactor:
       type: object

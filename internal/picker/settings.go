@@ -19,6 +19,33 @@ type Settings struct {
 	ReserveTTL   time.Duration // how long a pick counts as a pending session
 	StickyMargin float64       // sticky: points under each cap that end the stickiness
 	Accounts     map[string]config.NextAccount
+	// Proposed is config slots.modes: the mode this machine proposed for each folder's
+	// login, used until the hub has one (setup.md 8.5, Kind).
+	Proposed map[string]string
+}
+
+// Where a candidate's mode came from (setup.md 8.5, Kind; record.md 4.11 mode_from).
+const (
+	ModeFromLocal    = "local"    // this machine's next.accounts.<key>.mode
+	ModeFromHub      = "hub"      // the seat's hub setting (UsageSeat.mode, Seat.mode)
+	ModeFromProposed = "proposed" // this machine's slots.modes.<folder>
+	ModeFromNone     = "none"     // not chosen: aggressive (mode normal)
+)
+
+// ModeWords is the one wording of the kinds (setup.md 8.5, Kind), used by --explain and the
+// setup questions; the board's components/pick-mode.js and the phone's
+// lib/format/pickMode.ts say the same.
+var ModeWords = struct {
+	Protected, Aggressive, NotChosen string
+}{
+	Protected:  "Kept for you. New sessions only while this week is behind an even pace and the 5-hour window is under 45%.",
+	Aggressive: "Use it up. Sessions go here until 98% of the week or 5 hours.",
+	NotChosen:  "Not chosen yet; treated as aggressive.",
+}
+
+// ValidHubMode reports whether m is a hub or proposed mode: protected or aggressive.
+func ValidHubMode(m string) bool {
+	return m == config.NextModeProtected || m == config.NextModeAggressive
 }
 
 // SettingsFrom resolves the typed [next] table; zero or invalid values take the defaults.
@@ -68,8 +95,12 @@ var Presets = map[string]Preset{
 
 // Policy is the settings that apply to one candidate.
 type Policy struct {
-	Key         string // the next.accounts key that matched ("" = none)
-	Mode        string
+	Key  string // the next.accounts key that matched ("" = none)
+	Mode string
+	// ModeFrom is where Mode came from (ModeFrom*); HubMode is the seat's hub setting ("" none),
+	// named by --explain when a local mode differs from it.
+	ModeFrom    string
+	HubMode     string
 	Cap5h       float64
 	Cap7d       float64
 	CapModel    float64
@@ -93,7 +124,8 @@ func (p Policy) Protected() bool {
 // PolicyFor finds the account's settings: the next.accounts key equal to its hub seat id,
 // then its email, then its folder, then its label on this machine, then its hub label.
 // Keys never match by position, so a label that differs between machines only matters when
-// it is used as the key.
+// it is used as the key. The mode is the first that is set of that key's mode, the seat's
+// hub setting and this machine's slots.modes proposal; none is normal (aggressive for lanes).
 func (s Settings) PolicyFor(c Candidate) (Policy, []string) {
 	var warn []string
 	var a config.NextAccount
@@ -118,16 +150,29 @@ func (s Settings) PolicyFor(c Candidate) (Policy, []string) {
 			}
 		}
 	}
-	mode := a.Mode
+	hubMode := ""
+	if ValidHubMode(c.HubMode) {
+		hubMode = c.HubMode
+	}
+	mode, from := "", ModeFromNone
+	if a.Mode != "" {
+		if _, ok := Presets[a.Mode]; ok {
+			mode, from = a.Mode, ModeFromLocal
+		} else {
+			warn = append(warn, fmt.Sprintf("next.accounts.%s.mode %q is not protected, conservative, normal or aggressive; ignoring it", key, a.Mode))
+		}
+	}
+	if mode == "" && hubMode != "" {
+		mode, from = hubMode, ModeFromHub
+	}
+	if m := s.Proposed[c.Folder]; mode == "" && ValidHubMode(m) {
+		mode, from = m, ModeFromProposed
+	}
 	if mode == "" {
 		mode = config.NextModeNormal
 	}
-	pre, ok := Presets[mode]
-	if !ok {
-		warn = append(warn, fmt.Sprintf("next.accounts.%s.mode %q is not protected, conservative, normal or aggressive; using normal", key, a.Mode))
-		mode, pre = config.NextModeNormal, Presets[config.NextModeNormal]
-	}
-	p := Policy{Key: key, Mode: mode, Cap5h: pre.Cap5h, Cap7d: pre.Cap7d, CapModel: pre.CapModel, Pref: pre.Pref,
+	pre := Presets[mode]
+	p := Policy{Key: key, Mode: mode, ModeFrom: from, HubMode: hubMode, Cap5h: pre.Cap5h, Cap7d: pre.Cap7d, CapModel: pre.CapModel, Pref: pre.Pref,
 		Priority: a.Priority, Weight: 1, Exclude: a.Exclude, Hours: a.Hours, Days: a.Days, Reserve: a.ReservePct}
 	if a.Cap5h > 0 {
 		p.SetCap5h = min(a.Cap5h, 100)
