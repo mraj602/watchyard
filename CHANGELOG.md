@@ -8,16 +8,6 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Added
 
-- `POST /v1/sessions/{id}/seen`: marks a session's current Needs-you episode seen even when it
-  has no alert (a hub run with `--no-push`, or before the engine reached the episode); the
-  board and the phone app use it for such rows.
-- Protected or aggressive is now a per-account hub setting (`Seat.mode`, `PATCH
-  /v1/accounts/{seat}` `mode`, `GET /v1/usage` `mode`; migration 0020), the same on every
-  machine. The board and the phone app have an owner control on each account ("How should the
-  picker use this account?") with a one-line definition under each choice; `wy setup` and `wy
-  account add` ask once per account. A machine's own `next.accounts.<key>.mode` still wins on
-  that machine and is shown as "set on this machine"; an account with no mode shows "Not
-  chosen yet; treated as aggressive." (unchanged behaviour).
 - **Doorbell as a trusted sender** (Linux): `wy peers trust doorbell` at a terminal approves
   the Doorbell program on this machine to send to tags (`wy peers send tag:<tag> [--one]
   --stdin`) as one chosen account. The agent checks the sender itself from the socket's peer
@@ -32,23 +22,9 @@ All notable changes to Watchyard are recorded here. The format follows
   Peers lists every tag with its holders and the trusted senders that sent to it recently.
   `Session.tags` in the read API.
 
-### Changed
+## [1.2.0] - 2026-11-23
 
-- **Usage and the picker** on the board and the phone, rewritten in plain words: the verdict
-  explains the account's place in line and each rule with its value against its limit, three
-  tiles show how the 5-hour limit relates to the week, one line says what a new session is
-  set aside, and the charts have titles, a y axis, "no data" gaps, model colours with full
-  names and a text alternative; empty charts are replaced by one line, and the details moved
-  to **How this works**.
-
-### Fixed
-
-- Needs-you rows whose alert was not pushed (`stale`, `rule_off`, `peers`, `remote_control`,
-  `baseline`) had neither Seen nor the ⋯ menu on the board, in the desktop app and on the
-  phone, so they could never be dismissed. The read API now carries their skipped alert as the
-  session's `alert`, and Seen on them works; Snooze stays for alerts that can still push.
-
-## [1.1.0] - 2026-11-22
+1.1.0 was never tagged; its changes ship here.
 
 ### Added
 
@@ -107,10 +83,35 @@ All notable changes to Watchyard are recorded here. The format follows
   and keeps the query while the list refreshes. It runs on the device over the list it already
   has: no new API and no message text beyond the existing last-message tail.
 
+- `POST /v1/sessions/{id}/seen`: marks a session's current Needs-you episode seen even when it
+  has no alert (a hub run with `--no-push`, or before the engine reached the episode); the
+  board and the phone app use it for such rows.
+- Protected or aggressive is now a per-account hub setting (`Seat.mode`, `PATCH
+  /v1/accounts/{seat}` `mode`, `GET /v1/usage` `mode`; migration 0020), the same on every
+  machine. The board and the phone app have an owner control on each account ("How should the
+  picker use this account?") with a one-line definition under each choice; `wy setup` and `wy
+  account add` ask once per account. A machine's own `next.accounts.<key>.mode` still wins on
+  that machine and is shown as "set on this machine"; an account with no mode shows "Not
+  chosen yet; treated as aggressive." (unchanged behaviour).
+
 ### Changed
 
 - `wy doctor` treats a folder as logged out when `claude auth status` last said so, even if
   its `.claude.json` still holds the old `oauthAccount`.
+
+- **Usage and the picker** on the board and the phone, rewritten in plain words: the verdict
+  explains the account's place in line and each rule with its value against its limit, three
+  tiles show how the 5-hour limit relates to the week, one line says what a new session is
+  set aside, and the charts have titles, a y axis, "no data" gaps, model colours with full
+  names and a text alternative; empty charts are replaced by one line, and the details moved
+  to **How this works**.
+
+### Fixed
+
+- Needs-you rows whose alert was not pushed (`stale`, `rule_off`, `peers`, `remote_control`,
+  `baseline`) had neither Seen nor the ⋯ menu on the board, in the desktop app and on the
+  phone, so they could never be dismissed. The read API now carries their skipped alert as the
+  session's `alert`, and Seen on them works; Snooze stays for alerts that can still push.
 
 ## [1.0.0] - 2026-10-24
 
@@ -180,6 +181,6 @@ The first public version. Everything below is new.
   itself does, instead of the full build number. claude.ai's Claude Code section kept asking to
   verify the device again, because the string was unusual and changed with every Electron update.
 
-[Unreleased]: https://github.com/mraj602/watchyard/compare/v1.1.0...HEAD
-[1.1.0]: https://github.com/mraj602/watchyard/compare/v1.0.0...v1.1.0
+[Unreleased]: https://github.com/mraj602/watchyard/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/mraj602/watchyard/compare/v1.0.0...v1.2.0
 [1.0.0]: https://github.com/mraj602/watchyard/releases/tag/v1.0.0
