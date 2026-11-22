@@ -68,11 +68,29 @@ export function searchTerms(query) {
   return [...new Set(words)].slice(0, MAX_TERMS);
 }
 
-// matches: every term is found in at least one of the texts.
-export function matches(texts, terms) {
+// A term `tag:<name>` (the prefix in any case; terms are folded) asks for exactly that tag and
+// is never matched against other fields. `tag:` alone has no name and matches nothing.
+export const TAG_PREFIX = 'tag:';
+export const isTagTerm = (t) => t.startsWith(TAG_PREFIX);
+const tagName = (t) => t.slice(TAG_PREFIX.length);
+
+// matches: every term is found in at least one of the texts, or in a tag (a plain term by
+// substring, a `tag:<name>` term only by equality).
+export function matches(texts, terms, tags = []) {
   if (!terms.length) return true;
   const fs = texts.map(fold);
-  return terms.every((t) => fs.some((f) => f.includes(t)));
+  const ts = tags.map(fold);
+  return terms.every((t) => {
+    if (isTagTerm(t)) return tagName(t) !== '' && ts.includes(tagName(t));
+    return fs.some((f) => f.includes(t)) || ts.some((f) => f.includes(t));
+  });
+}
+
+// The terms to highlight in one tag chip: the plain terms, and the tag itself when a
+// `tag:<name>` term names it.
+export function tagTerms(tag, terms) {
+  const f = fold(tag);
+  return terms.filter((t) => !isTagTerm(t) || tagName(t) === f).map((t) => (isTagTerm(t) ? f : t));
 }
 
 // hitRanges: where the terms are in text, as sorted, merged [start, end) ranges of the
@@ -83,7 +101,7 @@ export function hitRanges(text, terms) {
   const { f, start, end } = foldMap(s);
   const raw = [];
   for (const t of terms) {
-    if (!t) continue;
+    if (!t || isTagTerm(t)) continue;
     for (let i = f.indexOf(t); i >= 0; i = f.indexOf(t, i + 1)) {
       raw.push(start ? [start[i], end[i + t.length - 1]] : [i, i + t.length]);
     }
@@ -166,10 +184,12 @@ export const EXTRA_LABELS = { title: 'Title', name: 'Name', message: 'Message', 
 // nowhere on the row, as a highlighted excerpt.
 export function searchSession(s, shown, terms) {
   const fields = sessionFields(s, shown);
-  if (!matches(fields.map((f) => f[1]), terms)) return null;
+  const tags = (s && Array.isArray(s.tags) ? s.tags : []).map(str);
+  if (!matches(fields.map((f) => f[1]), terms, tags)) return null;
   if (!terms.length) return { extra: null };
-  const onRow = fields.filter(([k]) => SHOWN.has(k)).map(([, t]) => fold(t));
-  const unseen = terms.filter((t) => !onRow.some((f) => f.includes(t)));
+  // The chips are on the row too: a term found there needs no extra line.
+  const onRow = fields.filter(([k]) => SHOWN.has(k)).map(([, t]) => fold(t)).concat(tags.map(fold));
+  const unseen = terms.filter((t) => !isTagTerm(t) && !onRow.some((f) => f.includes(t)));
   if (!unseen.length) return { extra: null };
   for (const [k, t] of fields) {
     if (SHOWN.has(k)) continue;

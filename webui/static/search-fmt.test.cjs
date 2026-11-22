@@ -121,3 +121,35 @@ test('the folder placeholder is never searched', () => {
   assert.equal(S.searchFolder({ project: 'api', cwd: '/x/y' }), 'api');
   assert.equal(S.searchSession({}, { folder: S.searchFolder({}) }, S.searchTerms('project')), null);
 });
+
+test('a plain term matches a tag by substring', () => {
+  const s = { project: 'api', title: 'Fix the login', tags: ['deploy-bot', 'review'] };
+  const shown = { folder: 'api', sub: 'Fix the login', last: '' };
+  assert.deepEqual(j(S.searchSession(s, shown, S.searchTerms('deploy'))), { extra: null });
+  assert.deepEqual(j(S.searchSession(s, shown, S.searchTerms('API VIEW'))), { extra: null });
+  assert.equal(S.searchSession(s, shown, S.searchTerms('release')), null);
+  assert.equal(S.searchSession({ ...s, tags: undefined }, shown, S.searchTerms('deploy')), null);
+});
+
+test('tag:<name> matches exactly that tag and only tags', () => {
+  const s = { project: 'api', title: 'tag:review notes', tags: ['deploy-bot', 'review'] };
+  const shown = { folder: 'api', sub: 'tag:review notes', last: '' };
+  assert.deepEqual(j(S.searchSession(s, shown, S.searchTerms('tag:review'))), { extra: null });
+  assert.deepEqual(j(S.searchSession(s, shown, S.searchTerms('TAG:Review'))), { extra: null });
+  assert.deepEqual(j(S.searchSession(s, shown, S.searchTerms('tag:review api'))), { extra: null });
+  // Exact: a part of a tag is not the tag.
+  assert.equal(S.searchSession(s, shown, S.searchTerms('tag:deploy')), null);
+  assert.equal(S.searchSession(s, shown, S.searchTerms('tag:rev')), null);
+  // Never matched against other fields: the title says "tag:review" but the session has no such tag.
+  assert.equal(S.searchSession({ ...s, tags: ['other'] }, shown, S.searchTerms('tag:review')), null);
+  assert.equal(S.searchSession({ ...s, tags: [] }, shown, S.searchTerms('tag:review')), null);
+  // Empty name matches nothing, even a session with tags.
+  assert.equal(S.searchSession(s, shown, S.searchTerms('tag:')), null);
+  assert.deepEqual(j(S.hitRanges('tag:review', S.searchTerms('tag:review'))), []);
+});
+
+test('tag chips highlight plain terms and a named tag', () => {
+  assert.deepEqual(j(S.tagTerms('deploy-bot', S.searchTerms('deploy'))), ['deploy']);
+  assert.deepEqual(j(S.tagTerms('deploy-bot', S.searchTerms('tag:deploy-bot'))), ['deploy-bot']);
+  assert.deepEqual(j(S.tagTerms('review', S.searchTerms('tag:deploy-bot'))), []);
+});

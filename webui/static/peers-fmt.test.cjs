@@ -168,3 +168,42 @@ test('turn limit: whole numbers 2 to 500; raising widens, lowering narrows', () 
   assert.deepEqual(j(P.editBody({ version: 4 }, { max_turns: 0 })), { edit: { base_version: 4, max_turns: 0 } });
   assert.deepEqual(j(P.editBody({ version: 4 }, { max_turns: 10 })), { edit: { base_version: 4, max_turns: 10 } });
 });
+
+test('trusted senders: sentences and facts', () => {
+  const t = { machine: 'm_1', machine_name: 'laptop', account: 'a1', program: '/home/me/.venv/bin/doorbell', approved_at: 'A', last_send_at: null, sent_today: 0, recent_tags: [] };
+  const age = (x) => `<${x}>`;
+  assert.equal(P.trustedTitle(t), 'Doorbell on laptop');
+  assert.equal(P.trustedTitle({ machine: 'm_2' }), 'Doorbell on m_2');
+  assert.deepEqual(j(P.trustedFacts(t, 'work', age)), ['sends as work', 'approved <A>', 'has not sent yet', '0 messages today']);
+  assert.deepEqual(j(P.trustedFacts({ ...t, last_send_at: 'L', sent_today: 1 }, 'work', age)), ['sends as work', 'approved <A>', 'last sent <L>', '1 message today']);
+  assert.equal(P.revokedText({ revoked_at: 'R' }, age), 'Revoked <R>. To approve it again, run `wy peers trust doorbell` in a terminal on that machine.');
+  assert.equal(P.isRevoked(t), false);
+  assert.equal(P.isRevoked({ ...t, revoked_at: 'R' }), true);
+  assert.equal(P.revokeConfirm('laptop'), "Stop Doorbell on laptop from sending to sessions? It can be approved again only from that machine's terminal.");
+  assert.deepEqual(j(P.revokeBody(t)), { machine: 'm_1', sender: 'doorbell' });
+  assert.equal(P.TRUSTED_EMPTY, 'Doorbell is not approved on any machine. To let it wake sessions by tag, run `wy peers trust doorbell` in a terminal on the machine it runs on (Linux).');
+  assert.equal(P.NO_TAGS, 'No session has a tag. A session gives itself one with `wy peers tag add <tag>`.');
+  assert.equal(P.NO_HOLDER, 'No session holds it now.');
+});
+
+test('tags: holders sorted, trusted senders that sent recently, tags only a sender used', () => {
+  const peers = [
+    { session: 's2', name: 'b', machine: 'm_1', tags: ['review', 'deploy'] },
+    { session: 's1', name: 'a', machine: 'm_1', tags: ['deploy'] },
+    { session: 's3', name: 'c', machine: 'm_2' },
+  ];
+  const trusted = [
+    { machine: 'm_1', machine_name: 'laptop', recent_tags: [{ tag: 'deploy', at: 'T2' }, { tag: 'deploy', at: 'T1' }, { tag: 'gone', at: 'T0' }] },
+    { machine: 'm_2', recent_tags: [] },
+  ];
+  const idx = j(P.tagIndex(peers, trusted));
+  assert.deepEqual(idx.map((e) => e.tag), ['deploy', 'gone', 'review']);
+  assert.deepEqual(idx[0].holders.map((p) => p.session), ['s1', 's2']);
+  assert.deepEqual(idx[0].senders, [{ machine: 'm_1', name: 'laptop', at: 'T2' }]);
+  assert.deepEqual(idx[1].holders, []);
+  assert.deepEqual(idx[1].senders.map((x) => x.name), ['laptop']);
+  assert.deepEqual(idx[2].senders, []);
+  assert.equal(P.sentRecently({ name: 'laptop' }), 'Sent to recently by Doorbell on laptop');
+  assert.deepEqual(j(P.tagIndex(null, null)), []);
+  assert.deepEqual(j(P.tagIndex([{ session: 'x' }], [])), []);
+});

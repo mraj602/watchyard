@@ -142,6 +142,11 @@ func Fixtures(now time.Time) *Data {
 	stale["stale"], stale["machine_stale"] = true, true
 	unattr := sess("c41e0000-0000-4000-8000-00000000000e", "done", "", false, 3*hour, "", "", "", "m_gpu", "gpu-box", "scratch", "", "", 4)
 	unattr["context_pct"] = nil
+	// Tags the sessions gave themselves (peers.md 3.4): chips on the list, matched by its search.
+	asked["tags"] = []string{"review"}
+	work1["tags"] = []string{"api", "deploy"}
+	work2["tags"] = []string{"infra"}
+	p1["tags"] = []string{"deploy"}
 	d.Sessions = []M{asked, perm, limited, work1, p1, work2, p2, done1, p3, unattr, stale, gone}
 
 	d.Machines = []M{

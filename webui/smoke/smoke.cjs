@@ -813,6 +813,28 @@ async function peersChecks(page, sizeName, who, owner) {
   const audit = await page.evaluate(async () => (await (await fetch('/v1/peers/audit')).json()).entries);
   if (audit.some((e) => e.msg)) fail(t('mock audit carries message text'));
 
+  // Trusted senders and Tags (pwa.md 3.1): the mock has Doorbell on laptop (the owner revokes it,
+  // so the device pass later finds it revoked) and on old-vps (already revoked); sessions carry tags.
+  const trustedRow = '[data-key=trusted-m_laptop]';
+  if (!(await page.$(trustedRow))) fail(t('no Trusted senders row for laptop'));
+  else {
+    if (!/^Doorbell on laptop/.test((await txt(`${trustedRow} .row-text .strong`)) || '')) fail(t('trusted row has the wrong title'));
+    if (!/messages today/.test((await txt(trustedRow)) || '')) fail(t('trusted row has no messages today'));
+  }
+  if (!/Revoked .* ago\. To approve it again, run wy peers trust doorbell/.test((await txt('[data-key=trusted-revoked-m_vps]')) || '')) fail(t('revoked row does not say how to approve again'));
+  if (await page.$('[data-key=revoke-m_vps]')) fail(t('a revoked sender has a Revoke button'));
+  if (!(await page.$('[data-key=tag-deploy] a[href^="#/sessions/"]'))) fail(t('tag deploy shows no holder link'));
+  if (!/Sent to recently by Doorbell on laptop/.test((await txt('[data-key=tag-deploy]')) || '')) fail(t('tag deploy does not say who sent to it'));
+  if (!/No session holds it now\./.test((await txt('[data-key=tag-nightly]')) || '')) fail(t('a tag with no holder does not say so'));
+  if (owner) {
+    if (!(await page.$('[data-key=revoke-m_laptop]'))) fail(t('no Revoke button for the owner'));
+    else {
+      await shot(page, `${sizeName}-${who}-peers-trusted`);
+      await pressSel('[data-key=revoke-m_laptop]');
+      try { await page.waitForFunction(() => /Revoked/.test((document.querySelector('[data-key=trusted-m_laptop]') || {}).textContent || '') && !document.querySelector('[data-key=revoke-m_laptop]'), { timeout: 4000 }); } catch (e) { fail(t('revoking Doorbell did not mark it revoked')); }
+    }
+  } else if (await page.$('[data-key^=revoke-]')) fail(t('a paired device sees Revoke'));
+
   // Resume thread (peers.md 6.3): the owner sees it on the newest loop_guard stop and clicks it; a device never sees it.
   const resumeSel = '[data-key^=resume-]';
   if (owner) {

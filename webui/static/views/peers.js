@@ -7,16 +7,19 @@
 import { h } from '../components/dom.js';
 import { section, toggle, toast, moreTabs, details, ownerHintNode } from '../components/ui.js';
 import { seatIndex, seatName } from '../components/seat.js';
+import { stateTag } from '../components/state.js';
 import { store, isOwner, canPush, inApp } from '../store.js';
-import { getMatrix, editMatrix, pausePeers, getPeerAudit, getPeerMessages, resumePeerThread } from '../api.js';
+import { getMatrix, editMatrix, pausePeers, getPeerAudit, getPeerMessages, resumePeerThread, getPeers, getTrustedSenders, revokeTrustedSender } from '../api.js';
 import { agoLabel, dateTime } from '../format.js';
 import {
   peerAccounts, allowAllEdit, blockAllEdit, allowedAll, blockedAll, parseTurns, turnsWidens,
   TURNS_NONE, TURNS_MIN, TURNS_MAX, TURNS_SUGGEST, TURNS_HELP, NO_LIMIT_HELP, turnsLabel, ALLOW_ALL_CONFIRM, BLOCK_ALL_CONFIRM, OWNER_ONLY_ALLOW, cellState, cellLabel, cellEdit, editBody, whyNot, detailText, eventLabel, auditWho,
   messageWho, outcomeLabel, sizeLabel, resumableStops, resumeText, isSetup, CELL_GLYPH, CELL_WORD, LEGEND,
+  TRUSTED_EMPTY, NO_TAGS, NO_HOLDER, TRUSTED_INTRO, TAGS_INTRO, revokeConfirm, senderMachine, trustedTitle, trustedFacts, revokedText,
+  isRevoked, revokeBody, tagIndex, sentRecently,
 } from '../components/peers-fmt.js';
 
-const st = { matrix: null, audit: null, messages: null, error: null, pick: null, busy: false, turns: null, noLimit: null };
+const st = { matrix: null, audit: null, messages: null, peers: null, trusted: null, error: null, pick: null, busy: false, turns: null, noLimit: null };
 const again = () => window.dispatchEvent(new Event('wy-rerender'));
 
 export async function load() {
@@ -24,12 +27,17 @@ export async function load() {
   st.pick = null;
   st.turns = null;
   st.noLimit = null;
-  const [m, a, msg] = await Promise.allSettled([getMatrix(), getPeerAudit({ limit: '50' }), getPeerMessages({ limit: '50' })]);
+  const [m, a, msg, pr, tr] = await Promise.allSettled([getMatrix(), getPeerAudit({ limit: '50' }), getPeerMessages({ limit: '50' }), getPeers(), getTrustedSenders()]);
   if (m.status === 'fulfilled') st.matrix = m.value;
   else if (m.reason && m.reason.name !== 'AuthError') st.error = m.reason.message;
   if (a.status === 'fulfilled') st.audit = a.value.entries || [];
   // The messages list is optional: an older hub answers 404 or 501, a read-only sign-in 403.
   st.messages = msg.status === 'fulfilled' ? msg.value.messages || [] : null;
+  // The directory and the trusted senders are optional too: a hub without the trusted endpoint
+  // answers 404, and the Trusted senders section is then hidden (pwa.md 3.1).
+  st.peers = pr.status === 'fulfilled' ? pr.value.sessions || [] : null;
+  if (tr.status === 'fulfilled') st.trusted = tr.value.senders || [];
+  else if (tr.reason && tr.reason.status === 404) st.trusted = null;
   again();
 }
 
@@ -295,6 +303,66 @@ function messagesBlock(label) {
         h('time', { class: 'muted small', datetime: x.created_at, title: dateTime(x.created_at) }, agoLabel(x.created_at, Date.now()))))));
 }
 
+// ---- trusted senders and tags (peers.md 4.1a) ------------------------------------------------
+
+// Text with `code` parts.
+const withCode = (text) => text.split('`').map((x, i) => (i % 2 ? h('code', { class: 'mono' }, x) : x));
+
+// Revoke (peers.md 4.1a): owner session only; the hub keeps the entry, marked revoked.
+async function revokeSender(t) {
+  if (!confirm(revokeConfirm(senderMachine(t)))) return;
+  st.busy = true;
+  again();
+  try {
+    const next = await revokeTrustedSender(revokeBody(t));
+    st.trusted = (st.trusted || []).map((x) => (x.machine === next.machine ? next : x));
+  } catch (ex) {
+    toast(ex.message || 'Could not revoke Doorbell');
+  }
+  st.busy = false;
+  again();
+}
+
+function trustedBlock(account) {
+  const list = st.trusted;
+  if (!list) return null;
+  const owner = isOwner(), offline = !!store.offline;
+  const age = (ts) => agoLabel(ts, Date.now());
+  return section('Trusted senders',
+    h('p', { class: 'muted small' }, TRUSTED_INTRO),
+    !list.length ? h('p', { class: 'muted', 'data-key': 'trusted-empty' }, withCode(TRUSTED_EMPTY)) : h('ul', { class: 'panel audit-list' }, list.map((t) => {
+      const revoked = isRevoked(t);
+      return h('li', { class: 'row audit-row', 'data-key': `trusted-${t.machine}` },
+        h('span', { class: 'row-text' },
+          h('span', { class: 'strong' }, trustedTitle(t)),
+          h('span', { class: 'muted small mono' }, t.program),
+          h('span', { class: 'muted small' }, trustedFacts(t, account(t), age).join(' · ')),
+          revoked ? h('span', { class: 'muted small', 'data-key': `trusted-revoked-${t.machine}` }, withCode(revokedText(t, age))) : null),
+        owner && !revoked ? h('button', {
+          type: 'button', class: 'btn btn-sm btn-danger', 'data-key': `revoke-${t.machine}`, disabled: st.busy || offline,
+          title: offline ? 'Offline: Doorbell cannot be revoked now.' : undefined,
+          onclick: () => revokeSender(t),
+        }, 'Revoke') : null);
+    })));
+}
+
+function tagsBlock(acctName) {
+  if (!st.peers && !st.trusted) return null;
+  const tags = tagIndex(st.peers, st.trusted);
+  return section('Tags',
+    h('p', { class: 'muted small' }, TAGS_INTRO),
+    !tags.length ? h('p', { class: 'muted', 'data-key': 'tags-empty' }, withCode(NO_TAGS)) : h('ul', { class: 'panel audit-list' }, tags.map((e) =>
+      h('li', { class: 'row audit-row', 'data-key': `tag-${e.tag}` },
+        h('span', { class: 'row-text' },
+          h('span', { class: 'strong mono' }, e.tag),
+          e.holders.length ? e.holders.map((p) => h('span', { class: 'small' },
+            h('a', { href: `#/sessions/${encodeURIComponent(p.session)}`, 'data-key': `holder-${p.session}` }, p.name || p.handle || p.session), ' ',
+            h('span', { class: 'muted' }, [acctName(p.account, p.account_label), p.machine_name || p.machine].filter(Boolean).join(' · ')), ' ',
+            stateTag(p)))
+            : h('span', { class: 'muted small' }, NO_HOLDER),
+          e.senders.map((x) => h('span', { class: 'muted small' }, sentRecently(x))))))));
+}
+
 export function render() {
   const owner = isOwner();
   const head = h('header', { class: 'page-head col' }, h('h1', {}, 'Peers'), moreTabs('peers', { owner }),
@@ -305,11 +373,15 @@ export function render() {
   const seats = (store.overview && store.overview.seats) || [];
   const names = new Map(accounts(seats, st.matrix.matrix).map((a) => [a.account, a.label]));
   const label = (id) => names.get(id) || String(id).slice(0, 8);
+  // An account as the board names it, else the hub's label for it.
+  const acctName = (id, hubLabel) => names.get(id) || hubLabel || label(id);
   const node = h('div', { class: 'page' }, head,
     killSwitch(),
     matrixBlock(),
     auditBlock(label),
     messagesBlock(label),
+    trustedBlock((t) => acctName(t.account, t.account_label)),
+    tagsBlock(acctName),
     !owner ? ownerHintNode({ app: inApp(), lead: 'Widening, and resuming after a pause or a loop-guard stop, need an owner sign-in.', key: 'peers-owner-hint' }) : null);
   return { title: 'Peers · Watchyard', node };
 }
