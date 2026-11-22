@@ -6,6 +6,8 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-22
+
 ### Added
 
 - `wy account next`: recommends the account (config folder) to start the next Claude Code
@@ -136,5 +138,6 @@ The first public version. Everything below is new.
   itself does, instead of the full build number. claude.ai's Claude Code section kept asking to
   verify the device again, because the string was unusual and changed with every Electron update.
 
-[Unreleased]: https://github.com/mraj602/watchyard/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/mraj602/watchyard/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/mraj602/watchyard/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/mraj602/watchyard/releases/tag/v1.0.0
