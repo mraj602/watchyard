@@ -8,8 +8,8 @@ import (
 	"github.com/mraj602/watchyard/internal/hub/store"
 )
 
-// GET /v1/usage (setup.md 8.5, tokens.md 3): each seat's limit windows and recent samples
-// for `wy account next`, readable with a machine token. It is the owner's own seat usage,
+// GET /v1/usage (setup.md 8.5, tokens.md 3): each seat's limit windows, recent samples and
+// other machines' recent leases for `wy account next`, readable with a machine token. It is the owner's own seat usage,
 // percentages and times only: no email, no org name, no session, project or message, and
 // places and signed-out folders only of the calling machine. Scopes read or write.
 func init() {
@@ -21,6 +21,8 @@ const (
 	usageDefaultSince = 26 * time.Hour
 	usageMaxSince     = 8 * 24 * time.Hour
 	usageMaxSamples   = 5000
+	usageLeasesFor    = 7 * 24 * time.Hour
+	usageMaxLeases    = 500
 )
 
 // UsageDoc is api.yaml UsageDoc.
@@ -43,6 +45,8 @@ type UsageSeat struct {
 	LiveSessions int               `json:"live_sessions"`
 	Places       []UsageSlot       `json:"places"`
 	SignedOut    []UsageSlot       `json:"signed_out"`
+	// Leases are other machines' picks of the last 7 days, oldest first (setup.md 8.5).
+	Leases []store.UsageLease `json:"leases"`
 }
 
 // UsageSlot is a folder of the calling machine: logged in to the seat (places) or signed
@@ -86,8 +90,13 @@ func (s *Server) machineUsage(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, err)
 			return
 		}
+		ls, err := s.store.UsageLeases(r.Context(), x.ID, caller.MachineID, now.Add(-usageLeasesFor), usageMaxLeases)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
 		seat := UsageSeat{ID: x.ID, Account: x.Account, Org: x.Org, Label: x.Label, Windows: windowsOf(ws, now),
-			Samples: sm, LiveSessions: x.LiveSessions, Places: []UsageSlot{}, SignedOut: []UsageSlot{}}
+			Samples: sm, LiveSessions: x.LiveSessions, Places: []UsageSlot{}, SignedOut: []UsageSlot{}, Leases: ls}
 		if seat.Samples == nil {
 			seat.Samples = []store.SampleRow{}
 		}

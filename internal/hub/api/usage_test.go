@@ -77,7 +77,7 @@ func TestUsageForMachineToken(t *testing.T) {
 	if len(seats) != 1 {
 		t.Fatalf("seats %s", doc["seats"])
 	}
-	if got := strings.Join(keysOf(seats[0]), ","); got != "account,id,label,live_sessions,org,places,samples,signed_out,windows" {
+	if got := strings.Join(keysOf(seats[0]), ","); got != "account,id,label,leases,live_sessions,org,places,samples,signed_out,windows" {
 		t.Errorf("seat keys %s", got)
 	}
 	var seat struct {
@@ -128,5 +128,114 @@ func TestUsageForMachineToken(t *testing.T) {
 	h.get("/v1/usage?since="+now.Add(-20*time.Minute).Format(time.RFC3339), machine, &late)
 	if n := len(late.Seats[0].Samples); n != 2 {
 		t.Errorf("since: %d samples, want the 2 of the last reading", n)
+	}
+}
+
+func leaseRec(t *testing.T, machine string, at time.Time, id, sid string, seat bool) []byte {
+	t.Helper()
+	m := record.Meta{Machine: machine, Client: "wy/0.6.0", Now: at}
+	if seat {
+		m.Seat = &record.Seat{Account: acctUUID, Org: orgUUID, Src: "claude_json"}
+	}
+	p := record.AccountLeasePayload{LeaseID: id, SessionID: sid, Kind: record.LeaseAggressive, C5: 8, CF: 8, Strategy: "lanes",
+		Folder: "~/.claude-2", Batch: "01JB0000000000000000000000"}
+	var r *record.Record
+	if seat {
+		var err error
+		if r, err = record.NewAccountLease(m, p); err != nil {
+			t.Fatal(err)
+		}
+	} else { // a record the hub cannot type: no seat
+		r = record.New(record.KindAccountLease, m)
+		if err := r.SetPayload(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, _ := r.Encode()
+	return b
+}
+
+func tokenRec(t *testing.T, machine, sid string, at time.Time, input, output int64) []byte {
+	t.Helper()
+	r, err := record.NewTokenRows(record.Meta{Machine: machine, Client: "wy/0.6.0", Now: at}, record.TokenRowsPayload{
+		Rows: []record.TokenRow{{Key: "msg-" + sid + at.Format("150405"), TS: at.Format(time.RFC3339Nano), SessionID: sid, Input: input, Output: output}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := r.Encode()
+	return b
+}
+
+// GET /v1/usage lists other machines' leases of the seat, with launched, ended and burned
+// units from their sessions, and never their session id or machine (setup.md 8.5).
+func TestUsageLeases(t *testing.T) {
+	h := startHub(t, "")
+	machine := h.token("machine")
+	phone := h.token("phone")
+	other := startHubDevice(t, h, "machine")
+	now := time.Now().UTC().Truncate(time.Second)
+	const sid = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	h.ingest(machine, slotLoginRec(t, h.machine, "~/.claude-2", acctUUID, now.Add(-3*time.Hour)),
+		leaseRec(t, h.machine, now.Add(-30*time.Minute), "01JB0000000000000000000001", "", true))
+	h.ingest(other.token,
+		slotLoginRec(t, other.machine, "~/.claude-9", acctUUID, now.Add(-3*time.Hour)),
+		tokenRec(t, other.machine, sid, now.Add(-50*time.Minute), 1000, 1000), // before the pick: not burned
+		leaseRec(t, other.machine, now.Add(-40*time.Minute), "01JB0000000000000000000002", sid, true),
+		leaseRec(t, other.machine, now.Add(-40*time.Minute), "01JB0000000000000000000002", sid, true), // resent: one row
+		leaseRec(t, other.machine, now.Add(-20*time.Minute), "01JB0000000000000000000003", "", true),
+		leaseRec(t, other.machine, now.Add(-20*time.Minute), "01JB0000000000000000000004", "", false),
+		leaseRec(t, other.machine, now.Add(-8*24*time.Hour), "01JB0000000000000000000005", "", true), // too old
+		simpleHook(t, other.machine, sid, "SessionStart", now.Add(-39*time.Minute)),
+		tokenRec(t, other.machine, sid, now.Add(-35*time.Minute), 100, 20),
+		simpleHook(t, other.machine, sid, "SessionEnd", now.Add(-10*time.Minute)))
+	if n := h.count(`SELECT count(*) FROM account_lease`); n != 4 {
+		t.Errorf("%d lease rows, want 4 (one per lease id; the seatless one is not typed)", n)
+	}
+	if n := h.count(`SELECT count(*) FROM record WHERE kind = 'account_lease' AND typed = 0 AND type_error IS NOT NULL`); n != 1 {
+		t.Errorf("%d untyped lease records, want 1", n)
+	}
+	code, body := h.do("GET", "/v1/usage", machine, nil)
+	if code != http.StatusOK {
+		t.Fatalf("%d %s", code, body)
+	}
+	if strings.Contains(string(body), sid) || strings.Contains(string(body), other.machine) {
+		t.Errorf("reply names a session or machine: %s", body)
+	}
+	var doc struct {
+		Seats []struct {
+			Leases []map[string]any `json:"leases"`
+		} `json:"seats"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil || len(doc.Seats) != 1 {
+		t.Fatalf("%v %s", err, body)
+	}
+	ls := doc.Seats[0].Leases
+	if len(ls) != 2 {
+		t.Fatalf("leases %v, want the other machine's 2 of the last 7 days", ls)
+	}
+	var keys []string
+	for k := range ls[0] {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if got := strings.Join(keys, ","); got != "at,burned_units,c5,cf,ended,has_session,kind,launched,seen,urgent" {
+		t.Errorf("lease keys %s", got)
+	}
+	a, b := ls[0], ls[1]
+	if a["has_session"] != true || a["launched"] != true || a["ended"] != true || a["seen"] != true ||
+		a["burned_units"] != 200.0 || a["kind"] != "aggressive" || a["c5"] != 8.0 || a["urgent"] != false {
+		t.Errorf("first lease %v (burned = 100 + 5 × 20)", a)
+	}
+	if b["has_session"] != false || b["launched"] != false || b["seen"] != false || b["burned_units"] != 0.0 {
+		t.Errorf("second lease %v", b)
+	}
+	var ph struct {
+		Seats []struct {
+			Leases []any `json:"leases"`
+		} `json:"seats"`
+	}
+	h.get("/v1/usage", phone, &ph)
+	if len(ph.Seats[0].Leases) != 3 {
+		t.Errorf("a token with no machine sees %d leases, want all 3", len(ph.Seats[0].Leases))
 	}
 }

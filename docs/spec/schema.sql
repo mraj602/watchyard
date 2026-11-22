@@ -1,4 +1,4 @@
--- Watchyard hub schema, version 14.
+-- Watchyard hub schema, version 15.
 --
 -- One SQLite file (WAL mode). Applied by the hub at start inside one transaction
 -- after `PRAGMA foreign_keys = ON`. Later versions add numbered migrations
@@ -22,6 +22,7 @@
 --   v12 indexes: alert_seat, alert_machine, delivery_target.
 --   v13 session_state.peers (states.md 3.1, push.md 3.5).
 --   v14 device_accounts (keys.md 4.3, peers.md 5.3).
+--   v15 account_lease (record.md 4.10, setup.md 8.5).
 --
 -- Conventions
 --   * Times are INTEGER milliseconds since the Unix epoch, UTC (`*_at`, `ts`).
@@ -46,7 +47,7 @@ CREATE TABLE schema_version (
 ) STRICT;
 
 INSERT INTO schema_version (version, applied_at, wy_version)
-VALUES (14, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
+VALUES (15, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
 
 -- Hub-wide settings that are not secrets (retention days, last-message policy, …).
 CREATE TABLE setting (
@@ -406,6 +407,25 @@ CREATE TABLE limit_sample (
   PRIMARY KEY (seat_id, window_key, ts, source)
 ) STRICT;
 CREATE INDEX limit_sample_ts ON limit_sample(ts);
+
+-- One row per pick `wy account next` recorded on some machine (record.md 4.10). Other
+-- machines' pickers read the recent ones through GET /v1/usage (setup.md 8.5). `wy hub prune`
+-- removes rows older than its cut, like token_row.
+CREATE TABLE account_lease (
+  id            TEXT    NOT NULL PRIMARY KEY,         -- payload.lease_id (a ULID made by the picker)
+  seat_id       TEXT    NOT NULL REFERENCES seat(id),
+  machine_id    TEXT    NOT NULL REFERENCES machine(id),
+  ts            INTEGER NOT NULL,                     -- pick time
+  session_id    TEXT,                                 -- --session-id; not an FK: the session starts later
+  kind          TEXT    NOT NULL CHECK (kind IN ('aggressive', 'protected')),
+  c5            REAL    NOT NULL,
+  cf            REAL    NOT NULL,
+  strategy      TEXT    NOT NULL,
+  urgent        INTEGER NOT NULL DEFAULT 0 CHECK (urgent IN (0, 1)),
+  model         TEXT,
+  record_id     TEXT    NOT NULL
+) STRICT;
+CREATE INDEX account_lease_seat_ts ON account_lease(seat_id, ts);
 
 -- The full claude.ai usage response per seat per poll. Every field kept (iguana_necktie…).
 CREATE TABLE web_usage (

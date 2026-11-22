@@ -37,7 +37,7 @@ func (s *Store) Backup(ctx context.Context, to string) error {
 
 // PruneResult counts what Prune removed (or would remove).
 type PruneResult struct {
-	Records, HookEvents, LimitSamples, WebUsage, TokenRows, LimitHits int64
+	Records, HookEvents, LimitSamples, WebUsage, TokenRows, LimitHits, AccountLeases int64
 }
 
 // Prune removes raw and fine-grained rows older than before (record.received_at…, sample
@@ -46,7 +46,7 @@ type PruneResult struct {
 // history_day or devices: everything the board needs to show a summary stays.
 //
 // Removed: record rows with ts < before (hook_event rows go with them by ON DELETE
-// CASCADE), limit_sample, web_usage, token_row and limit_hit rows with ts < before.
+// CASCADE), limit_sample, web_usage, token_row, limit_hit and account_lease rows with ts < before.
 // With dryRun the counts are computed and nothing is deleted.
 func (s *Store) Prune(ctx context.Context, before time.Time, dryRun bool) (PruneResult, error) {
 	var res PruneResult
@@ -65,6 +65,7 @@ func (s *Store) Prune(ctx context.Context, before time.Time, dryRun bool) (Prune
 			{&res.WebUsage, `SELECT count(*) FROM web_usage WHERE ts < ?`, `DELETE FROM web_usage WHERE ts < ?`},
 			{&res.TokenRows, `SELECT count(*) FROM token_row WHERE ts < ?`, `DELETE FROM token_row WHERE ts < ?`},
 			{&res.LimitHits, `SELECT count(*) FROM limit_hit WHERE ts < ?`, `DELETE FROM limit_hit WHERE ts < ?`},
+			{&res.AccountLeases, `SELECT count(*) FROM account_lease WHERE ts < ?`, `DELETE FROM account_lease WHERE ts < ?`},
 		}
 		for _, st := range steps {
 			if err := count(st.dst, st.count); err != nil {

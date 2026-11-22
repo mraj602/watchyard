@@ -103,7 +103,7 @@ request failed (network error, 5xx, 429).
 | --- | --- | --- | --- |
 | `v` | integer | yes | Record format version. `1`. A hub that sees a higher `v` stores the record raw and does not type it. The hub says which `v` it reads (`record_v_max`) and clients never send a higher one (machines.md 7.2). |
 | `id` | string | yes | Idempotency key. See 3.1. |
-| `kind` | string | yes | One of the kinds in section 4 (seven original kinds, plus `machine_info` and `direct_push`), or any future kind (`^[a-z][a-z0-9_]{0,39}$`). |
+| `kind` | string | yes | One of the kinds in section 4 (seven original kinds, plus `machine_info`, `direct_push` and `account_lease`), or any future kind (`^[a-z][a-z0-9_]{0,39}$`). |
 | `ts` | string | yes | When the client observed the fact (RFC 3339 UTC, ms). |
 | `machine` | string | yes | The machine id from [identity.md](identity.md) (`m_` + ULID). |
 | `slot` | string | depends | The config folder the fact came from, written with `~` for the home folder and `/` as separator (`~/.claude`, `~/.claude-2`, `~/work/.claude-x`). Required for `hook_event`, `limit_sample`, `session_list`, `slot_info`; optional for `token_rows` and `history_import` (omitted when the transcripts folder is shared by several slots); absent for `web_usage`. |
@@ -542,6 +542,30 @@ Written by `wy` right after it sent a session push itself (machines.md 5.4, 5.5)
 | `status` | integer | no | HTTP status when not ok. |
 | `error` | string | no | `timeout`, `connection failed`, … (push.md 7.3's reduced forms). |
 | `private` | boolean | no | Private text was used. |
+
+### 4.10 `account_lease`
+
+Written by `wy account next` for each pick it records on a folder whose login is known, right
+after the pick's line in its lease ledger (setup.md 8.5), and uploaded by the usual flush: the
+picker never waits for it. `seat` is the picked account (`src: "claude_json"`); no `slot` (the
+folder is in the payload, so a lease never moves a slot's login). `ts` is the pick time. The hub keeps it in
+`account_lease` (schema.sql) and returns other machines' leases in `GET /v1/usage`, without
+their session id or machine, so pickers on every machine count them. The hub reads no
+`account_lease` it cannot type (no seat, or fields of the wrong type): the record is stored
+with `typed = 0` and a `type_error`, as section 5 says.
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `lease_id` | string | yes | The ledger line's `id`, a ULID. The hub keeps one row per lease id. |
+| `session_id` | string | no | From `--session-id`: the session the lease is for (same pattern as `hook_event`'s). |
+| `kind` | string | yes | `aggressive` or `protected` (setup.md 8.5 `lanes`). |
+| `c5` | number | yes | Lane charge, 5-hour points. |
+| `cf` | number | yes | Expected full cost of the lane, 5-hour points. |
+| `strategy` | string | yes | The strategy that picked (`lanes`, `smart`, ...). |
+| `urgent` | boolean | yes | `--urgent` passed a burst cap for this pick. |
+| `model` | string | no | `--model`, when given. |
+| `folder` | string | no | The picked folder, with `~` (`~/.claude-3`). |
+| `batch` | string | no | The id shared by the picks of one call. |
 
 ## 5. Validation on the hub
 

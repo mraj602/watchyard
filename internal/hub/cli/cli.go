@@ -852,8 +852,8 @@ func prune(args []string, stdout, stderr io.Writer) error {
 	if *dry {
 		verb = "would remove"
 	}
-	fmt.Fprintf(stdout, "before %s: %s %d records (%d hook events), %d limit samples, %d web usage responses, %d token rows, %d limit hits\n",
-		localtime.Format(cut), verb, res.Records, res.HookEvents, res.LimitSamples, res.WebUsage, res.TokenRows, res.LimitHits)
+	fmt.Fprintf(stdout, "before %s: %s %d records (%d hook events), %d limit samples, %d web usage responses, %d token rows, %d limit hits, %d account leases\n",
+		localtime.Format(cut), verb, res.Records, res.HookEvents, res.LimitSamples, res.WebUsage, res.TokenRows, res.LimitHits, res.AccountLeases)
 	fmt.Fprintln(stdout, "kept: seats, machines, slots, sessions and their states, usage windows, history days, devices")
 	return nil
 }

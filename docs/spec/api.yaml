@@ -542,10 +542,13 @@ paths:
         owner's own seat usage, percentages and times only: each seat has its id, account and
         org uuids (to match local logins), label, current windows (as in /v1/accounts),
         samples since `since`, live session count, and the folders of the calling machine
-        that are logged in to it (`places`) or signed out of it (`signed_out`). It never holds
-        an email, an org name, another machine's places, or any session, project or message
-        data. Hidden seats are included. A token without a machine gets empty `places` and
-        `signed_out`.
+        that are logged in to it (`places`) or signed out of it (`signed_out`), and the picks
+        other machines' `wy account next` recorded for it in the last 7 days (`leases`, from
+        `account_lease` records: times, charges, whether the session started or ended and the
+        weighted token units it used, so pickers on every machine count each other's lanes). It
+        never holds an email, an org name, another machine's places or name, a session id, or any
+        project or message data. Hidden seats are included. A token without a machine gets empty
+        `places` and `signed_out`, and every seat's leases.
       x-scopes: [read, write]
       parameters:
         - name: since
@@ -2419,7 +2422,7 @@ components:
 
     UsageSeat:
       type: object
-      required: [id, account, org, label, windows, samples, live_sessions, places, signed_out]
+      required: [id, account, org, label, windows, samples, live_sessions, places, signed_out, leases]
       additionalProperties: false
       properties:
         id: {type: string}
@@ -2453,6 +2456,34 @@ components:
             properties:
               slot: {type: string}
               since: {type: string, format: date-time}
+        leases:
+          type: array
+          description: >-
+            Leases other machines recorded for this seat in the last 7 days (record.md 4.10,
+            setup.md 8.5), oldest first, at most 500. The calling machine's own leases are left
+            out (its ledger has them).
+          items: {$ref: "#/components/schemas/UsageLease"}
+
+    UsageLease:
+      type: object
+      description: "One pick of another machine's `wy account next` (setup.md 8.5)."
+      required: [at, kind, c5, cf, urgent, has_session, launched, ended, burned_units, seen]
+      additionalProperties: false
+      properties:
+        at: {type: string, format: date-time, description: Pick time.}
+        kind: {type: string, enum: [aggressive, protected]}
+        c5: {type: number, description: Lane charge, 5-hour points.}
+        cf: {type: number, description: Expected full cost of the lane, 5-hour points.}
+        urgent: {type: boolean, description: "`--urgent` passed a burst cap for this pick."}
+        has_session: {type: boolean, description: The lease names a session id.}
+        launched: {type: boolean, description: The hub has a session with the lease's session id.}
+        ended: {type: boolean, description: That session has ended.}
+        burned_units:
+          type: number
+          description: >-
+            Weighted token units (input + 5 × output + 1.25 × cache_5m + 2 × cache_1h + 0.1 ×
+            cache_read) of that session's token rows since the pick.
+        seen: {type: boolean, description: The session has token rows since the pick.}
 
     DirectPolicy:
       type: object
