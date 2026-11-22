@@ -86,19 +86,27 @@ type CalibUse struct {
 	Units float64
 }
 
-// CalibUnits returns the weighted units (leaseUnits) of a seat's token rows with
-// after < ts <= upto, oldest first.
-func (s *Store) CalibUnits(ctx context.Context, seat string, after, upto int64) ([]CalibUse, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT ts, `+leaseUnits+` FROM token_row
-		WHERE seat_id = ? AND ts > ? AND ts <= ? ORDER BY ts`, seat, after, upto)
+// CalibToken is one token row of a seat: its time, weighted units (leaseUnits), model and
+// counters (the usage relation prices them, setup.md 8.5).
+type CalibToken struct {
+	TS                                         int64
+	Units                                      float64
+	Model                                      string
+	Input, Output, Cache5m, Cache1h, CacheRead int64
+}
+
+// CalibUnits returns a seat's token rows with after < ts <= upto, oldest first.
+func (s *Store) CalibUnits(ctx context.Context, seat string, after, upto int64) ([]CalibToken, error) {
+	rows, err := s.r.QueryContext(ctx, `SELECT ts, `+leaseUnits+`, coalesce(model, ''), input, output, cache_5m, cache_1h, cache_read
+		FROM token_row WHERE seat_id = ? AND ts > ? AND ts <= ? ORDER BY ts`, seat, after, upto)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []CalibUse
+	var out []CalibToken
 	for rows.Next() {
-		var u CalibUse
-		if err := rows.Scan(&u.TS, &u.Units); err != nil {
+		var u CalibToken
+		if err := rows.Scan(&u.TS, &u.Units, &u.Model, &u.Input, &u.Output, &u.Cache5m, &u.Cache1h, &u.CacheRead); err != nil {
 			return nil, err
 		}
 		out = append(out, u)

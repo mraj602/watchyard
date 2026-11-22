@@ -132,7 +132,7 @@ func testUsageCalibrationAt(t *testing.T, now time.Time) {
 	}
 
 	ctx := context.Background()
-	if err := calibrate.Run(ctx, h.st, now); err != nil {
+	if err := calibrate.Run(ctx, h.st, now, nil); err != nil {
 		t.Fatal(err)
 	}
 	code, body := h.do("GET", "/v1/usage", machine, nil)
@@ -153,7 +153,7 @@ func testUsageCalibrationAt(t *testing.T, now time.Time) {
 	firstN := c.F.N
 
 	// Again with nothing new: the same pairs.
-	if err := calibrate.Run(ctx, h.st, now); err != nil {
+	if err := calibrate.Run(ctx, h.st, now, nil); err != nil {
 		t.Fatal(err)
 	}
 	h.get("/v1/usage", machine, &doc)
@@ -172,7 +172,7 @@ func testUsageCalibrationAt(t *testing.T, now time.Time) {
 		more = append(more, b, calibSampleRec(t, h.machine, sid, at.Add(time.Minute), float64(2*i), fr, math.Round(w), weekReset))
 	}
 	h.ingest(machine, more...)
-	if err := calibrate.Run(ctx, h.st, now.Add(2*time.Hour)); err != nil {
+	if err := calibrate.Run(ctx, h.st, now.Add(2*time.Hour), nil); err != nil {
 		t.Fatal(err)
 	}
 	h.get("/v1/usage", machine, &doc)
@@ -190,7 +190,7 @@ func testUsageCalibrationAt(t *testing.T, now time.Time) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := calibrate.Run(ctx, h.st, now.Add(3*time.Hour)); err != nil {
+	if err := calibrate.Run(ctx, h.st, now.Add(3*time.Hour), nil); err != nil {
 		t.Fatal(err)
 	}
 	var after struct {

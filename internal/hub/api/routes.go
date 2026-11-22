@@ -110,6 +110,8 @@ var handlerRoutes = []Route{
 	// Seats (desktop.md C10, pwa.md Accounts).
 	{Method: "PATCH", Path: "/v1/accounts/{seat}", Scopes: []string{"owner"}},
 	{Method: "PUT", Path: "/v1/seats/order", Scopes: []string{"owner"}},
+	// An account's usage relation, calibration and picker verdict (setup.md 8.5).
+	{Method: "GET", Path: "/v1/accounts/{seat}/relation", Scopes: []string{"read"}},
 
 	// Keys and the device link (keys.md, link.md). /v1/link and /v1/link/poll authenticate
 	// themselves with the link's challenge login, never with a bearer.

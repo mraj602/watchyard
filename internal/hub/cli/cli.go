@@ -423,7 +423,11 @@ func serve(args []string, stdout, stderr io.Writer) error {
 	}
 	go func() { defer close(mdone); maintain(mctx, st, clk, logger) }()
 	cdone := make(chan struct{})
-	go func() { defer close(cdone); calibrate.Loop(mctx, st, clk.Now, logger.Printf) }()
+	var notify calibrate.Notifier
+	if eng != nil {
+		notify = eng.Notices // the usage notices (push.md 3.9)
+	}
+	go func() { defer close(cdone); calibrate.Loop(mctx, st, clk.Now, notify, logger.Printf) }()
 	errc := make(chan error, 1)
 	go func() { errc <- hs.Serve(ln) }()
 	var serveErr error

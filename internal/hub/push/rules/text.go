@@ -3,6 +3,7 @@ package rules
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -176,6 +177,10 @@ func URL(a model.Alert) string {
 		return "/#/accounts?seat=" + *a.Seat
 	case a.Trigger == model.TriggerMachineSilent && a.Machine != nil:
 		return "/#/machines?machine=" + *a.Machine
+	case a.Trigger.IsNotice() && a.Seat != nil:
+		return "/#/accounts?seat=" + *a.Seat
+	case a.Trigger.IsNotice():
+		return "/#/accounts"
 	}
 	return "/#/alerts/" + a.ID
 }
@@ -197,6 +202,10 @@ func Tag(a model.Alert) string {
 		return "wy-l-" + deref(a.Seat) + "-" + deref(a.WindowKey)
 	case a.Trigger == model.TriggerMachineSilent:
 		return "wy-m-" + deref(a.Machine)
+	case a.Trigger == model.TriggerLimitChange:
+		return "wy-u-" + string(a.Trigger) + "-" + a.Facts.Model
+	case a.Trigger.IsNotice():
+		return "wy-u-" + string(a.Trigger) + "-" + deref(a.Seat)
 	}
 	return "wy-" + a.ID
 }
@@ -212,6 +221,8 @@ func privateText(t model.Trigger) string {
 		return "An account is near its limit"
 	case t == model.TriggerMachineSilent:
 		return "A machine went quiet"
+	case t.IsNotice():
+		return "Account usage changed"
 	}
 	return "Something needs you"
 }
@@ -272,6 +283,8 @@ func Render(a model.Alert, o TextOptions) Text {
 			last = "last record " + Clock(f.LastSeen.Std(), o.Now, o.Loc)
 		}
 		out.Body = join(live, last)
+	case model.TriggerLimitChange, model.TriggerUsageReset, model.TriggerSeatChange, model.TriggerWeeklyDrop:
+		out.Title, out.Body = noticeText(a, o)
 	default:
 		out.Title = string(a.Trigger)
 	}
@@ -280,6 +293,72 @@ func Render(a model.Alert, o TextOptions) Text {
 	}
 	out.Title, out.Body = Cut(out.Title, TitleMax), Cut(out.Body, BodyMax)
 	return out
+}
+
+// noticeText is the title and body of a usage notice (push.md 5.5).
+func noticeText(a model.Alert, o TextOptions) (string, string) {
+	f := a.Facts
+	resets := func() string {
+		if f.ResetsAt == 0 {
+			return ""
+		}
+		return Clock(f.ResetsAt.Std(), o.Now, o.Loc)
+	}
+	switch a.Trigger {
+	case model.TriggerLimitChange:
+		word, name := "lower", f.Model
+		if f.Up {
+			word = "higher"
+		}
+		if name == "" {
+			name = "Model"
+		}
+		var body string
+		if f.Refs > 0 {
+			body = fmt.Sprintf("5-hour capacity %s× last week on %d of %d accounts", strconv.FormatFloat(f.Change, 'f', -1, 64),
+				f.Moved, f.Refs)
+		}
+		return name + " limits look " + word, join(body, "check")
+	case model.TriggerUsageReset:
+		var still, agree string
+		if r := resets(); r != "" {
+			still = "7-day still resets " + r
+		}
+		switch {
+		case f.Sessions == 1:
+			agree = "1 session agrees"
+		case f.Sessions > 1:
+			agree = fmt.Sprintf("%d sessions agree", f.Sessions)
+		}
+		return join(seatOf(f), "usage reset"), join("5-hour and 7-day back to 0%", still, agree)
+	case model.TriggerSeatChange:
+		what := "changed account"
+		if f.OrgOnly {
+			what = "changed org"
+		}
+		where := f.Folder
+		if f.Machine != "" {
+			where = strings.TrimSpace(where + " on " + f.Machine)
+		}
+		body := "Was " + f.Was + "; now this account"
+		if f.Was == "" {
+			body = "Now this account"
+		}
+		if f.OrgOnly {
+			body = "Same account, another org"
+			if f.Org != "" {
+				body = "Same account, now in " + f.Org
+			}
+		}
+		return join(seatOf(f), strings.TrimSpace(where+" "+what)), body
+	case model.TriggerWeeklyDrop:
+		reset := "no reset"
+		if r := resets(); r != "" {
+			reset = "no reset (resets " + r + ")"
+		}
+		return join(seatOf(f), "7-day dropped "+pct(f.Peak)+" → "+pct(f.Pct)), join("Something changed, check", reset)
+	}
+	return string(a.Trigger), ""
 }
 
 // silentFor is "20 min" under 55 min, else "1 h" or "2 h" (rounded down, at least 1 h), since
@@ -458,6 +537,8 @@ func TTL(t model.Trigger, summary bool, resetsMS, nowMS int64) time.Duration {
 		return min(max(d, time.Minute), 24*time.Hour)
 	case t == model.TriggerReset:
 		return time.Hour
+	case t.IsNotice():
+		return 24 * time.Hour
 	}
 	return 6 * time.Hour
 }
@@ -467,7 +548,7 @@ func Urgency(t model.Trigger, summary bool) string {
 	switch {
 	case summary || IsSessionTrigger(t) || t == model.TriggerLimit95:
 		return "high"
-	case t == model.TriggerReset:
+	case t == model.TriggerReset || t.IsNotice():
 		return "low"
 	}
 	return "normal"
@@ -478,7 +559,7 @@ func Priority(t model.Trigger, summary bool) int {
 	switch {
 	case summary || IsSessionTrigger(t) || t == model.TriggerLimit95:
 		return 4
-	case t == model.TriggerReset:
+	case t == model.TriggerReset || t.IsNotice():
 		return 2
 	}
 	return 3

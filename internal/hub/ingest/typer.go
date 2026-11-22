@@ -51,7 +51,7 @@ func known(kind string) bool {
 	switch kind {
 	case record.KindHookEvent, record.KindLimitSample, record.KindWebUsage, record.KindTokenRows,
 		record.KindSessionList, record.KindHistoryImport, record.KindSlotInfo,
-		record.KindMachineInfo, record.KindDirectPush, record.KindAccountLease:
+		record.KindMachineInfo, record.KindDirectPush, record.KindAccountLease, record.KindAccountVerdicts:
 		return true
 	}
 	return false
@@ -122,6 +122,8 @@ func (t *typer) dispatch(r *record.Record, ts time.Time) error {
 		return t.directPush(c)
 	case record.KindAccountLease:
 		return t.accountLease(c)
+	case record.KindAccountVerdicts:
+		return t.accountVerdicts(c)
 	}
 	return nil
 }

@@ -851,3 +851,30 @@ func strPtr(s string) *string {
 	}
 	return &s
 }
+
+// AlertsByEpisode returns the alerts with these episodes.
+func (tx *Tx) AlertsByEpisode(episodes []string) ([]model.Alert, error) {
+	if len(episodes) == 0 {
+		return nil, nil
+	}
+	var args []any
+	q := `SELECT ` + alertCols + ` FROM alert WHERE ` + in("episode", episodes, &args)
+	return alertRows(tx.QueryContext(tx.ctx, q+` ORDER BY created_at, id`, args...))
+}
+
+// AlertsFiredOf returns the fired, snoozed and seen alerts of these triggers that first fired
+// at or before firedBy (the usage notices' life, push.md 3.9).
+func (tx *Tx) AlertsFiredOf(triggers []model.Trigger, firedBy int64) ([]model.Alert, error) {
+	if len(triggers) == 0 {
+		return nil, nil
+	}
+	ts := make([]string, len(triggers))
+	for i, t := range triggers {
+		ts[i] = string(t)
+	}
+	args := []any{firedBy}
+	// session_id IS NULL and the open statuses: the alert_open partial index.
+	q := `SELECT ` + alertCols + ` FROM alert WHERE session_id IS NULL AND status IN ('pending', 'fired', 'snoozed', 'seen')
+		AND status <> 'pending' AND fired_at IS NOT NULL AND fired_at <= ? AND ` + in("trigger", ts, &args)
+	return alertRows(tx.QueryContext(tx.ctx, q+` ORDER BY created_at, id`, args...))
+}
