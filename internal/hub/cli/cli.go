@@ -31,6 +31,7 @@ import (
 	"github.com/mraj602/watchyard/internal/hub/api"
 	"github.com/mraj602/watchyard/internal/hub/appmirror"
 	"github.com/mraj602/watchyard/internal/hub/auth"
+	"github.com/mraj602/watchyard/internal/hub/calibrate"
 	"github.com/mraj602/watchyard/internal/hub/hublock"
 	"github.com/mraj602/watchyard/internal/hub/ingest"
 	hubkeys "github.com/mraj602/watchyard/internal/hub/keys"
@@ -421,6 +422,8 @@ func serve(args []string, stdout, stderr io.Writer) error {
 		go appMirror.Run(mctx, appMirrorEvery)
 	}
 	go func() { defer close(mdone); maintain(mctx, st, clk, logger) }()
+	cdone := make(chan struct{})
+	go func() { defer close(cdone); calibrate.Loop(mctx, st, clk.Now, logger.Printf) }()
 	errc := make(chan error, 1)
 	go func() { errc <- hs.Serve(ln) }()
 	var serveErr error
@@ -449,6 +452,7 @@ func serve(args []string, stdout, stderr io.Writer) error {
 	}
 	mcancel()
 	<-mdone
+	<-cdone
 	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		return serveErr
 	}

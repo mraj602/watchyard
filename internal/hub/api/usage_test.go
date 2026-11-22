@@ -77,7 +77,7 @@ func TestUsageForMachineToken(t *testing.T) {
 	if len(seats) != 1 {
 		t.Fatalf("seats %s", doc["seats"])
 	}
-	if got := strings.Join(keysOf(seats[0]), ","); got != "account,id,label,leases,live_sessions,org,places,samples,signed_out,windows" {
+	if got := strings.Join(keysOf(seats[0]), ","); got != "account,calibration,id,label,leases,live_sessions,org,places,samples,signed_out,windows" {
 		t.Errorf("seat keys %s", got)
 	}
 	var seat struct {

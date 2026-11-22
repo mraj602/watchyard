@@ -1,4 +1,4 @@
--- Watchyard hub schema, version 15.
+-- Watchyard hub schema, version 16.
 --
 -- One SQLite file (WAL mode). Applied by the hub at start inside one transaction
 -- after `PRAGMA foreign_keys = ON`. Later versions add numbered migrations
@@ -23,6 +23,7 @@
 --   v13 session_state.peers (states.md 3.1, push.md 3.5).
 --   v14 device_accounts (keys.md 4.3, peers.md 5.3).
 --   v15 account_lease (record.md 4.10, setup.md 8.5).
+--   v16 seat_calibration (setup.md 8.5, Calibration).
 --
 -- Conventions
 --   * Times are INTEGER milliseconds since the Unix epoch, UTC (`*_at`, `ts`).
@@ -47,7 +48,7 @@ CREATE TABLE schema_version (
 ) STRICT;
 
 INSERT INTO schema_version (version, applied_at, wy_version)
-VALUES (15, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
+VALUES (16, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
 
 -- Hub-wide settings that are not secrets (retention days, last-message policy, …).
 CREATE TABLE setting (
@@ -426,6 +427,20 @@ CREATE TABLE account_lease (
   record_id     TEXT    NOT NULL
 ) STRICT;
 CREATE INDEX account_lease_seat_ts ON account_lease(seat_id, ts);
+
+-- One row per seat: the calibration of `wy account next`'s lanes strategy (setup.md 8.5,
+-- Calibration), brought up to date every 15 minutes by `wy hub serve` from the samples, token
+-- rows and leases after its cursors. GET /v1/usage returns `factors` as they are.
+CREATE TABLE seat_calibration (
+  seat_id       TEXT    NOT NULL PRIMARY KEY REFERENCES seat(id),
+  account_uuid  TEXT    NOT NULL,                     -- the login it was calibrated for: another
+  org_uuid      TEXT    NOT NULL,                     -- one restarts it (reason seat_change)
+  cursor        INTEGER NOT NULL,                     -- samples and token rows up to here are folded in
+  lease_cursor  INTEGER NOT NULL,                     -- leases picked up to here are folded in
+  state         TEXT    NOT NULL CHECK (json_valid(state)),    -- internal/calib State
+  factors       TEXT    NOT NULL CHECK (json_valid(factors)),  -- api.yaml Calibration
+  updated_at    INTEGER NOT NULL
+) STRICT;
 
 -- The full claude.ai usage response per seat per poll. Every field kept (iguana_necktie…).
 CREATE TABLE web_usage (

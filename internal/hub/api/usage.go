@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -8,8 +9,8 @@ import (
 	"github.com/mraj602/watchyard/internal/hub/store"
 )
 
-// GET /v1/usage (setup.md 8.5, tokens.md 3): each seat's limit windows, recent samples and
-// other machines' recent leases for `wy account next`, readable with a machine token. It is the owner's own seat usage,
+// GET /v1/usage (setup.md 8.5, tokens.md 3): each seat's limit windows, recent samples,
+// other machines' recent leases and its calibration factors for `wy account next`, readable with a machine token. It is the owner's own seat usage,
 // percentages and times only: no email, no org name, no session, project or message, and
 // places and signed-out folders only of the calling machine. Scopes read or write.
 func init() {
@@ -47,6 +48,9 @@ type UsageSeat struct {
 	SignedOut    []UsageSlot       `json:"signed_out"`
 	// Leases are other machines' picks of the last 7 days, oldest first (setup.md 8.5).
 	Leases []store.UsageLease `json:"leases"`
+	// Calibration is the seat's calibration factors as the hub's calibration job stored them
+	// (api.yaml Calibration), null before its first run for the seat.
+	Calibration json.RawMessage `json:"calibration"`
 }
 
 // UsageSlot is a folder of the calling machine: logged in to the seat (places) or signed
@@ -74,6 +78,11 @@ func (s *Server) machineUsage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	cal, err := s.store.CalibrationFactors(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
 	out := UsageDoc{V: 1, Time: store.Time(now.UnixMilli()), Since: store.Time(since.UnixMilli()), Seats: []UsageSeat{}}
 	if caller.MachineID != "" {
 		m := caller.MachineID
@@ -96,7 +105,8 @@ func (s *Server) machineUsage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		seat := UsageSeat{ID: x.ID, Account: x.Account, Org: x.Org, Label: x.Label, Windows: windowsOf(ws, now),
-			Samples: sm, LiveSessions: x.LiveSessions, Places: []UsageSlot{}, SignedOut: []UsageSlot{}, Leases: ls}
+			Samples: sm, LiveSessions: x.LiveSessions, Places: []UsageSlot{}, SignedOut: []UsageSlot{}, Leases: ls,
+			Calibration: cal[x.ID]}
 		if seat.Samples == nil {
 			seat.Samples = []store.SampleRow{}
 		}

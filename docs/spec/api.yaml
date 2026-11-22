@@ -545,7 +545,9 @@ paths:
         that are logged in to it (`places`) or signed out of it (`signed_out`), and the picks
         other machines' `wy account next` recorded for it in the last 7 days (`leases`, from
         `account_lease` records: times, charges, whether the session started or ended and the
-        weighted token units it used, so pickers on every machine count each other's lanes). It
+        weighted token units it used, so pickers on every machine count each other's lanes), and
+        the seat's calibration factors (`calibration`: meter factor, ratio, lane price and how
+        far each is measured, computed by the hub's calibration job, never per request). It
         never holds an email, an org name, another machine's places or name, a session id, or any
         project or message data. Hidden seats are included. A token without a machine gets empty
         `places` and `signed_out`, and every seat's leases.
@@ -2422,7 +2424,7 @@ components:
 
     UsageSeat:
       type: object
-      required: [id, account, org, label, windows, samples, live_sessions, places, signed_out, leases]
+      required: [id, account, org, label, windows, samples, live_sessions, places, signed_out, leases, calibration]
       additionalProperties: false
       properties:
         id: {type: string}
@@ -2463,6 +2465,53 @@ components:
             setup.md 8.5), oldest first, at most 500. The calling machine's own leases are left
             out (its ledger has them).
           items: {$ref: "#/components/schemas/UsageLease"}
+        calibration:
+          description: The seat's calibration (setup.md 8.5, Calibration); null before the hub's first run for it.
+          oneOf:
+            - {$ref: "#/components/schemas/Calibration"}
+            - {type: "null"}
+
+    Calibration:
+      type: object
+      description: >-
+        The lanes strategy's self-adjusting factors of one seat (setup.md 8.5, Calibration), as
+        the hub's calibration job last computed them.
+      required: [at, since, reset, f, ratio, lane_price, lane_charge, lane_units, unexplained_pct_per_hour, unexplained_hours]
+      additionalProperties: false
+      properties:
+        at: {type: string, format: date-time, description: When the job computed them (on data up to 30 minutes older).}
+        since: {type: [string, "null"], format: date-time, description: "First usable measurement since the last restart (null: none yet)."}
+        reset:
+          description: The last restart, null when there was none.
+          oneOf:
+            - type: object
+              required: [at, reason]
+              additionalProperties: false
+              properties:
+                at: {type: string, format: date-time}
+                reason: {type: string, enum: [seat_change, under_read, over_read]}
+            - {type: "null"}
+        f: {$ref: "#/components/schemas/CalibrationFactor"}
+        ratio: {$ref: "#/components/schemas/CalibrationFactor"}
+        lane_price: {$ref: "#/components/schemas/CalibrationFactor"}
+        lane_charge: {type: number, description: "Lane charge c = cf = 2 × lane_price.value, 5-hour points."}
+        lane_units: {type: [number, "null"], description: "Mean weighted units of a lane's first 5 hours, pooled over every seat (null: no lane yet)."}
+        unexplained_pct_per_hour: {type: [number, "null"], description: "5-hour points per hour of use the meter cannot see, from clean pairs of the last 7 days."}
+        unexplained_hours: {type: number, description: Hours of clean pairs behind it.}
+
+    CalibrationFactor:
+      type: object
+      description: "One calibrated factor: `f` in 5-hour points per million weighted units, `ratio` in 5-hour points per weekly point, `lane_price` in 5-hour points."
+      required: [value, fallback, measured, weight, n, days, implausible]
+      additionalProperties: false
+      properties:
+        value: {type: number, description: "The value to use: fallback + weight × (measured − fallback)."}
+        fallback: {type: number}
+        measured: {type: [number, "null"]}
+        weight: {type: number, minimum: 0, maximum: 1}
+        n: {type: integer, description: Usable measurements.}
+        days: {type: number, description: Days from the first usable measurement to now.}
+        implausible: {type: boolean, description: The measured value is outside its plausible range and is not used.}
 
     UsageLease:
       type: object
