@@ -1,5 +1,5 @@
 import type { PeerSession, TrustedSender } from '../../contract/api';
-import { blockAllEdit, blockedAll, detailText, eventLabel, revokeConfirm, tagGroups, trustedSenderLines, turnsLabel, NO_LIMIT_HELP, NO_TAGS, NO_TRUSTED } from './peers';
+import { blockAllEdit, blockedAll, detailText, eventLabel, revokeConfirm, tagGroups, trustedSenderLines, turnsLabel, NO_LIMIT_HELP, NO_TAGS, NO_TRUSTED, REVOKE_NOT_FOUND, TRUSTED_UNREPORTED } from './peers';
 
 describe('Block all (the phone only narrows)', () => {
   it('denies every pair and turns same account off', () => {
@@ -70,6 +70,18 @@ describe('trustedSenderLines', () => {
       'sends as personal',
       'Revoked 10 min ago. To approve it again, run `wy peers trust doorbell` in a terminal on that machine.',
     ]);
+  });
+
+  it('says a test build made the record, and keeps it live', () => {
+    const l = trustedSenderLines(sender({ test_build: true }), NOW);
+    expect(l.revoked).toBe(false);
+    expect(l.lines[l.lines.length - 1]).toBe('approved by a test build');
+    expect(trustedSenderLines(sender({ test_build: false }), NOW).lines).not.toContain('approved by a test build');
+  });
+
+  it('words the unreported-approval notes as the board does', () => {
+    expect(TRUSTED_UNREPORTED).toBe('A machine whose agent has not reported its approval is not listed here; to revoke it, run `wy peers trust doorbell --off` on that machine.');
+    expect(REVOKE_NOT_FOUND).toBe("The hub has no record of this machine's approval. Revoke it on that machine with `wy peers trust doorbell --off`.");
   });
 
   it('falls back to short ids without names', () => {

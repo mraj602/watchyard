@@ -371,14 +371,19 @@ the board, desktop.md C7) and the Android app (phone.md P4) behave the same way.
   knows and ignores the rest.
 - **Trusted senders** (peers.md 4.1a; `GET /v1/peers/trusted`): one row per machine that
   approved Doorbell: "Doorbell on <machine>", the program path, "sends as <account>", "approved
-  <age>", "last sent <age>" (or "has not sent yet") and "<n> messages today". A revoked one says
-  "Revoked <age>" and how to approve it again. **Revoke** (danger button, `confirm()` first:
+  <age>", "last sent <age>" (or "has not sent yet") and "<n> messages today"; a record a test
+  build made (`test_build`) adds "approved by a test build" (it is honoured all the same). A
+  revoked one says "Revoked <age>" and how to approve it again. **Revoke** (danger button, `confirm()` first:
   "Stop Doorbell on <machine> from sending to sessions? It can be approved again only from that
   machine's terminal.") is `POST /v1/peers/trusted/revoke`; it is shown to an owner session (on
-  the phone: to the paired phone) and hidden for a read-only sign-in. With no row the section
-  says "Doorbell is not approved on any machine. To let it wake sessions by tag, run `wy peers
-  trust doorbell` in a terminal on the machine it runs on (Linux)." A hub without the endpoint
-  (404) hides the section.
+  the phone: to the paired phone) and hidden for a read-only sign-in. When Revoke answers 404
+  (the hub has no record for that machine: its agent never reported one) the row shows the
+  hub's message, which says to run `wy peers trust doorbell --off` on that machine. With no row
+  the section says "Doorbell is not approved on any machine. To let it wake sessions by tag, run
+  `wy peers trust doorbell` in a terminal on the machine it runs on (Linux)." and, below it, "A
+  machine whose agent has not reported its approval is not listed here; to revoke it, run `wy
+  peers trust doorbell --off` on that machine." A hub without the endpoint (404 on the `GET`)
+  hides the section.
 - **Tags** (`GET /v1/peers` and `GET /v1/peers/trusted`): every tag a live session holds,
   sorted, each with its holders (name, account, machine, state) and "Sent to recently by
   Doorbell on <machine>" when a trusted sender sent to it in the last 7 days (a tag only a

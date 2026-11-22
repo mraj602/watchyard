@@ -649,16 +649,33 @@ describe('Peers', () => {
       expect(screen.queryByTestId('revoke-m1')).toBeNull();
     });
 
-    it('a revoke the hub answers 404 says so and reloads', async () => {
+    it('a revoke the hub answers 404 shows the hub message on the row', async () => {
+      const msg = 'The hub has no trusted sender for this machine: its agent never reported one. Revoke it on that machine with `wy peers trust doorbell --off`.';
+      const client = withSenders([sender()], {
+        revokeTrustedSender: jest.fn(async () => { throw new HubError('/v1/peers/trusted/revoke', 404, 'not_found', 'POST: 404', msg); }),
+      });
+      const alert = confirmWith(true);
+      await show(<PeersScreen />, { client });
+      await fireEvent.press(await screen.findByTestId('revoke-m1'));
+      expect((await screen.findByTestId('revoke-error-m1')).props.children).toBe(msg);
+      expect(screen.getByText('Doorbell on laptop')).toBeTruthy();
+      alert.mockRestore();
+    });
+
+    it('a 404 without a message falls back to the fixed sentence', async () => {
       const client = withSenders([sender()], {
         revokeTrustedSender: jest.fn(async () => { throw new HubError('/v1/peers/trusted/revoke', 404, 'not_found', 'POST: 404'); }),
       });
       const alert = confirmWith(true);
       await show(<PeersScreen />, { client });
       await fireEvent.press(await screen.findByTestId('revoke-m1'));
-      expect(await screen.findByText('Doorbell is no longer approved on that machine.')).toBeTruthy();
-      await waitFor(() => expect(client.trustedSenders.mock.calls.length).toBeGreaterThan(1));
+      expect(await screen.findByText("The hub has no record of this machine's approval. Revoke it on that machine with `wy peers trust doorbell --off`.")).toBeTruthy();
       alert.mockRestore();
+    });
+
+    it('the empty state adds the unreported-approval note', async () => {
+      await show(<PeersScreen />, { client: withSenders([]) });
+      expect(await screen.findByText(/A machine whose agent has not reported its approval is not listed here/)).toBeTruthy();
     });
 
     it('lists tags with holders and recent Doorbell sends; a holder opens its session', async () => {

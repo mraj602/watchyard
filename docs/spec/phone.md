@@ -259,7 +259,9 @@ with the loop-guard explanation and the no-limit line (peers.md 6.3, 5.4).
 Below the audit, as on the board (pwa.md 3.1): **Trusted senders** (`trustedSenders`, `GET
 /v1/peers/trusted`; each row as the board words it, with **Revoke**, which narrows and so is
 offered to the paired phone: confirm first, `revokeTrustedSender`, `POST
-/v1/peers/trusted/revoke`; a 404 from an older hub hides the section) and **Tags** (`peers`,
+/v1/peers/trusted/revoke`, whose 404 shows the hub's message (run `wy peers trust doorbell
+--off` on that machine); "approved by a test build" for a `test_build` record; a 404 on the list
+from an older hub hides the section) and **Tags** (`peers`,
 `GET /v1/peers`, plus the trusted senders' recent tags; a tapped holder opens
 `/sessions/[id]`). The words come from `src/lib/format/peers.ts` (`trustedSenderLines`,
 `tagGroups`), ported from `webui/static/components/peers-fmt.js` on a shared case table.

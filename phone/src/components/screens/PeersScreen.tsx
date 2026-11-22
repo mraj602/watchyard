@@ -9,7 +9,7 @@ import { Alert, Pressable, ScrollView, Switch, Text, View } from 'react-native';
 import type { MatrixInfo, PeerAuditEntry, PeerMessage, PeerSession, TrustedSender } from '../../contract/api';
 import {
   agoLabel, auditWho, ALLOW_FROM_COMPUTER, BLOCK_ALL_CONFIRM, blockAllEdit, blockedAll, TURNS_HELP, TURNS_NONE, NO_LIMIT_HELP, turnsLabel, cellLabel, cellState, CELL_GLYPH, CELL_WORD, detailText, eventLabel, messageWho, narrowings,
-  outcomeLabel, peerAccounts, sizeLabel, NO_TAGS, NO_HOLDER, NO_TRUSTED, revokeConfirm, tagGroups, trustedSenderLines,
+  outcomeLabel, peerAccounts, sizeLabel, NO_TAGS, NO_HOLDER, NO_TRUSTED, TRUSTED_UNREPORTED, REVOKE_NOT_FOUND, revokeConfirm, tagGroups, trustedSenderLines,
 } from '../../lib/format';
 import { HubError, OWNER_ONLY, errorText } from '../../lib/hub';
 import { useHubApi } from '../hub-api';
@@ -28,6 +28,7 @@ export default function PeersScreen() {
   const [audit, setAudit] = useState<PeerAuditEntry[] | null>(null);
   const [messages, setMessages] = useState<PeerMessage[] | null>(null);
   // null: the hub does not serve it (404), or it could not be read; the section is then hidden.
+  const [revokeNote, setRevokeNote] = useState<Record<string, string>>({});
   const [trusted, setTrusted] = useState<TrustedSender[] | null>(null);
   const [live, setLive] = useState<PeerSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -63,14 +64,14 @@ export default function PeersScreen() {
 
   const revoke = async (x: TrustedSender) => {
     setBusy(true);
+    setRevokeNote(({ [x.machine]: _gone, ...rest }) => rest);
     try {
       const next = await client!.revokeTrustedSender(x.machine);
       setTrusted((cur) => (cur ? cur.map((y) => (y.machine === next.machine ? next : y)) : cur));
       load();
     } catch (e) {
       if (e instanceof HubError && e.status === 404) {
-        toast.show('Doorbell is no longer approved on that machine.');
-        load();
+        setRevokeNote((cur) => ({ ...cur, [x.machine]: e.hubMessage ?? REVOKE_NOT_FOUND }));
       } else {
         toast.show(errorText(e, 'Could not revoke Doorbell'));
       }
@@ -285,7 +286,10 @@ export default function PeersScreen() {
       {trusted ? (
         <Section title="Trusted senders">
           {trusted.length === 0 ? (
-            <Calm>{NO_TRUSTED}</Calm>
+            <View style={{ gap: 6 }}>
+              <Calm>{NO_TRUSTED}</Calm>
+              <Muted>{TRUSTED_UNREPORTED}</Muted>
+            </View>
           ) : (
             <Card>
               {trusted.map((x) => {
@@ -296,6 +300,11 @@ export default function PeersScreen() {
                     {l.lines.map((line) => (
                       <Muted key={line}>{line}</Muted>
                     ))}
+                    {revokeNote[x.machine] ? (
+                      <Text testID={`revoke-error-${x.machine}`} accessibilityRole="alert" style={{ color: t.text }}>
+                        {revokeNote[x.machine]}
+                      </Text>
+                    ) : null}
                     {!l.revoked && canRevoke ? (
                       <Btn
                         testID={`revoke-${x.machine}`}

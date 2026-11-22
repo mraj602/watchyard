@@ -15,11 +15,11 @@ import {
   peerAccounts, allowAllEdit, blockAllEdit, allowedAll, blockedAll, parseTurns, turnsWidens,
   TURNS_NONE, TURNS_MIN, TURNS_MAX, TURNS_SUGGEST, TURNS_HELP, NO_LIMIT_HELP, turnsLabel, ALLOW_ALL_CONFIRM, BLOCK_ALL_CONFIRM, OWNER_ONLY_ALLOW, cellState, cellLabel, cellEdit, editBody, whyNot, detailText, eventLabel, auditWho,
   messageWho, outcomeLabel, sizeLabel, resumableStops, resumeText, isSetup, CELL_GLYPH, CELL_WORD, LEGEND,
-  TRUSTED_EMPTY, NO_TAGS, NO_HOLDER, TRUSTED_INTRO, TAGS_INTRO, revokeConfirm, senderMachine, trustedTitle, trustedFacts, revokedText,
+  TRUSTED_EMPTY, TRUSTED_UNREPORTED, revokeNotFoundText, NO_TAGS, NO_HOLDER, TRUSTED_INTRO, TAGS_INTRO, revokeConfirm, senderMachine, trustedTitle, trustedFacts, revokedText,
   isRevoked, revokeBody, tagIndex, sentRecently,
 } from '../components/peers-fmt.js';
 
-const st = { matrix: null, audit: null, messages: null, peers: null, trusted: null, error: null, pick: null, busy: false, turns: null, noLimit: null };
+const st = { matrix: null, audit: null, messages: null, peers: null, trusted: null, error: null, pick: null, busy: false, turns: null, noLimit: null, revokeNote: {} };
 const again = () => window.dispatchEvent(new Event('wy-rerender'));
 
 export async function load() {
@@ -312,12 +312,15 @@ const withCode = (text) => text.split('`').map((x, i) => (i % 2 ? h('code', { cl
 async function revokeSender(t) {
   if (!confirm(revokeConfirm(senderMachine(t)))) return;
   st.busy = true;
+  delete st.revokeNote[t.machine];
   again();
   try {
     const next = await revokeTrustedSender(revokeBody(t));
     st.trusted = (st.trusted || []).map((x) => (x.machine === next.machine ? next : x));
   } catch (ex) {
-    toast(ex.message || 'Could not revoke Doorbell');
+    // 404: the hub has no record for this machine; its message says how to revoke it there.
+    if (ex && ex.status === 404) st.revokeNote[t.machine] = revokeNotFoundText(ex);
+    else toast(ex.message || 'Could not revoke Doorbell');
   }
   st.busy = false;
   again();
@@ -330,14 +333,17 @@ function trustedBlock(account) {
   const age = (ts) => agoLabel(ts, Date.now());
   return section('Trusted senders',
     h('p', { class: 'muted small' }, TRUSTED_INTRO),
-    !list.length ? h('p', { class: 'muted', 'data-key': 'trusted-empty' }, withCode(TRUSTED_EMPTY)) : h('ul', { class: 'panel audit-list' }, list.map((t) => {
+    !list.length ? h('div', {},
+      h('p', { class: 'muted', 'data-key': 'trusted-empty' }, withCode(TRUSTED_EMPTY)),
+      h('p', { class: 'muted small', 'data-key': 'trusted-unreported' }, withCode(TRUSTED_UNREPORTED))) : h('ul', { class: 'panel audit-list' }, list.map((t) => {
       const revoked = isRevoked(t);
       return h('li', { class: 'row audit-row', 'data-key': `trusted-${t.machine}` },
         h('span', { class: 'row-text' },
           h('span', { class: 'strong' }, trustedTitle(t)),
           h('span', { class: 'muted small mono' }, t.program),
           h('span', { class: 'muted small' }, trustedFacts(t, account(t), age).join(' · ')),
-          revoked ? h('span', { class: 'muted small', 'data-key': `trusted-revoked-${t.machine}` }, withCode(revokedText(t, age))) : null),
+          revoked ? h('span', { class: 'muted small', 'data-key': `trusted-revoked-${t.machine}` }, withCode(revokedText(t, age))) : null,
+          st.revokeNote[t.machine] ? h('span', { class: 'small', role: 'alert', 'data-key': `revoke-error-${t.machine}` }, withCode(st.revokeNote[t.machine])) : null),
         owner && !revoked ? h('button', {
           type: 'button', class: 'btn btn-sm btn-danger', 'data-key': `revoke-${t.machine}`, disabled: st.busy || offline,
           title: offline ? 'Offline: Doorbell cannot be revoked now.' : undefined,

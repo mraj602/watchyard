@@ -178,6 +178,12 @@ export const revokeConfirm = (machine: string): string =>
 /** Shown when no machine approved Doorbell (pwa.md 3.1). */
 export const NO_TRUSTED =
   'Doorbell is not approved on any machine. To let it wake sessions by tag, run `wy peers trust doorbell` in a terminal on the machine it runs on (Linux).';
+/** Shown below NO_TRUSTED (pwa.md 3.1). */
+export const TRUSTED_UNREPORTED =
+  'A machine whose agent has not reported its approval is not listed here; to revoke it, run `wy peers trust doorbell --off` on that machine.';
+/** Shown on the row when Revoke answers 404 without a message of its own. */
+export const REVOKE_NOT_FOUND =
+  "The hub has no record of this machine's approval. Revoke it on that machine with `wy peers trust doorbell --off`.";
 /** Shown when no session holds a tag and no trusted sender used one (pwa.md 3.1). */
 export const NO_TAGS = 'No session has a tag. A session gives itself one with `wy peers tag add <tag>`.';
 /** A tag only a trusted sender used, with no holder now. */
@@ -210,6 +216,7 @@ export function trustedSenderLines(s: TrustedSender, now: number): TrustedLines 
     lines.push(`approved ${agoLabel(s.approved_at, now)}`.trim());
     lines.push(s.last_send_at ? `last sent ${agoLabel(s.last_send_at, now)}`.trim() : 'has not sent yet');
     lines.push(`${plural(s.sent_today, 'message')} today`);
+    if (s.test_build) lines.push('approved by a test build');
   }
   return { title: `Doorbell on ${machine}`, machine, revoked, lines };
 }

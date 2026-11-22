@@ -231,6 +231,26 @@ describe('HubClient requests', () => {
   });
 });
 
+describe('revoke 404 (pwa.md 3.1)', () => {
+  it('carries the hub message for the revoke call only', async () => {
+    const msg = 'The hub has no trusted sender for this machine: its agent never reported one. Revoke it on that machine with `wy peers trust doorbell --off`.';
+    const f = fakeFetch(() => response(404, { error: msg, code: 'not_found' }));
+    const err = await client(f).revokeTrustedSender('m1').catch((e) => e);
+    expect(err).toBeInstanceOf(HubError);
+    expect(err.status).toBe(404);
+    expect(err.hubMessage).toBe(msg);
+    expect(err.message).toBe('POST /v1/peers/trusted/revoke: 404 not_found');
+    const other = await client(f).seen('al_1').catch((e) => e);
+    expect(other.hubMessage).toBeNull();
+  });
+
+  it('has no message when the body has none', async () => {
+    const f = fakeFetch(() => response(404, { code: 'not_found' }));
+    const err = await client(f).revokeTrustedSender('m1').catch((e) => e);
+    expect(err.hubMessage).toBeNull();
+  });
+});
+
 describe('401', () => {
   it('calls onUnauthorized once however many calls fail', async () => {
     const f = fakeFetch(() => response(401, { error: 'bad token', code: 'unauthorized' }));

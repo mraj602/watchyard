@@ -504,6 +504,8 @@ export interface TrustedSender {
   revoked_by?: string | null;
   last_send_at?: Iso | null;
   sent_today: number;
+  /** A record a test build made; honoured all the same. */
+  test_build?: boolean;
   /** Tags it sent to in the last 7 days, newest first. */
   recent_tags: { tag: string; at: Iso }[];
 }

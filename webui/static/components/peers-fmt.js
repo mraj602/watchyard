@@ -239,6 +239,9 @@ export const outcomeLabel = (s) => OUTCOME[s] || String(s || '');
 // ---- trusted senders and tags (peers.md 3.4, 4.1a; pwa.md 3.1) ------------------------------
 
 export const TRUSTED_EMPTY = 'Doorbell is not approved on any machine. To let it wake sessions by tag, run `wy peers trust doorbell` in a terminal on the machine it runs on (Linux).';
+export const TRUSTED_UNREPORTED = 'A machine whose agent has not reported its approval is not listed here; to revoke it, run `wy peers trust doorbell --off` on that machine.';
+// Shown when Revoke answers 404 without a message of its own.
+export const REVOKE_NOT_FOUND = "The hub has no record of this machine's approval. Revoke it on that machine with `wy peers trust doorbell --off`.";
 export const NO_TAGS = 'No session has a tag. A session gives itself one with `wy peers tag add <tag>`.';
 export const NO_HOLDER = 'No session holds it now.';
 export const TRUSTED_INTRO = 'A trusted sender may message sessions by tag without a pair in the matrix. Metadata only: never the text.';
@@ -256,13 +259,18 @@ export const trustedTitle = (t) => `Doorbell on ${senderMachine(t)}`;
 // time into "3 h ago".
 export function trustedFacts(t, account, age) {
   const n = Number.isFinite(t.sent_today) ? t.sent_today : 0;
-  return [
+  const facts = [
     `sends as ${account}`,
     `approved ${age(t.approved_at)}`,
     t.last_send_at ? `last sent ${age(t.last_send_at)}` : 'has not sent yet',
     `${n} ${n === 1 ? 'message' : 'messages'} today`,
   ];
+  if (t.test_build) facts.push('approved by a test build');
+  return facts;
 }
+
+// What a 404 from Revoke shows on the row: the hub's own message, else the fallback.
+export const revokeNotFoundText = (ex) => (ex && typeof ex.message === 'string' && ex.message.trim() && ex.message !== 'Hub answered 404' ? ex.message : REVOKE_NOT_FOUND);
 
 // A revoked sender says when, and how to approve it again.
 export const revokedText = (t, age) => `Revoked ${age(t.revoked_at)}. To approve it again, run \`wy peers trust doorbell\` in a terminal on that machine.`;

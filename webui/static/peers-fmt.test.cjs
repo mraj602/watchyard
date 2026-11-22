@@ -176,6 +176,12 @@ test('trusted senders: sentences and facts', () => {
   assert.equal(P.trustedTitle({ machine: 'm_2' }), 'Doorbell on m_2');
   assert.deepEqual(j(P.trustedFacts(t, 'work', age)), ['sends as work', 'approved <A>', 'has not sent yet', '0 messages today']);
   assert.deepEqual(j(P.trustedFacts({ ...t, last_send_at: 'L', sent_today: 1 }, 'work', age)), ['sends as work', 'approved <A>', 'last sent <L>', '1 message today']);
+  assert.deepEqual(j(P.trustedFacts({ ...t, test_build: true }, 'work', age)), ['sends as work', 'approved <A>', 'has not sent yet', '0 messages today', 'approved by a test build']);
+  assert.equal(P.trustedFacts({ ...t, test_build: false }, 'work', age).length, 4);
+  assert.equal(P.revokeNotFoundText({ status: 404, message: 'The hub has no trusted sender.' }), 'The hub has no trusted sender.');
+  assert.equal(P.revokeNotFoundText({ status: 404, message: 'Hub answered 404' }), "The hub has no record of this machine's approval. Revoke it on that machine with `wy peers trust doorbell --off`.");
+  assert.equal(P.revokeNotFoundText({ status: 404, message: '' }), P.REVOKE_NOT_FOUND);
+  assert.equal(P.TRUSTED_UNREPORTED, 'A machine whose agent has not reported its approval is not listed here; to revoke it, run `wy peers trust doorbell --off` on that machine.');
   assert.equal(P.revokedText({ revoked_at: 'R' }, age), 'Revoked <R>. To approve it again, run `wy peers trust doorbell` in a terminal on that machine.');
   assert.equal(P.isRevoked(t), false);
   assert.equal(P.isRevoked({ ...t, revoked_at: 'R' }), true);
