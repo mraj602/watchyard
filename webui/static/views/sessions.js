@@ -17,7 +17,7 @@ const DAYS_LOADED = 2; // api.js getSessions asks for the last 2 days
 const FILTERS = [
   { id: 'open', label: 'Open', test: (s, now) => isLive(s, now), empty: 'No open sessions.',
     title: 'Sessions that are working, waiting on you, or finished in the last 12 hours' },
-  { id: 'needs_you', label: 'Needs you', test: (s) => s.needs_you, empty: 'Nothing needs you.' },
+  { id: 'needs_you', label: 'Needs you', test: (s) => s.needs_you && !(s.alert && s.alert.status === 'seen'), empty: 'Nothing needs you.' },
   { id: 'working', label: 'Working', test: (s) => s.state === 'working' && isLive(s), empty: 'No sessions are working.' },
   { id: 'done', label: 'Done', test: (s, now) => s.state === 'done' && isLive(s, now), empty: 'No session finished a turn recently.',
     title: 'Claude finished its turn and is waiting for your next prompt' },
