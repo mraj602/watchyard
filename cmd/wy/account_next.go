@@ -285,7 +285,13 @@ func accountNext(e nextEnv, args []string) error {
 		if err != nil {
 			return fmt.Errorf("record the lease: %w", err)
 		}
-		if w := mirrorLeases(e, cfg, m.ID, res, lines); w != "" {
+		// The run's verdicts for the board (setup.md 8.5, Verdicts to the hub), flushed with
+		// the leases.
+		verdict, vw := mirrorVerdicts(e, cfg, m.ID, res, now)
+		if vw != "" {
+			warns = append(warns, vw)
+		}
+		if w := mirrorLeases(e, cfg, m.ID, res, lines, verdict); w != "" {
 			warns = append(warns, w)
 		}
 	}
@@ -362,9 +368,10 @@ func leaseLines(res picker.Result, model string, now time.Time) []leases.Line {
 }
 
 // mirrorLeases appends an account_lease record per lease to the outbox and starts a
-// background flush; it never waits for the hub. It returns a warning, or "".
-func mirrorLeases(e nextEnv, cfg config.Config, machine string, res picker.Result, lines []leases.Line) string {
-	if len(lines) == 0 {
+// background flush (also when only more, another record, was appended); it never waits for
+// the hub. It returns a warning, or "".
+func mirrorLeases(e nextEnv, cfg config.Config, machine string, res picker.Result, lines []leases.Line, more bool) string {
+	if len(lines) == 0 && !more {
 		return ""
 	}
 	ob := outbox.New(filepath.Join(e.dirs.State.Path, "outbox"))
@@ -388,7 +395,7 @@ func mirrorLeases(e nextEnv, cfg config.Config, machine string, res picker.Resul
 		}
 		wrote = true
 	}
-	if wrote && cfg.Hub.URL != "" && detach.Debounce(filepath.Join(ob.Dir, "flush.stamp"), nextFlushEvery, time.Now()) {
+	if (wrote || more) && cfg.Hub.URL != "" && detach.Debounce(filepath.Join(ob.Dir, "flush.stamp"), nextFlushEvery, time.Now()) {
 		spawn := e.spawn
 		if spawn == nil {
 			spawn = func(args []string) error {
