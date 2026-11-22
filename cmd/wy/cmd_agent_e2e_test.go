@@ -123,3 +123,23 @@ func TestAgentRunServesPeers(t *testing.T) {
 		t.Errorf("the direct send was logged by the agent: %q", b)
 	}
 }
+
+// Tags are held at the hub (peers.md 3.4): an agent without a hub link answers the list from
+// its own registries, so a tag send must refuse hub_unreachable (exit 7) rather than report
+// that no session holds the tag, and nothing reaches an inbox.
+func TestAgentTagSendWithoutHub(t *testing.T) {
+	w := newPeersWorld(t)
+	stop, _ := startAgent(t, w)
+	defer stop()
+
+	code, out, _ := runPeersWy("peers", "send", "tag:relay", "hi")
+	if code != 7 || !strings.Contains(out, "tags are held at the hub") {
+		t.Fatalf("tag send without a hub: %d %q", code, out)
+	}
+	if code, out, _ = runPeersWy("peers", "send", "tag:relay", "--one", "--same-host", "hi"); code != 7 {
+		t.Errorf("--one --same-host without a hub: %d %q", code, out)
+	}
+	if n := len(w.a.All()) + len(w.b.All()); n != 0 {
+		t.Errorf("%d frames delivered", n)
+	}
+}

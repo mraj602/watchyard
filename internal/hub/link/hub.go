@@ -78,7 +78,7 @@ type Settings struct {
 type ActionFunc func(ctx context.Context, token string) (alert any, applied bool, status int)
 
 // PeerRelay is the seam for the peer frames a machine sends (peers.md 8): peer_msg,
-// peer_result, peer_log and peers_list. It returns the ephemeral reply (type and body) or
+// peer_result, peer_log, peers_list and peer_tag. It returns the ephemeral reply (type and body) or
 // "" for none. Nil: the hub answers notice unknown_type.
 type PeerRelay interface {
 	Up(ctx context.Context, device string, f link.Up) (replyType string, reply any, err error)

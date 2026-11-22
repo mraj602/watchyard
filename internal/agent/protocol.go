@@ -23,6 +23,8 @@ const (
 	OpOff    = "off"
 	OpOn     = "on"
 	OpState  = "state"
+	// OpTag adds or removes a tag of the calling session, or lists its tags (peers.md 3.4).
+	OpTag = "tag"
 )
 
 // MaxLine bounds one request line.
@@ -38,6 +40,9 @@ type Request struct {
 	Text      string `json:"text,omitempty"`
 	TTLs      int    `json:"ttl_s,omitempty"`
 	WaitS     int    `json:"wait_s,omitempty"`
+	// TagOp (add, rm, list) and Tag are the `tag` op's arguments.
+	TagOp string `json:"tag_op,omitempty"`
+	Tag   string `json:"tag,omitempty"`
 }
 
 // Error is the refusal in a reply: Code is a peers refusal code.
@@ -80,6 +85,8 @@ type Reply struct {
 	Entries []peers.ListEntry `json:"entries,omitempty"`
 	Asked   bool              `json:"asked,omitempty"`
 	State   *State            `json:"state,omitempty"`
+	// TagResult is the `tag` op's answer.
+	TagResult *peers.TagResult `json:"tag_result,omitempty"`
 }
 
 // Refusal is the reply's error as a *peers.Refusal, or nil.

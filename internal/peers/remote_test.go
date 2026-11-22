@@ -18,6 +18,11 @@ type fakeRemote struct {
 	account string
 	aliases []string
 	names   map[string]peers.HubName
+	// tags are the hub's tags per session (Tag changes them); state is sess-r's state.
+	tags  map[string][]string
+	state string
+	// sentTo counts messages per target session.
+	sentTo map[string]int
 }
 
 func (r *fakeRemote) Sessions() ([]peers.Session, error) {
@@ -27,18 +32,66 @@ func (r *fakeRemote) Sessions() ([]peers.Session, error) {
 	}
 	return []peers.Session{{Entry: peers.RegistryEntry{SessionID: "sess-r"}, Account: acct, AccountLabel: "remote",
 		Handle: "desk@remote.desk", Aliases: r.aliases, Name: "desk", MachineName: "desk", Remote: true, Device: "dev_r",
-		Mode: peers.ModePrompting}}, nil
+		Mode: peers.ModePrompting, Tags: r.tags["sess-r"], State: r.state}}, nil
 }
 
 func (r *fakeRemote) Send(o peers.Outgoing) (*peers.Pending, *peers.Refusal) {
 	r.sent++
 	r.last = o
+	if r.sentTo == nil {
+		r.sentTo = map[string]int{}
+	}
+	r.sentTo[o.To.Entry.SessionID]++
 	return &peers.Pending{Expires: time.Now().Add(time.Hour), Wait: func(time.Duration) (peers.Final, bool) { return peers.Final{}, false }}, nil
 }
 
 func (r *fakeRemote) Log(peers.LocalLog) {}
 
-func (r *fakeRemote) Names() map[string]peers.HubName { return r.names }
+func (r *fakeRemote) Names() map[string]peers.HubName {
+	if r.tags == nil {
+		return r.names
+	}
+	out := map[string]peers.HubName{}
+	for k, v := range r.names {
+		out[k] = v
+	}
+	for id, t := range r.tags {
+		n := out[id]
+		n.Tags = t
+		if id != "sess-r" {
+			n.Mine = true
+		}
+		out[id] = n
+	}
+	return out
+}
+
+// Tag is the hub's peer_tag: at most MaxTagsPerSession, add or remove.
+func (r *fakeRemote) Tag(session, op, tag string) (peers.TagAnswer, error) {
+	if r.tags == nil {
+		r.tags = map[string][]string{}
+	}
+	ans := peers.TagAnswer{Session: session}
+	have := peers.HasTag(r.tags[session], tag)
+	switch {
+	case op == peers.TagAdd && !have && len(r.tags[session]) >= peers.MaxTagsPerSession:
+		ans.Error = peers.TagErrTooMany
+	case op == peers.TagAdd && !have:
+		r.tags[session] = peers.NormTags(append(r.tags[session], tag))
+		ans.Changed = true
+	case op == peers.TagRm && have:
+		var keep []string
+		for _, t := range r.tags[session] {
+			if t != tag {
+				keep = append(keep, t)
+			}
+		}
+		r.tags[session] = keep
+		ans.Changed = true
+	}
+	ans.Tags = r.tags[session]
+	return ans, nil
+}
 
 // The loop guard of a thread to another machine: a human prompt resets the count once, and
 // the count then runs on from there (it must not be reset again by every later send).

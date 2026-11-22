@@ -3223,6 +3223,10 @@ components:
         project: {type: [string, "null"]}
         state: {$ref: "#/components/schemas/SessionState"}
         agent: {type: boolean, description: The machine runs wy agent.}
+        tags:
+          type: array
+          description: The tags the session gave itself (peers.md 3.4), sorted; empty when none.
+          items: {type: string, pattern: "^[a-z0-9-]{1,40}$"}
 
     Matrix:
       type: object
