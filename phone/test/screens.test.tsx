@@ -140,6 +140,56 @@ describe('Now', () => {
   });
 });
 
+// The three Needs-you cards seen live on 1.1.0 (two skipped stale, one skipped peers) and a row
+// with no alert: every one can be marked seen, none snoozed (push.md 4).
+describe('Now: rows whose alert never pushes', () => {
+  const liveData = () => {
+    const data = freshData();
+    const ov = data.overview!;
+    const base = ov.needs_you[0] as Session;
+    const row = (id: string, state: Session['state'], since: string, alert: Session['alert']): Session =>
+      ({ ...base, id, state, state_since: since, needs_you: true, alert, question: null, last_message: null }) as Session;
+    const skipped = (id: string, reason: string, trigger: string) => ({ id, trigger, status: 'skipped', reason }) as unknown as Session['alert'];
+    ov.needs_you = [
+      row('s-peers', 'asked', '2026-11-06T09:00:00.000Z', skipped('al_c', 'peers', 'asked')),
+      row('s-stale-asked', 'asked', '2026-11-18T09:00:00.000Z', skipped('al_a', 'stale', 'asked')),
+      row('s-stale-perm', 'needs_permission', '2026-11-19T09:00:00.000Z', skipped('al_b', 'stale', 'needs_permission')),
+      row('s-none', 'asked', '2026-11-20T09:00:00.000Z', null),
+    ] as typeof ov.needs_you;
+    return data;
+  };
+
+  it.each([['s-peers', 'al_c'], ['s-stale-asked', 'al_a'], ['s-stale-perm', 'al_b']])('%s has Seen and no Snooze; Seen calls the hub', async (id, al) => {
+    const p = await show(<NowScreen />, { data: liveData() });
+    expect(screen.queryByTestId(`snooze-${id}`)).toBeNull();
+    await fireEvent.press(screen.getByTestId(`seen-${id}`));
+    expect(p.client.seen).toHaveBeenCalledWith(al);
+    expect(p.client.snooze).not.toHaveBeenCalled();
+    expect(p.dispatched).toContainEqual({ type: 'seen', alert: al });
+    await waitFor(() => expect(screen.getByTestId(`needs-${id}`).props.style.opacity).toBe(0.55));
+  });
+
+  it('a row with no alert is seen through the session', async () => {
+    const p = await show(<NowScreen />, { data: liveData() });
+    expect(screen.queryByTestId('snooze-s-none')).toBeNull();
+    await fireEvent.press(screen.getByTestId('seen-s-none'));
+    expect(p.client.seenSession).toHaveBeenCalledWith('s-none');
+    expect(p.client.seen).not.toHaveBeenCalled();
+    expect(p.dispatched).toContainEqual({ type: 'seenSession', session: 's-none' });
+    await waitFor(() => expect(screen.getByTestId('needs-s-none').props.style.opacity).toBe(0.55));
+  });
+
+  it('the session page has Seen for a skipped alert', async () => {
+    const data = liveData();
+    const s = data.overview!.needs_you[0] as Session;
+    const client = fakeClient({ session: jest.fn(async () => ({ ...structuredClone(fx.session), ...s, timeline: [] })) });
+    const p = await show(<SessionScreen id="s-peers" />, { client, data });
+    await fireEvent.press(await screen.findByTestId('seen-s-peers'));
+    expect(p.client.seen).toHaveBeenCalledWith('al_c');
+    expect(screen.queryByTestId('snooze-s-peers')).toBeNull();
+  });
+});
+
 describe('Sessions', () => {
   const rows = () => screen.queryAllByLabelText(/^Session /);
 

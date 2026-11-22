@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"errors"
+	"io"
+	"log"
 	"time"
 
 	"github.com/mraj602/watchyard/internal/hub/events"
@@ -210,3 +212,88 @@ func (e *Engine) act(ctx context.Context, fn func(w *work) (model.AlertBrief, er
 
 // Now is the engine's clock reading (handlers render times with it).
 func (e *Engine) Now() time.Time { return e.clk.Now() }
+
+// SeenSession marks a session's current Needs-you episode seen (push.md 4, "Seen on a
+// session"): Seen on the episode's alert when it has one, else that alert is created as seen
+// so reconcile never makes (or pushes) one for the episode. ErrNotFound for an unknown
+// session, ErrConflict when it does not need you now.
+func (e *Engine) SeenSession(ctx context.Context, sessionID, by string) (model.AlertBrief, error) {
+	return e.act(ctx, func(w *work) (model.AlertBrief, error) {
+		a, err := w.seenSession(sessionID, by)
+		return a.AlertBrief, err
+	})
+}
+
+// SeenSessionNoEngine is SeenSession for a hub that runs without the engine (pushes off):
+// the same change in one transaction of st, returning the stream events for the caller to
+// publish. No delivery can be pending and nothing is sent.
+func SeenSessionNoEngine(ctx context.Context, st *store.Store, now time.Time, sessionID, by string) (model.Alert, []events.Event, error) {
+	var out model.Alert
+	var evs []events.Event
+	err := st.Write(ctx, func(tx *store.Tx) error {
+		w := &work{e: &Engine{log: log.New(io.Discard, "", 0)}, tx: tx, now: now, nowMS: now.UnixMilli()}
+		a, err := w.seenSession(sessionID, by)
+		out, evs = a, w.evs
+		return err
+	})
+	if err != nil {
+		evs = nil
+	}
+	return out, evs, err
+}
+
+func (w *work) seenSession(sessionID, by string) (model.Alert, error) {
+	r, found, err := w.tx.AlertSession(sessionID)
+	if err != nil {
+		return model.Alert{}, err
+	}
+	if !found {
+		return model.Alert{}, model.ErrNotFound
+	}
+	cur := sessionNow(sessionID, r, true)
+	trig, want := rules.SessionWant(cur)
+	if want == "" {
+		return model.Alert{}, model.ErrConflict
+	}
+	have, err := w.tx.AlertsByEpisode([]string{want})
+	if err != nil {
+		return model.Alert{}, err
+	}
+	if len(have) > 0 {
+		a := have[0]
+		b, _, err := w.seen(a, by)
+		a.AlertBrief = b
+		return a, err
+	}
+	a := model.Alert{
+		AlertBrief: model.AlertBrief{ID: store.NewID("al_", w.now), Trigger: trig, Status: model.StatusSeen,
+			SeenAt: model.Time(w.nowMS)},
+		Session: optStr(sessionID), Seat: optStr(cur.Seat), Machine: optStr(cur.Machine),
+		SinceAt: model.Time(cur.SinceMS), CreatedAt: model.Time(w.nowMS), Episode: want, Facts: cur.Facts,
+		SeenBy: by,
+	}
+	ok, err := w.tx.AlertInsert(a)
+	if err != nil {
+		return a, err
+	}
+	if !ok {
+		// Made by a pass between the read and the insert: Seen on that one.
+		have, err := w.tx.AlertsByEpisode([]string{want})
+		if err != nil || len(have) == 0 {
+			return a, err
+		}
+		b, _, err := w.seen(have[0], by)
+		have[0].AlertBrief = b
+		return have[0], err
+	}
+	w.event("seen", a)
+	return a, nil
+}
+
+// optStr is nil for "", else &s (the alert's optional columns).
+func optStr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}

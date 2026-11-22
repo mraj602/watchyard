@@ -419,7 +419,22 @@ is no other end: nothing about the episode changes later.
   `needs_you` of a payload, a widget refresh and `GET /v1/overview`) omits such sessions.
 - Snooze and seen on `cancelled`, `closed` or `skipped` alerts: 409 `conflict`, except seen on
   a `skipped` alert whose episode is still open, which is allowed (so the inbox can quiet a
-  `rule_off` or `stale` row).
+  `rule_off`, `stale`, `peers`, `remote_control` or `baseline` row). Such an alert is the
+  session's `alert` brief in the read API (10.1), so every Needs-you row carries the alert its
+  Seen acts on. Snooze stays for `pending`, `fired` and `snoozed` only: a skipped alert never
+  pushes, so there is nothing to put off.
+- **Seen on a session** (`POST /v1/sessions/{id}/seen`, scopes `push` or owner): marks the
+  session's current Needs-you episode seen, for a row that has no alert at all (the hub runs
+  with `--no-push`, so no alert is ever made; or the engine has not reached a fresh episode
+  yet). The session must need you now (`needs_you` 1 and not ended or gone), else 409
+  `conflict`; an unknown session is 404. When the episode has an alert, this is Seen on that
+  alert (the rules above; already seen is a no-op). When it has none, the hub creates the
+  episode's alert directly as `seen` (the trigger of 3.1, `seen_at`, `seen_by`, no rule, no
+  `due_at`, nothing delivered) and publishes an `alert` event with change `seen`; the
+  episode's unique key (3.2) then stops reconcile from making a second alert for it, so it
+  never pushes. It works with or without the engine (pushes off). The answer is the alert,
+  as for `POST /v1/alerts/{id}/seen`. Clients call it only for a Needs-you row with no
+  `alert` brief; a row with one uses the alert's own Seen (older hubs have no such path).
 - Cross-device: a push already on a lock screen cannot be withdrawn (Web Push has no silent
   "dismiss" message on iOS, and Chrome shows a generic notice for pushes that show nothing).
   Seen on one device stops future pushes everywhere.
@@ -1090,7 +1105,11 @@ Where the sections above left a case open, the engine does this:
 - **ntfy private flag**: a target's own `prefs.private` wins over its device's prefs, then the
   ntfy.sh default (5.5), then the hub default.
 - **`Session.alert`** is the alert of the session's current episode while it is open
-  (`pending`, `fired`, `snoozed`, `seen`); otherwise null.
+  (`pending`, `fired`, `snoozed`, `seen`) or `skipped` (any reason: `stale`, `rule_off`,
+  `peers`, `remote_control`, `baseline`); otherwise null. A skipped alert of the current
+  episode belongs to an open episode by definition (a new state or `since` is a new episode),
+  so it is the row Seen acts on (4). Hubs up to 1.1.0 left a skipped alert out, so its
+  Needs-you row had no brief and could not be marked seen.
 - **`PUT /v1/push/settings`** stores the object as sent over the defaults; a missing
   `quiet_hours.tz` is not frozen to the current hub zone (the response shows the effective one).
 - **`POST /v1/rules`**: `delay_s` and `bypass_quiet` default to the base rule of the same
@@ -1156,6 +1175,8 @@ moves; "expect" lists sends and final alert status.
 | 47 | Old usage notice | a notice whose `since_at` is 7 h old | `skipped` / `stale`, nothing sent |
 | 48 | Notice twice | the same notice handed in two runs | One alert |
 | 49 | Notice rule off | `weekly_drop` rule disabled | `skipped` / `rule_off` |
+| 50 | Seen on a skipped row | a session asked for 7 days (`skipped` / `stale`); another asked in a peer turn (`skipped` / `peers`) | Both overviews carry the skipped brief; Seen on each → `seen`, both leave `needs_you` and `counts.needs_you`; Snooze → 409 |
+| 51 | Seen with no alert | hub without the engine; a session asks | `POST /v1/sessions/{id}/seen` makes a `seen` alert for the episode; the session leaves Needs you; a later engine pass makes no second alert; a session that does not need you → 409 |
 
 The detectors of 3.9 are pure (`internal/calib`, `watch.go`) and get table tests on synthetic
 series: a server or owner reset (5-hour and weekly to 0 with the same weekly `resets_at`, three

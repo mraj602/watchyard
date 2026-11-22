@@ -284,6 +284,29 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
 
+  /v1/sessions/{id}/seen:
+    post:
+      tags: [alerts]
+      operationId: seenSession
+      summary: Mark the session's current Needs-you episode seen
+      description: |
+        push.md 4 ("Seen on a session"). For a Needs-you row with no alert brief: Seen on the
+        episode's alert when it has one, else the hub creates that alert as `seen`. Works with
+        pushes off. 409 when the session does not need you now.
+      x-scopes: [push, owner]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: The episode's alert, now seen.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Alert"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
   /v1/accounts:
     get:
       tags: [read]
@@ -2190,7 +2213,7 @@ components:
         dormant: {type: boolean, description: "Open, not needing you, and done with no activity for 12 h or working and stale (states.md 5): not counted in counts.live."}
         activity_at: {type: [string, "null"], format: date-time, description: "Newest of last event, state_since, start and end (not the last listing): what `dormant`, `days` and the order use. Null when nothing is known."}
         alert:
-          description: "The open alert of this session's current episode, if any (push.md 4)."
+          description: "The alert of this session's current episode while it is open (pending, fired, snoozed, seen) or skipped, if any (push.md 4, 10.1). Seen is allowed on a skipped one; Snooze is not."
           oneOf:
             - {$ref: "#/components/schemas/AlertBrief"}
             - {type: "null"}

@@ -93,6 +93,8 @@ export interface HubClient {
   alert(id: string): Promise<Alert>;
   rules(): Promise<RulesReply>;
   seen(alertId: string): Promise<AlertBrief>;
+  /** Seen on a Needs-you row with no alert (push.md 4); older hubs answer 404. */
+  seenSession(sessionId: string): Promise<AlertBrief>;
   snooze(alertId: string, minutes?: number): Promise<AlertBrief>;
   deviceSelf(): Promise<Device>;
   patchSelf(prefs: Partial<DevicePrefs>): Promise<Device>;
@@ -286,6 +288,7 @@ export function createHubClient(deps: HubClientDeps): HubClient {
     alert: (id) => call<Alert>('GET', `/v1/alerts/${seg(id)}`),
     rules: () => call<RulesReply>('GET', '/v1/rules'),
     seen: (id) => call<AlertBrief>('POST', `/v1/alerts/${seg(id)}/seen`),
+    seenSession: (id) => call<AlertBrief>('POST', `/v1/sessions/${seg(id)}/seen`),
     snooze: (id, minutes) => call<AlertBrief>('POST', `/v1/alerts/${seg(id)}/snooze`, minutes === undefined ? {} : { minutes }),
     deviceSelf: () => call<Device>('GET', '/v1/devices/self'),
     patchSelf: (prefs) => call<Device>('PATCH', '/v1/devices/self', { prefs }),

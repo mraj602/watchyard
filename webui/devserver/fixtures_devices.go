@@ -185,7 +185,9 @@ func (d *Data) deviceFixtures(now time.Time) {
 
 var openStatus = map[string]bool{"pending": true, "fired": true, "snoozed": true, "seen": true}
 
-// SyncAlerts sets each session's `alert` brief to its newest open alert, or null.
+// SyncAlerts sets each session's `alert` brief to its newest open alert, or null. A skipped
+// alert counts while its session needs you (the mock has no episodes: that is its current
+// one, push.md 10.1), so Seen can quiet the row.
 func (d *Data) SyncAlerts() {
 	for _, s := range d.Sessions {
 		s["alert"] = nil
@@ -194,12 +196,14 @@ func (d *Data) SyncAlerts() {
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i]["created_at"].(string) < sorted[j]["created_at"].(string) })
 	for _, a := range sorted {
 		id, _ := a["session"].(string)
-		if id == "" || !openStatus[a["status"].(string)] {
+		if id == "" {
 			continue
 		}
-		if s, ok := d.Session(id); ok {
-			s["alert"] = Brief(a)
+		s, ok := d.Session(id)
+		if !ok || !(openStatus[a["status"].(string)] || a["status"] == "skipped" && s["needs_you"] == true) {
+			continue
 		}
+		s["alert"] = Brief(a)
 	}
 }
 

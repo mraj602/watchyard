@@ -94,6 +94,7 @@ var handlerRoutes = []Route{
 	{Method: "GET", Path: "/v1/alerts/{id}", Scopes: []string{"read", "push", "owner"}},
 	{Method: "POST", Path: "/v1/alerts/{id}/snooze", Scopes: []string{"push", "owner"}},
 	{Method: "POST", Path: "/v1/alerts/{id}/seen", Scopes: []string{"push", "owner"}},
+	{Method: "POST", Path: "/v1/sessions/{id}/seen", Scopes: []string{"push", "owner"}},
 	{Method: "POST", Path: "/v1/actions/{token}"},
 	// An owner session makes an owner link for another device (pairing.md 4.1).
 	{Method: "POST", Path: "/v1/owner-links", Scopes: []string{"owner"}},

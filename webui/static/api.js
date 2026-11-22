@@ -139,6 +139,7 @@ export const getAlerts = (params) => getJSON('/v1/alerts', params);
 export const getAlert = (id) => getJSON(`/v1/alerts/${enc(id)}`);
 export const snoozeAlert = (id, minutes) => postJSON(`/v1/alerts/${enc(id)}/snooze`, minutes ? { minutes } : {});
 export const seenAlert = (id) => postJSON(`/v1/alerts/${enc(id)}/seen`);
+export const seenSession = (id) => postJSON(`/v1/sessions/${enc(id)}/seen`);
 
 // /health is outside the API and public; used to compare the running build with the hub's.
 export async function getHealth() {

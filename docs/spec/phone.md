@@ -225,7 +225,7 @@ Accounts, More**:
 
 | App route (expo-router) | Hash route it mirrors | Screen |
 | --- | --- | --- |
-| `/` (tab Now) | `#/` | Needs-you inbox with swipe Seen / Snooze (`POST /v1/alerts/{id}/seen`, `/snooze`), alert status words, rings per account, running count per machine |
+| `/` (tab Now) | `#/` | Needs-you inbox with swipe Seen / Snooze (`POST /v1/alerts/{id}/seen`, `/snooze`; Seen on every row, also a skipped alert, and `POST /v1/sessions/{id}/seen` for a row with no alert; Snooze only while the alert can push, push.md 4), alert status words, rings per account, running count per machine |
 | `/sessions?filter=&by=` | `#/sessions` | Grouped list with a search box (pwa.md 3.0b) and filter chips |
 | `/sessions/[id]?alert=` | `#/sessions/<id>` | State history, last message, **Open in Claude** (`remote_url` in the seat's claude.ai tab on Android, P17; elsewhere with the wrong-account note), **Copy resume command**, Snooze |
 | `/accounts?seat=` | `#/accounts` | One compact row per account that opens in place (P17.8), "most room", **Count down on Lock Screen** (iOS, P12) |

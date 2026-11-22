@@ -5,7 +5,7 @@ import { useReducer, type ReactNode } from 'react';
 import type { Alert, AlertBrief, Device, Me, Overview, Seat, Session } from '../src/contract/api';
 import type { AppInfo } from '../src/contract/platform';
 import { HubApiProvider, type HubApi } from '../src/components/hub-api';
-import type { DataAction, HubData } from '../src/lib/data';
+import { reduce, type DataAction, type HubData } from '../src/lib/data';
 import type { HubClient } from '../src/lib/hub';
 import accounts from './fixtures/hub/accounts.json';
 import alert from './fixtures/hub/alert.json';
@@ -52,6 +52,8 @@ export function testReduce(state: HubData, action: DataAction): HubData {
       return patchAlert(action.alert, { status: 'seen' });
     case 'snoozed':
       return patchAlert(action.alert, { status: 'snoozed', snoozed_until: action.until });
+    case 'seenSession':
+      return reduce(state, action);
     case 'offline':
       return { ...state, offline: true };
     case 'loaded':
@@ -86,6 +88,7 @@ export function fakeClient(over: Partial<Record<keyof HubClient, unknown>> = {})
     alert: jest.fn(async () => structuredClone(alert)),
     rules: jest.fn(async () => structuredClone(rules)),
     seen: jest.fn(async (id: string) => ({ id, status: 'seen' })),
+    seenSession: jest.fn(async () => ({ id: 'al_new', status: 'seen' })),
     snooze: jest.fn(async (id: string) => ({ id, status: 'snoozed' })),
     deviceSelf: jest.fn(async () => structuredClone(device)),
     patchSelf: jest.fn(async (prefs: object) => ({ ...device, prefs })),
