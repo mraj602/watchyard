@@ -79,10 +79,14 @@ function main(argv) {
     const version = (process.env.WY_VERSION || pkg.version).replace(/^v/, '');
     const git = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
     const commit = git.status === 0 ? git.stdout.trim() : 'unknown';
-    run(process.env.GO || 'go', ['build', '-trimpath', '-ldflags', ldflags(version, commit), '-o', join(out, t.bin), './cmd/wy'], {
-      cwd: repoRoot,
-      env: { ...process.env, CGO_ENABLED: '0', GOOS: t.goos, GOARCH: t.goarch },
-    });
+    // No build flag comes in from outside, as in scripts/release/build.sh: GOFLAGS is cleared,
+    // and one set with `go env -w` (which an empty variable does not override) stops the build.
+    const go = process.env.GO || 'go';
+    const env = { ...process.env, CGO_ENABLED: '0', GOFLAGS: '', GOOS: t.goos, GOARCH: t.goarch };
+    const cfg = spawnSync(go, ['env', 'GOFLAGS'], { cwd: repoRoot, env, encoding: 'utf8' });
+    if (cfg.status !== 0) throw new Error('go env GOFLAGS failed');
+    if (cfg.stdout.trim() !== '') throw new Error(`go env sets GOFLAGS to ${cfg.stdout.trim()}; the bundled wy takes no extra flags (go env -u GOFLAGS)`);
+    run(go, ['build', '-trimpath', '-ldflags', ldflags(version, commit), '-o', join(out, t.bin), './cmd/wy'], { cwd: repoRoot, env });
   } else {
     const dir = resolve(from);
     const suffix = `_${t.goos}_${t.goarch}.`;
