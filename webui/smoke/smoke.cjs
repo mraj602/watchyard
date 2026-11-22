@@ -319,7 +319,8 @@ async function phoneFlow(sizeName, w, hgt) {
   await page.waitForSelector('.needs-card');
   if (w < 600) await page.click(`[data-key="menu-${PERM}"]`);
   await page.click(`[data-key="seen-${PERM}"]`);
-  try { await page.waitForSelector(`[data-session="${PERM}"].is-seen`, { timeout: 4000 }); } catch (e) { fail(page.tag('Seen did not dim the row')); }
+  // A seen session leaves Needs you until its state changes (push.md 4, states.md 1).
+  try { await page.waitForSelector(`.needs-card[data-session="${PERM}"]`, { hidden: true, timeout: 4000 }); } catch (e) { fail(page.tag('Seen did not take the row out of Needs you')); }
   await shot(page, `${sizeName}-p-now-seen`);
 
   // Snooze by swiping left (touch) or the button.
