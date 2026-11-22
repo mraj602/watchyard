@@ -975,7 +975,9 @@ live leases), never from a forecast of past use.
 are aggressive; `protected` and `conservative` are protected. It is a setting, never derived
 from a label.
 
-*Parameters.* Fixed in this version (per-account calibration from measured use comes later):
+*Parameters.* Fixed, except the three marked *calibrated*: each account measures those from its
+own readings and token use and moves from the value shown (its fallback) to the measured one
+(Calibration, below).
 
 | Parameter | Value | Meaning |
 | --- | --- | --- |
@@ -984,9 +986,9 @@ from a label.
 | head start | 10 | Points the pace line allows above the even share of the week. |
 | protected 5-hour floor | 45 | A protected account takes no new lane at 5-hour ≥ this: its 80 % 5-hour cap less one lane's 35-point budget (`cap_5h` overrides). |
 | burst cap | 6 aggressive, 2 protected | New leases one account may get in any 60 minutes. |
-| lane charge `c` | 8 | 5-hour points a new lane is charged for its first 5 hours (4 points, times a safety factor of 2), one price for every model. Its expected full cost `cf` is the same. |
-| ratio `ρ` | 7.2 | 5-hour points per weekly point. |
-| meter factor `f` | 1.4 | 5-hour points per million weighted token units. |
+| lane charge `c` | 8 | *Calibrated.* 5-hour points a new lane is charged for its first 5 hours: the lane price `c₀` (fallback 4 points) times a safety factor of 2, one price for every model. Its expected full cost `cf` is the same. |
+| ratio `ρ` | 7.2 | *Calibrated.* 5-hour points per weekly point. |
+| meter factor `f` | 1.4 | *Calibrated.* 5-hour points per million weighted token units. |
 | lease life | 5 h | How long a launched lease charges its account. |
 | settle | 10 min | A reading this long after a lease shows the lane's start. |
 | stale guard | 60 min | Age of the newest reading after which an account that ran is stale. |
@@ -1024,11 +1026,13 @@ its `seven_day` reading; an account with neither has no reading time.
    window: while the reading's window is open that is `resets_at − 5 h`; when it has ended,
    the next window starts at the first token after its reset (and so on, 5 hours each), and
    the reading's `h` no longer counts. `m7` = units since the later of the weekly reading's
-   time and the last weekly reset. `h += f × m5`, `w += f × m7 / ρ`.
+   time and the last weekly reset. `h += f × m5 + g5`, `w += f × m7 / ρ + g7`, with the
+   account's calibrated `f` and `ρ` and its meter margins `g5`, `g7` (Calibration).
 3. *Leases* (the ledger, below, and other machines' leases from the hub). For each lease of
    this machine, `b = f ×` the units its session used since the lease (0 for a lease without
    a session id). Other machines' leases have `b = 0`: their sessions' tokens are not in this
-   machine's meter, so their leases keep their full charge while active. A lease counts as
+   machine's meter, so their leases keep their full charge while active. A lease without
+   its own `c5`/`cf` is charged the account's current `c`. A lease counts as
    launched when the ledger has its `launched` line, or this machine's hook events or token
    rows show its session since the pick. A lease younger than 5 hours whose session has not
    ended is *active*: it adds `max(0, c − b)` to `h`, the same divided by `ρ` to `w`, and
@@ -1038,10 +1042,14 @@ its `seven_day` reading; an account with neither has no reading time.
    after it. A session that never sends a token stays charged in full until its lease ends: a
    deliberate double count on the safe side.
 4. *Unexplained use* (only for an account with claude.ai readings, source `web`, in the hub's
-   history). The rate `r` = the rise of the web `five_hour` readings of the current window over
-   the last 60 minutes of web readings (at least two readings 10 minutes apart), less the
-   meter's points over the same interval, per hour, at least 0; it is kept for 5 hours after
-   the last web reading. When the newest reading (any source) is older than 15 minutes, `h +=
+   history). The rate `r` is measured on the web `five_hour` readings of the current window in
+   the last 60 minutes of web readings. *Clean* intervals come first: two consecutive web
+   readings with no token row of the seat in this machine's meter and no status-line reading
+   between them (no Claude Code session ran, so the whole rise is use the meter cannot see);
+   when they add up to at least 10 minutes, `r` = their summed rise over their summed time,
+   per hour. Otherwise `r` = the rise from the oldest to the newest of those readings (at least
+   10 minutes apart) less the meter's points over the same interval, per hour, at least 0. It
+   is kept for 5 hours after the last web reading. When the newest reading (any source) is older than 15 minutes, `h +=
    r ×` its age (at most 5 h) and `w` gets that divided by `ρ`. A **protected** account with
    web readings whose newest reading is older than 15 minutes and that has no rate is stale.
 5. *Stale.* The newest reading is older than 60 minutes and the account ran since it (a live
@@ -1089,6 +1097,108 @@ limit, the 5-hour reset (or 5 hours from now when unknown); a protected account 
 `T` (or its reserve level at or over `T`), the weekly reset; a protected account over its
 pace line, the time the line reaches `w`; an aggressive account at its weekly limit, the
 weekly reset. A stale account or one with an unknown level frees up at no known time.
+
+#### Calibration
+
+Three factors of each account adjust themselves to its measured use: the meter factor `f`, the
+ratio `ρ` and the lane price `c₀` (the lane charge is `c = cf = 2 × c₀`). A new account uses
+the fallbacks of the Parameters table until it has about 3 days and 20 usable measurements,
+then moves to its measured values. Everything is keyed by the seat (account and org uuids).
+
+*Where it runs.* The **hub** calibrates every seat, because it has the readings and token rows
+of every machine (`wy hub serve`, below), and returns the result per seat in `GET /v1/usage`
+(`calibration`, api.yaml `Calibration`). `wy account next` uses the hub's factors when they are
+under 7 days old. It keeps the last ones it read in `<state>/next/calibration.json` (written
+after each hub read, except with `--no-reserve`, which writes nothing) and uses them, while
+under 7 days old, when the hub cannot be read. Otherwise it calibrates the account
+itself, by the same rules, from this machine's outbox (7 days) and ledger (8 days): source
+`local`. The meter margins and the unexplained rate (Effective state 2 and 4) are always
+worked out by `wy account next` at the pick, from the newest readings and this machine's meter,
+because they correct the meter it uses.
+
+*Used readings.* Per window (`five_hour`, `seven_day`), the seat's readings of every source,
+oldest first. A reading is used when it is valid (as in Readings), its `resets_at` is within 5
+minutes of the newest `resets_at` used so far for that window (an older one is a session that
+sat idle through a reset: skipped), and it is not more than 1 point under the last used
+reading of the same window. A reading more than 1 point under it is held: when the next
+reading of that window is also more than 1 point under, the drop is confirmed (a server or
+owner reset of the usage): that next reading is used, and no pair spans the drop; otherwise
+the held reading is skipped (a session that reported an old value). A reading without a
+`resets_at` (an idle window) is not used.
+
+*Pairs.* A pair is two consecutive used `five_hour` readings of the same 5-hour window
+(`resets_at` within 5 minutes): `d5` = the rise, `dt` = the time between them, `u` = the weighted
+units of the seat's token rows after the first and up to the second. When both readings come
+with a used `seven_day` reading of the same weekly window (same time and source), `d7` = its
+rise. A pair whose second reading confirms a drop is not a pair: server and owner resets never
+count. A pair is *clean* when both readings are claude.ai readings (source `web`), `u = 0` and
+there is no status-line reading of the seat between them: no Claude Code session ran, so its
+rise is use the meter cannot see.
+
+*Meter factor `f`* (points per million units), from the pairs of the last 7 days with `u > 0`:
+per 5-hour window, the window ratio `Σ d5 / Σ u` of windows with `Σ u ≥ 2` million units; the
+reference `f̂` = the median of the window ratios weighted by their units. A pair with a large
+unexplained rise, `d5 − f̂ × u > max(3, 2 × f̂ × u)` (claude.ai use beside the session), is left
+out; measured `f` = `Σ d5 / Σ u` over the pairs left, when their `Σ u ≥ 2` million units. Usable
+measurements: the pairs left.
+
+*Ratio `ρ`*, from the pairs of the last 7 days with a `d7`: measured `ρ` = `Σ d5 / Σ d7`, when
+`Σ d7 ≥ 5` points. Usable measurements: those pairs with a rise in either window.
+
+*Lane price `c₀`*, from the leases of the last 14 days that name a session that started (the
+hub has the session; locally, the ledger's `launched` line, hook events or token rows) and
+are at least 5 hours old: the units of that session's token rows in the 5 hours after the
+pick. The mean over them, leaving out the largest ⌊n / 100⌋, is pooled over every seat (a lane
+is the same work whichever account runs it; locally, over this machine's ledger); a seat's
+measured `c₀` = that mean × the seat's final `f`. Usable measurements: those leases.
+
+*Unexplained rate* (shown only): `Σ d5 / Σ dt` of the clean pairs of the last 7 days, and their
+hours.
+
+*Blending.* For each factor, with `n` usable measurements and `d` days from the first of them to
+now (both counted from the account's last restart, below): weight `α` = 0 when `n < 20` or
+`d < 3`, else `min(1, min(n / 20, d / 3) / 2)`; value = fallback + `α` × (measured − fallback).
+So it moves halfway once both thresholds are met and fully at twice them. A measured value
+outside its plausible range (`f` 0.25 to 8 points per million units, `ρ` 3 to 15, `c₀` 0.5 to
+25 points) is not used (`α` = 0, shown as implausible).
+
+*Restarts.* An account's calibration restarts (its pairs are dropped and `n`, `d` count again
+from the restart, so it goes back to its fallbacks for about 3 days):
+
+- when the seat's account or org uuid is not the one it was calibrated for (reason
+  `seat_change`);
+- after **6 one-sided misses in a row** while the measured `f` is in use (`α > 0`): for a
+  pair with expected rise `e = f × u ≥ 1` point (`f` the value in use), a miss is `|d5 − e| ≥
+  max(2, e / 2)`, an under-read when `d5 > e` (reason `under_read`), else an over-read
+  (`over_read`). A pair with `e ≥ 1` that is not a miss, or a miss on the other side, ends the
+  run; other pairs neither count nor end it. The restart is at the run's first pair, so the
+  run's pairs count for the new calibration.
+
+The lanes of the seat stay in the pooled lane mean; the seat's `c₀` follows its new `f`.
+
+*Meter margins* (the reference's online corrector, mode `ewmax`). At the pick, per account,
+over its used readings of the last 26 hours (hub and this machine) and this machine's meter,
+oldest first, with the account's `f` and `ρ`: for each pair of consecutive used `five_hour`
+readings, `e5 = d5 − f × u` and the 5-hour factor `k5 = max(min(3, max(0, e5 / max(f × u, 2))),
+0.7 × k5)`; consecutive used readings of different 5-hour windows (a reset between them) leave
+`k5` as it was. The same for the `seven_day` readings: `e7 = d7 − f × u / ρ`, floor `2 / 7`,
+factor `k7`, a weekly reset leaving it. Both start at 0. The margins of Effective state 2 are
+`g5 = k5 × f × m5` and `g7 = k7 × f × m7 / ρ`: the meter's recent under-reading, applied to
+what it has counted since the reading.
+
+**On the hub** (`wy hub serve`, package `internal/calib` and the hub's calibration job): every
+15 minutes, and 1 minute after the start, each seat's calibration is brought up to date on data
+at least 30 minutes old (token rows arrive after the readings they explain). A run is
+incremental and cheap (the hub is a small machine): per seat it reads only the `five_hour` and
+`seven_day` samples and the token rows with times after the seat's cursor (by the
+`limit_sample` key and the `token_row_seat_ts` index), and the seat's leases after its lease
+cursor that are at least 5 hours 30 minutes old with their sessions' token rows of those 5
+hours (`account_lease_seat_ts`, `token_row_session`); nothing is scanned per request. It keeps
+per seat, in `seat_calibration` (schema.sql), a state (cursors, the last used readings, the
+pairs of the last 7 days that rose or used tokens, the clean pairs' sums, the lanes of the
+last 14 days, the miss run, the restart) and the computed factors, which `/v1/usage` returns
+as they are. Token rows that arrive more than 30 minutes after their time miss the pairs
+already folded. A seat with no row yet has `calibration: null`.
 
 #### Leases and the ledger
 
@@ -1289,14 +1399,24 @@ Unknown fields are reported by `wy doctor` as unknown keys.
   also has `kind` and `lanes`: `{"weekly_pct", "five_hour_pct", "weekly_reserve_pct",
   "hours_to_reset", "reading_at", "reading_age_min", "five_hour_resets_at", "meter_5h_pct",
   "meter_7d_pct", "unexplained_5h_pct", "leases", "burst", "burst_cap", "capped",
-  "last_lease", "expiring", "stale", "unknown": [...], "skip_level"}` (`leases` = active
-  leases, `burst` = leases in the last 60 minutes, `meter_*` the token meter's points,
-  `skip_level` 0 for a burst cap only, 1 stale, 2 a protected rule, 3 a hard limit). Eligible
+  "last_lease", "expiring", "stale", "unknown": [...], "skip_level", "calibration"}`
+  (`leases` = active leases, `burst` = leases in the last 60 minutes, `meter_*` the token
+  meter's points with its margins, `skip_level` 0 for a burst cap only, 1 stale, 2 a protected
+  rule, 3 a hard limit). `calibration` is `{"source": "hub"|"cached"|"local", "at", "since",
+  "reset_reason", "f", "ratio", "lane_price": {"value", "fallback", "measured", "weight", "n",
+  "days", "implausible"}, "lane_charge", "lane_units", "unexplained_pct_per_hour",
+  "unexplained_hours", "corrector_5h", "corrector_7d", "margin_5h_pct", "margin_7d_pct",
+  "unexplained_from": "clean"|"net"|null}`: the factors the account was judged on
+  (Calibration; `f` in points per million units, `measured` null when there is none,
+  `reset_reason` null or the reason of the last restart), `lane_charge` = `c`, `lane_units` the
+  pooled mean lane units, `corrector_*` the margin factors `k5`, `k7` and `margin_*` the margins
+  `g5`, `g7` in points, `unexplained_from` how the unexplained rate was measured (null: none). Eligible
   accounts come first, in pick order for the first pick. Times are RFC 3339 UTC.
 - `--explain`: the same as a table, then the pick lines. For `lanes`: kind, weekly level
   (reserve level for protected) and reset, 5-hour level, leases and burst, data source and
-  age, why. For the projection strategies: 5 h now→end/cap, 7 d now→reset/cap, other windows,
-  data source and age, why.
+  age, why; then one calibration line per account: `f`, `ρ`, the lane charge, their source and
+  weights, the margins and the unexplained rate. For the projection strategies: 5 h
+  now→end/cap, 7 d now→reset/cap, other windows, data source and age, why.
 - `--exec [-- <cmd> [args...]]`: runs `<cmd>` (default `claude`) found on `PATH` with the
   pick's `CLAUDE_CONFIG_DIR` (unset for the default view of `~/.claude`), replacing `wy` (on
   Windows, waiting for it and exiting with its code). It prints the pick line on stderr first.
