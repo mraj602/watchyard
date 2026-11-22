@@ -173,7 +173,7 @@ function withWyWidgetOpen(config) {
   ]);
 }
 
-const REMOVED_PERMISSIONS = ['android.permission.RECORD_AUDIO', 'android.permission.SYSTEM_ALERT_WINDOW'];
+const REMOVED_PERMISSIONS = ['android.permission.SYSTEM_ALERT_WINDOW'];
 
 const WORK_VERSION = '2.8.1';
 const WORK_MARKER = '// wy: align androidx.work';

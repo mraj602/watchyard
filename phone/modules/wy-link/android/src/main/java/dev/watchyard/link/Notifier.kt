@@ -110,6 +110,8 @@ class Notifier(private val ctx: Context, private val store: Store) : Sink {
       .setStyle(NotificationCompat.BigTextStyle().bigText(n.body))
       .setGroup(Channels.GROUP)
       .setAutoCancel(true)
+      // Backstop if the hub's `dismiss` frame (24h TTL) is missed: the OS removes it after a day.
+      .setTimeoutAfter(DISMISS_AFTER_MS)
       .setContentIntent(openIntent(n))
       .setCategory(NotificationCompat.CATEGORY_MESSAGE)
       .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
@@ -211,6 +213,8 @@ class Notifier(private val ctx: Context, private val store: Store) : Sink {
   }
 
   companion object {
+    const val DISMISS_AFTER_MS = 24L * 3600_000
+
     /** The lock-screen text of every notification: no names, nothing to learn from it. */
     const val PUBLIC_TEXT = "Open Watchyard to see this"
 
