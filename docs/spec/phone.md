@@ -230,7 +230,7 @@ Accounts, More**:
 | `/sessions/[id]?alert=` | `#/sessions/<id>` | State history, last message, **Open in Claude** (`remote_url` in the seat's claude.ai tab on Android, P17; elsewhere with the wrong-account note), **Copy resume command**, Snooze |
 | `/accounts?seat=` | `#/accounts` | One compact row per account that opens in place (P17.8), "most room", **Count down on Lock Screen** (iOS, P12) |
 | `/more` | `#/more` | Alerts, Machines, Peers, Settings |
-| `/more/alerts` | `#/more/alerts` | Rule switches as `prefs.mute` (`PATCH /v1/devices/self`), recent pushes (`GET /v1/alerts`) |
+| `/more/alerts` | `#/more/alerts` | Rule switches as `prefs.mute` (`PATCH /v1/devices/self`), recent pushes (`GET /v1/alerts?limit=50`, filtered on the phone to open alerts (`pending`, `fired`, `snoozed`) plus anything fired or created in the last 48 hours) |
 | `/more/machines?machine=` | `#/machines` | Machines list |
 | `/more/settings` | `#/more/settings` | Hub and status, notifications state, private pushes, tap behaviour, own quiet hours, widgets refresh switch (`prefs.widgets`), app version and **Check for update** (P16), **Unpair** |
 | `/more/settings/notifications` | — | P6.7 |
@@ -283,6 +283,8 @@ on a shared table.
   shows on the next poll (15 s in the foreground).
 
 ## P6. Notifications
+
+Android alert notifications also carry `setTimeoutAfter(24 h)`, so one lingers at most a day if the hub's `dismiss` frame (24 h TTL) never arrives.
 
 **P6.1 Android channels** (created before any permission or token call; Android 13+ shows
 the permission prompt only once a channel exists):
@@ -625,9 +627,10 @@ then gets the 401 that shows Pair, P3).
   `expo-build-properties` iOS option is deprecated since SDK 56, and `expo-widgets` reads
   the same field for its extension), Android `minSdkVersion` 24 (through
   `expo-build-properties`; 31 in the Android build below).
-- Android `permissions: [POST_NOTIFICATIONS, CAMERA]` and `blockedPermissions:
-  [RECORD_AUDIO, SYSTEM_ALERT_WINDOW, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE]`.
-  Both are listed so the prebuilt manifest shows them (`wy-notify` and `wy-scan` also declare
+- Android `permissions: [POST_NOTIFICATIONS, CAMERA, RECORD_AUDIO]` and `blockedPermissions:
+  [SYSTEM_ALERT_WINDOW, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE]`.
+  `RECORD_AUDIO` is for claude.ai's microphone in a tab (P17.5); it is asked at run time, only
+  when the page asks. Both lists are shown so the prebuilt manifest shows them (`wy-notify` and `wy-scan` also declare
   them, merged only at Gradle time).
 - Plugins: `expo-router`; `expo-secure-store`; `expo-widgets` (`groupIdentifier: group.<WY_APP_ID>`, `bundleIdentifier:
   <WY_APP_ID>.widgets` for the extension, the two widgets, `enablePushNotifications: false`,
@@ -643,7 +646,7 @@ then gets the 401 that shows Pair, P3).
     launcher activity by component name, for `watchyard://` links only (the library's own
     tap is an implicit `ACTION_VIEW` any app with that scheme could answer). This plugin is
     listed before the widget plugin in `app.config.ts` so it runs last on those files;
-  - removes `RECORD_AUDIO` and `SYSTEM_ALERT_WINDOW` if a library adds them;
+  - removes `SYSTEM_ALERT_WINDOW` if a library adds it;
   - `usesCleartextTraffic` only in development builds;
   - Android Gradle: every `androidx.work` artifact is forced to 2.8.1 in `app/build.gradle`
     (`resolutionStrategy.eachDependency`). `react-native-android-widget` declares
@@ -939,15 +942,32 @@ claude.ai URL through `Linking.openURL`). It does not switch on its own, so a sl
   other `https:` or `mailto:` link → the browser (`ACTION_VIEW`, `external` event). Anything
   else (`http:`, `intent:`, `javascript:`, `file:`, `data:`, custom schemes) is dropped.
   Subframes are not filtered (sign-in and payment widgets live there).
-- Downloads are refused (`setDownloadListener` reports `download`, saves nothing). File
-  choosers, camera, microphone, geolocation and other permission requests are denied.
+- Downloads are refused (`setDownloadListener` reports `download`, saves nothing).
+  Geolocation and every permission request other than the two below are denied.
+- **Microphone and camera** (`onPermissionRequest`, `TabMedia`): only `AUDIO_CAPTURE` and
+  `VIDEO_CAPTURE`, and only when the requesting origin is `https://claude.ai` or a subdomain
+  (default port; `TabPolicy.grantable`). The Android runtime permission (`RECORD_AUDIO`,
+  and `CAMERA` for video) is asked first; the page's request is granted only if it is granted
+  and denied otherwise.
+- **File chooser** (`onShowFileChooser`): launches `FileChooserParams.createIntent()` (so the
+  page's accept types and multiple-selection apply). When the accept types include images
+  (`image/*`, `*/*` or an image extension), a camera option (`ACTION_IMAGE_CAPTURE`, written
+  to a `FileProvider` URI in the app's private cache `wy-tabs-camera/`, declared in the
+  module's manifest, authority `<WY_APP_ID>.wytabs.files`, per-URI grants only) is offered in the
+  chooser, after asking for `CAMERA` (without it only files are offered). The result is
+  `FileChooserParams.parseResult` or the photo URI; the page's callback is answered exactly
+  once (null on Cancel, a new chooser or a closed tab). Earlier photos are deleted at the
+  next chooser. The module reads nothing of what the page shows or what is chosen.
+- Pasting a screenshot from the clipboard into the page is not handled by the app (handing it
+  over would need script in the page, which P17.5 forbids); attach a photo or file through the
+  chooser.
 - Certificate errors are never overridden. WebView debugging stays off.
 
 ### P17.6 Limits
 
 - Needs WebView 110+ with `MULTI_PROFILE`; older phones open links in the browser.
 - Sign-in is email and code only; Google sign-in is blocked in WebViews by Google.
-- Attachments and file uploads do not work in a tab (no file chooser); use the browser.
+- Attachments go through the system file chooser (and the camera, P17.5); pasting an image from the clipboard is not supported.
 - A refusal that claude.ai serves as a normal page with content cannot be told apart without
   reading the page, which the module never does; **Open in browser** is always in the header.
 - The phone tab line of P17.7 is what the tab showed when it was last open; a sign-out made
