@@ -2,11 +2,13 @@ package store
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -306,11 +308,58 @@ func TestPlainArchiveTamperAndTruncate(t *testing.T) {
 			t.Errorf("truncated to %d accepted", n)
 		}
 	}
-	c := append([]byte{}, raw...)
-	c[len(c)/2] ^= 0xff
-	if try(c) == nil {
-		t.Error("flipped byte accepted")
+	// A flipped byte must fail whenever it changes what the archive holds. Inside a long run
+	// of zeros a flip can change only a back-reference's distance, so the stream inflates to
+	// the same bytes and nothing was tampered with: such a flip proves nothing, skip it.
+	plain := gunzipAll(t, raw)
+	flips := 0
+	for _, at := range []int{len(raw) / 3, len(raw) / 2, 2 * len(raw) / 3, len(raw) - 6} {
+		c := append([]byte{}, raw...)
+		c[at] ^= 0xff
+		if out, ok := gunzip(c); ok && bytes.Equal(out, plain) {
+			continue
+		}
+		flips++
+		if try(c) == nil {
+			t.Errorf("flipped byte at %d accepted", at)
+		}
 	}
+	if flips == 0 {
+		t.Error("no flip changed the archive's content")
+	}
+	// A changed byte inside hub.db, with the gzip stream rebuilt so its checksum is right,
+	// is refused by the manifest's sha256.
+	db := bytes.Index(plain, []byte("SQLite format 3\x00"))
+	if db < 0 || db+5000 > len(plain) {
+		t.Fatal("no hub.db in the export")
+	}
+	tampered := append([]byte{}, plain...)
+	tampered[db+5000] ^= 0x01
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	zw.Write(tampered)
+	zw.Close()
+	if try(buf.Bytes()) == nil {
+		t.Error("changed database byte accepted")
+	}
+}
+
+func gunzip(b []byte) ([]byte, bool) {
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return nil, false
+	}
+	out, err := io.ReadAll(zr)
+	return out, err == nil
+}
+
+func gunzipAll(t *testing.T, b []byte) []byte {
+	t.Helper()
+	out, ok := gunzip(b)
+	if !ok {
+		t.Fatal("the export does not inflate")
+	}
+	return out
 }
 
 func TestImportRefusesNewerSchema(t *testing.T) {
