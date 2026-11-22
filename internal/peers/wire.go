@@ -122,6 +122,8 @@ type PeerTrustUp struct {
 	Interpreter string `json:"interpreter,omitempty"`
 	Venv        string `json:"venv,omitempty"`
 	ApprovedAt  string `json:"approved_at,omitempty"`
+	// TestBuild: a trusttest build made the record (peers.md 15). It is honoured; the UI says so.
+	TestBuild bool `json:"test_build,omitempty"`
 }
 
 // PeerTagUp adds or removes one tag of a session on the sending machine (link.md 6.2,

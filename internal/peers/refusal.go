@@ -31,6 +31,11 @@ const (
 	CodeLimitTags = "too_many_tags"
 )
 
+// ReasonReceiverTooOld is a hub reason word (not an exit code): the receiving machine's agent
+// did not announce the peer_service capability, so it cannot take a trusted sender's message
+// (peers.md 8.3).
+const ReasonReceiverTooOld = "receiver_too_old"
+
 // Exit codes of `wy peers` (peers.md 7.2).
 const (
 	ExitOK          = 0

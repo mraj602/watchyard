@@ -15,6 +15,7 @@ import (
 	"github.com/mraj602/watchyard/internal/identity"
 	"github.com/mraj602/watchyard/internal/keys"
 	peerspkg "github.com/mraj602/watchyard/internal/peers"
+	"github.com/mraj602/watchyard/internal/peers/doorbelltest"
 )
 
 // The trusttest build (peers.md 15): approval and --off run where the guard would refuse and
@@ -38,8 +39,7 @@ func TestTrustTestBuildRelaxesGuard(t *testing.T) {
 	interp := filepath.Join(base, "py/python3.12")
 	write(interp, "#!fake\n", 0o755)
 	write(filepath.Join(venv, "pyvenv.cfg"), "\n", 0o644)
-	write(filepath.Join(venv, "lib/python3.12/site-packages/agent_doorbell-1.0.dist-info/METADATA"), "Name: agent-doorbell\n", 0o644)
-	write(filepath.Join(venv, "bin/doorbell"), "#!"+interp+"\n", 0o755)
+	doorbelltest.WriteDist(t, venv, "#!"+interp)
 
 	oldEnv, oldDeps := peersEnv, peersTrustDeps
 	t.Cleanup(func() { peersEnv, peersTrustDeps = oldEnv, oldDeps })
@@ -72,10 +72,14 @@ func TestTrustTestBuildRelaxesGuard(t *testing.T) {
 	if !strings.Contains(e.String(), "TEST BUILD: approval guard is off") {
 		t.Errorf("stderr: %q", e.String())
 	}
-	// The same record a normal build reads.
+	// The same record a normal build reads, marked test_build.
 	rec, err := peerspkg.Env{State: state}.LoadTrust()
-	if err != nil || rec == nil || rec.Venv != venv || rec.Account != "acc-work" {
+	if err != nil || rec == nil || rec.Venv != venv || rec.Account != "acc-work" || !rec.TestBuild {
 		t.Errorf("record: %+v %v", rec, err)
+	}
+	// Marked as a test build's, and shown so.
+	if !strings.Contains(o.String(), "approved by a test build") {
+		t.Errorf("stdout: %q", o.String())
 	}
 	o.Reset()
 	e.Reset()

@@ -21,6 +21,10 @@ func serviceWorld(t *testing.T) (*world, *fakeRemote, peers.Env, peers.TrustReco
 	e.Remote = r
 	rec := peers.TrustRecord{Venv: "/v", Program: "/v/bin/doorbell", Interpreter: "/py", Machine: "m_TEST", MachineName: "laptop",
 		Account: "acc-work", AccountLabel: "work", ApprovedAt: w.now}
+	// The send reads the record again after the hub's answer (peers.md 4.1a): it must be there.
+	if err := e.SaveTrust(&rec); err != nil {
+		t.Fatal(err)
+	}
 	return w, r, e, rec
 }
 
@@ -68,6 +72,9 @@ func TestSendServiceToTag(t *testing.T) {
 func TestSendServiceMatrixUsesRecordedAccount(t *testing.T) {
 	w, r, e, rec := serviceWorld(t)
 	rec.Account, rec.AccountLabel = "acc-personal", "personal"
+	if err := e.SaveTrust(&rec); err != nil {
+		t.Fatal(err)
+	}
 	r.tags["sess-a"] = []string{"ops"}
 	_, rf := e.SendService(rec, "tag:ops", "hello", false, false, peers.SendOpts{})
 	if rf == nil || rf.Code != peers.CodeNoHolder {

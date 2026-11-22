@@ -225,7 +225,8 @@ as a trusted sender. It can send only to tags, never to a session by name, and n
 reply. It sends as one of your accounts, so the matrix and the rate limits apply as usual.
 
 1. Start the agent if it is not running: `wy agent enable`.
-2. At a terminal on the machine Doorbell runs on (not inside a Claude Code session), run:
+2. At a terminal on the machine Doorbell runs on (a real terminal, not inside a Claude Code
+   session and not a script without a terminal: the agent checks both), run:
 
    ```sh
    wy peers trust doorbell
@@ -233,7 +234,9 @@ reply. It sends as one of your accounts, so the matrix and the rate limits apply
 
    `wy` finds `doorbell` on `PATH` (or use `--program <script or venv>`) and resolves it to
    its virtual environment and Python. It asks which account Doorbell sends as (the first
-   account by default; `--account <label>` skips the question) and then asks y/N.
+   account by default; `--account <label>` skips the question) and then always asks y/N:
+   there is no `--yes`. It accepts only an install that pip, pipx or uv wrote (the package's
+   `RECORD` must match the files). Check the paths it prints before you answer.
 3. Make sure the matrix lets that account message the accounts of the sessions holding the
    tag. A session gets a tag with `wy peers tag add <tag>`.
 4. Set Doorbell's handoff command to `wy peers send tag:<tag> --stdin` (add `--one` to wake
@@ -250,8 +253,10 @@ in the same venv, nothing changes. A different venv, or a different Python, need
 approval.
 
 This is Linux only for now; on macOS and Windows `wy peers trust` says it is not supported.
-It does not protect against a hostile program running as your user: such a program could
-impersonate Doorbell's process tree. See
+It stops a session from approving Doorbell or sending as it through ordinary commands. It
+does not protect against a hostile program running as your user that sets out to get around
+it, for example by starting itself outside the session with a terminal of its own, or by
+impersonating Doorbell's process tree. See
 [peers.md section 4.1a](../spec/peers.md#41a-the-trusted-sender-doorbell-130).
 
 ## Turning it off

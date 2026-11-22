@@ -2,10 +2,12 @@
 
 package peers
 
-// The trusttest build (peers.md 15): a developer test aid that never ships. `wy peers trust
-// doorbell` and `--off` may run inside a Claude Code session and ask no question, so an agent
-// can test the trusted sender unattended. Everything else (the identity check, tag-only sends,
-// the audit, the record's format) is the same as the release build.
+// The trusttest build (peers.md 15): a developer test aid that never ships. It turns off the
+// approval guard (CheckApprover: the terminal, the environment names, the walks) and nothing
+// else: `wy peers trust doorbell` and `--off` may run inside a Claude Code session, without a
+// terminal, and ask no question, so the trusted sender can be tested unattended. The identity
+// check of a send, the install checks, tag-only sends and the audit are the release build's;
+// the record it writes is marked test_build, which every build honours and shows.
 
 // TrustGuardOff turns the approval guard off.
 const TrustGuardOff = true

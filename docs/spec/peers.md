@@ -137,9 +137,16 @@ on the other path (it may already have been delivered).
 Every request is checked with the peer's credentials (`SO_PEERCRED` on Linux,
 `LOCAL_PEERPID` on macOS): same uid, and for the session ops the caller's ancestry must reach
 `claude_pid` (4.1). A request that names a session its process is not inside is refused.
-`trust` refuses a caller with any Claude Code-looking ancestor, and `service_send` a caller
-that is a session or whose ancestry has no approved Doorbell (4.1a); both read nothing from the
-request about who is asking.
+`trust` (`set` and `off`) refuses a caller without a controlling terminal, with a signing-guard
+marker name in its environment, or with any Claude Code-looking ancestor above it or above its
+terminal's session leader, and `service_send` a caller that is a session or whose ancestry has
+no approved Doorbell (4.1a); both read nothing from the request about who is asking. For
+these two ops the walk up the ancestry must be **complete**: it ends at pid 1 (a subreaper
+such as `systemd --user` is passed through to it) or at a process whose parent is 0 (the top
+of a PID namespace); a walk that stops at the 64-step limit or at a process it cannot read
+refuses, rather than being taken as "no session above". The agent also takes a pidfd of the
+caller from the socket (`SO_PEERPIDFD`, where the kernel has it) and checks, after reading
+`/proc`, that the caller is still alive and that the start times it read have not changed.
 
 ### 2.4 Session files written by `wy hook`
 
@@ -433,42 +440,72 @@ a terminal: outside any session, so 4.1 would refuse it. There is no general lis
 programs, and the approval is not tied to a systemd unit name. **Linux only** in this release
 (14).
 
-**Approving it.** `wy peers trust doorbell [--account <account>] [--program <path>] [--yes]`,
-by the owner at a terminal:
+**Approving it.** `wy peers trust doorbell [--account <account>] [--program <path>]`, by the
+owner at a terminal. There is no `--yes`: approval always asks.
 
 1. On macOS and Windows it prints `wy peers trust: not supported on this OS yet` and exits 3,
    changing nothing.
-2. **Guard.** It is refused (exit 4) when any ancestor is a Claude Code session: the signing
-   guard's steps 1 and 2 (keys.md 8: the environment names, the ancestry), and the agent repeats
-   the ancestry walk itself from the request's peer credentials (2.3; any process that looks
-   like Claude Code, `ClaudeCandidates`, refuses). It then asks `y/N` on the terminal (`/dev/tty`,
-   keys.md 8 step 3). `--yes` skips the question and the need for a terminal, never the guard:
-   it is taken only when the command is not a descendant of a Claude Code session (the guard
-   passed), for example in a provisioning script run over `ssh` without a terminal.
+2. **Guard.** The CLI runs the signing guard (keys.md 8 steps 1 and 2) and refuses (exit 4)
+   early, as a courtesy; it decides nothing. The **agent** decides, from the request's peer
+   credentials (2.3) and `/proc` only, before it writes anything, and refuses with
+   `not_a_session` (exit 4) unless all of these hold for the requesting process:
+   - it has a **controlling terminal**: `tty_nr` in `/proc/<pid>/stat` is not 0 (a process
+     started with `setsid`, `systemd-run`, cron, a service or a pipe from another program has
+     none);
+   - its environment holds none of the signing guard's marker **names** (keys.md 8 step 1:
+     `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_MESSAGING_SOCKET`), read from
+     `/proc/<pid>/environ` as names only, never a value (an unreadable environment refuses);
+   - the walk up from it has no process that looks like Claude Code (`ClaudeCandidates`) and is
+     **complete** (2.3): it reached pid 1 or the top of its PID namespace; a walk cut short by
+     the 64-step limit or an unreadable process refuses;
+   - the **session leader** of its terminal (the pid its stat names as its session) exists,
+     has the same terminal, has no marker name in its environment, and its complete walk has
+     no Claude Code process either;
+   - none of these processes was replaced while the agent read them: the start time
+     (`starttime` in `/proc/<pid>/stat`) of the requester and of the session leader is the same
+     after the checks as before, and the requester itself is still alive through a pidfd taken
+     from the socket (`SO_PEERPIDFD`, Linux 6.5 and later; without it, the start times alone).
+   Then the CLI asks `y/N` on the terminal (`/dev/tty`, keys.md 8 step 3).
 3. **The install.** `--program` (a path to the `doorbell` console script, or to the virtual
    environment that holds the package) or else `doorbell` on the terminal's `PATH`. Every
    symlink is resolved. The **virtual environment** (venv) is the folder above the script's
-   `bin/`; it must hold `pyvenv.cfg` and the `agent-doorbell` distribution
-   (`lib/python*/site-packages/agent_doorbell-*.dist-info/METADATA` with `Name:
-   agent-doorbell`), and the script must be that venv's `bin/doorbell`. The **interpreter** is the
-   one the script's first line names (`#!<venv>/bin/python…`; a `#!/bin/sh` trampoline means
-   `<venv>/bin/python`), resolved to the real file. The layouts this covers: `uv tool install`
-   (`~/.local/bin/doorbell` → `~/.local/share/uv/tools/agent-doorbell/bin/doorbell`, whose venv
-   python links to a uv-managed or system interpreter), `pipx install` (`~/.local/share/pipx/venvs/agent-doorbell`),
-   and a plain venv run as `<venv>/bin/python -m doorbell`.
+   `bin/`; the script must be that venv's `bin/doorbell`, and the venv must hold `pyvenv.cfg`
+   and the `agent-doorbell` distribution as an installer wrote it:
+   - `lib/python*/site-packages/agent_doorbell-*.dist-info/METADATA` with `Name:
+     agent-doorbell`;
+   - its `entry_points.txt` declares the console script `doorbell = doorbell.cli:main` under
+     `[console_scripts]`;
+   - its `RECORD` lists the script (`../../../bin/doorbell`) and the package's
+     `doorbell/__init__.py` and `doorbell/cli.py`, each with a `sha256=` hash and size that
+     match the file now;
+   - the script is the standard console-script launcher for `doorbell.cli:main`: after the
+     interpreter line, only a coding comment, `import re`, `import sys`,
+     `from doorbell.cli import main`, the `if __name__ == "__main__":` block that trims
+     `sys.argv[0]` and `sys.exit(main())`, and blank lines (pip, pipx and uv write this).
+   The **interpreter** is the one the script's first line names (`#!<venv>/bin/python…`; a
+   `#!/bin/sh` trampoline means `<venv>/bin/python`), resolved to the real file. The layouts
+   this covers: `uv tool install` (`~/.local/bin/doorbell` →
+   `~/.local/share/uv/tools/agent-doorbell/bin/doorbell`, whose venv python links to a
+   uv-managed or system interpreter), `pipx install` (`~/.local/share/pipx/venvs/agent-doorbell`),
+   and a plain venv run as `<venv>/bin/python -m doorbell`. These checks catch a wrong path, a
+   damaged or half-upgraded install and a package edited after it was installed; they cannot
+   tell a genuine install from a fake one a process of the same user built to pass them (the
+   honest limit below). What stops that is the owner reading the paths in step 5.
 4. **The account** it sends as: `--account` (a label, number or uuid as in 7.1, of an account a
    managed slot of this machine is logged in to), else the question "Send as which account?"
-   with the first managed account as the default (Enter), which `--yes` takes.
+   with the first managed account as the default (Enter).
 5. It prints the program, the interpreter, the venv, the machine and the account, and asks
    `Let Doorbell at this path send to tags as <account>? [y/N]`.
 6. The CLI sends the agent's `trust` op (2.3) with the script path and the account. The agent
-   (which must be running: tag sends need it anyway, 3.4) runs the guard again and resolves the
-   install again from that path itself, then writes the record and reports it to the hub
-   (`peer_trust`, link.md 6.2). Nothing the CLI resolved is taken on trust.
+   (which must be running: tag sends need it anyway, 3.4) runs the guard of step 2 and resolves
+   the install again from that path itself, then writes the record and reports it to the hub
+   (`peer_trust`, link.md 6.2). Nothing the CLI resolved or checked is taken on trust.
 
 The **record** is `<state>/peers/trusted.json` (0600, folder 0700, beside `off`), the venv
 recorded rather than a version-specific path, so `uv tool upgrade` and `pipx upgrade` keep
-working; if the venv or the interpreter moves, the owner approves again:
+working; if the venv or the interpreter moves, the owner approves again. A record written by
+the test build (15) carries `"test_build": true`; every build honours it, and `wy peers trust`,
+the board and the phone show it as "approved by a test build":
 
 ```json
 {"v":1,"doorbell":{"venv":"/home/u/.local/share/uv/tools/agent-doorbell","program":"/home/u/.local/share/uv/tools/agent-doorbell/bin/doorbell","interpreter":"/home/u/.local/share/uv/python/cpython-3.12.5-linux-x86_64-gnu/bin/python3.12","machine":"m_01JA…","machine_name":"worker","account":"3f1c…","account_label":"work","approved_at":"2026-11-23T10:00:00Z"}}
@@ -483,8 +520,10 @@ on its next read from the hub: the `peers` answer carries `trust` for the asking
 (link.md 6.3), and when that row is revoked and holds this record's approval (or a newer
 one) the record is deleted. Both approval times come from the machine's own clock, so clock
 skew between the machine and the hub does not matter. A trusted
-send always asks the hub for the directory first (tags live there, 3.4), so a revocation
-applies before the next send; the hub also refuses a revoked machine's trusted envelopes
+send always asks the hub for the directory first, past the 5-second cache of 3.4 (tags live
+there), and reads the record again after that answer: a record that is gone, or no longer the
+one the identity check passed (another venv, account or approval time), refuses the send
+(`not_a_session`). So a revocation applies before the next send, on this machine as well; the hub also refuses a revoked machine's trusted envelopes
 itself (8.3). Approving again after a revocation makes a newer record, which the hub takes:
 only a strictly newer approval replaces a revoked row.
 `wy peers trust` alone prints the record (or "Doorbell is not approved on this machine").
@@ -495,9 +534,12 @@ pid from the socket's peer credentials (2.3) and reads `/proc` only:
 1. 4.1 first. A process with a session above it sends as that session; a process with any
    Claude Code-looking ancestor (`ClaudeCandidates`) is never a trusted sender, so Doorbell
    started from inside a session (its Bash tool) sends as that session, and a nested `claude -p`
-   that Watchyard cannot identify is still refused.
+   that Watchyard cannot identify is still refused. The walk must be **complete** (2.3): one
+   cut short by the 64-step limit or an unreadable process refuses, because it cannot show
+   that no session is above.
 2. The record exists, is for this machine, and was not revoked; its account is still one a
-   managed slot here is logged in to; the venv still holds the distribution.
+   managed slot here is logged in to; the venv still passes the install checks of step 3 of
+   approving (an edit to the package or the script since stops it).
 3. Walking up from the requester (at most 64 steps, 2.3), the nearest ancestor that passes as
    Doorbell decides. A process passes when its **identity pair** matches: the resolved
    `/proc/<pid>/exe` equals the recorded interpreter, **and** its command line (`/proc/<pid>/cmdline`,
@@ -508,9 +550,13 @@ pid from the socket's peer credentials (2.3) and reads `/proc` only:
    given, no `doorbell/` or `doorbell.py` in its working folder (which would shadow the
    package). The shells between Doorbell and `wy` are not looked at. No such ancestor → the
    refusal of 4.1 (`not_a_session`, exit 4).
+4. The requester and the Doorbell process are the ones read: their start times are the same
+   after the checks as before, and the requester is still alive through the socket's pidfd
+   (`SO_PEERPIDFD` where the kernel has it), so a pid reused while the agent read `/proc` does
+   not pass.
 
 Neither the requester's arguments nor its environment are read; the environment of no process
-is read for this.
+is read for a send (approval reads environment names only, step 2 above).
 
 **What Doorbell may send.** `wy peers send tag:<tag> [--one] [--same-host] --stdin` only:
 
@@ -536,10 +582,15 @@ is read for this.
 - **Audit:** every trusted send is logged with sender kind `service:doorbell` (10): the agent's
   log and `audit.jsonl`, `peer_log`, and the hub's `peer_message.from_kind` with the tag.
 
-**Honest limit.** This guards against other programs, and agents, sending by mistake or because
-a message told them to. It does not guard against a hostile process running as the same OS user,
-which can run the approved interpreter on the approved script, or write into an inbox socket
-directly (5.5).
+**Honest limit.** This guards against a session approving Doorbell or sending as it by mistake,
+or because a message told it to, through ordinary commands: the approval needs a terminal whose
+session has no Claude Code process above it and an environment without its markers, and the
+owner answering `y`. It does not guard against a hostile process running as the same OS user
+that sets out to get around it: one that leaves the process tree (`systemd-run --user`, a
+re-parented `setsid` child) **and** opens a terminal of its own (a pseudo-terminal it creates)
+to answer the question, that builds a fake venv which passes step 3, that runs the approved
+interpreter on the approved script, or that writes into an inbox socket directly (5.5). Such a
+process can already do anything the owner's account can.
 
 ### 4.2 Sender's checks, in order
 
@@ -831,7 +882,7 @@ wy peers max-turns <n|none>         2-500, or none (or 0) for no limit; raising 
 wy peers pause                      kill switch for all machines (narrows; works from any paired device)
 wy peers resume                     lift it (widens: owner key)
 wy peers off | on                   this machine only, works offline (11)
-wy peers trust doorbell [--account <a>] [--program <path>] [--yes]
+wy peers trust doorbell [--account <a>] [--program <path>]
                                     approve Doorbell as the one trusted sender (4.1a; Linux; terminal only)
 wy peers trust doorbell --off       revoke it on this machine (terminal only)
 wy peers trust                      print the trust record
@@ -976,11 +1027,17 @@ On `peer_msg` the hub:
 1. checks the envelope signature against the sending device's certificate (hub row) and that
    `from.device` is the link's device, `from.machine` its machine, and `from.session` a
    session the hub has seen on that machine → else `refused` `forbidden`. A trusted sender's
-   envelope (`from.kind` `service:doorbell`, 4.1a) instead needs `from.session` =
-   `svc-doorbell-<machine>`, `mode` `prompting`, a `tag`, and the machine's `peer_trust` row
-   for `doorbell` approved and not revoked, with `account` = `from.account` → else `refused`
-   `forbidden` (the reason in the agent's log: `not_trusted`). Any other `from.kind` is
-   `forbidden`;
+   envelope (`from.kind` `service:doorbell`, 4.1a) instead needs `from.machine` = the sending
+   link's machine and `from.session` = `svc-doorbell-<that machine>` (both checked against the
+   link, not only against each other), `mode` `prompting`, a `tag`, and the machine's
+   `peer_trust` row for `doorbell` approved and not revoked, with `account` = `from.account` →
+   else `refused` `forbidden` (the reason in the agent's log: `not_trusted`). Any other
+   `from.kind` is `forbidden`. A trusted sender's envelope is relayed only to a receiving agent
+   whose last link hello said it understands one (`client.caps` holds `peer_service`, link.md
+   3.2; agents from 1.3.0) → else `refused` `receiver_too_old`, which the sender reports as
+   `rejected` (exit 7) with "the receiving machine runs a Watchyard older than 1.3.0, which
+   cannot take a message from Doorbell; update wy there". An older agent would not know
+   `from.kind` and would show the message as from a session;
    Once the sender is verified, the hub takes the 9.2 rate token (a repeated `msg` takes none)
    before the checks below, so refused envelopes are limited like good ones; no later step takes one;
 2. looks up `to.session` (live, on `to.machine`, whose agent device is `to.device`) → else
@@ -1163,7 +1220,7 @@ The hub stores **metadata only**:
 | `matrix_doc` | Every matrix version: body, signer, fingerprint, signature, `widens`, who asked. |
 | `peer_thread` | Session pair, accounts, open/last/human times, `turns`, `paused_at`, `closed_at`. |
 | `peer_message` | Ids, thread, sender and receiver session/device/account, `kind`, `size`, `local`, `status`, `detail`, times. No text, no hash of the text. Schema v21: `from_kind` (`service:doorbell` for the trusted sender, 4.1a; NULL for a session) and `via_tag` (the tag a trusted send went to). |
-| `peer_trust` | Schema v21. One row per machine and trusted sender (only `doorbell`): the agent device that reported it, the account it sends as, program, interpreter and venv paths, `approved_at`, `revoked_at` and `revoked_by` (a device id, or `cli` for `wy peers trust doorbell --off`), `updated_at`. Written from `peer_trust` (link.md 6.2) and the board's Revoke; read by 8.3 and `GET /v1/peers/trusted`. |
+| `peer_trust` | Schema v21. One row per machine and trusted sender (only `doorbell`): the agent device that reported it, the account it sends as, program, interpreter and venv paths, `approved_at`, `test_build` (1 when a `trusttest` build made the record, 15), `revoked_at` and `revoked_by` (a device id, or `cli` for `wy peers trust doorbell --off`), `updated_at`. Written from `peer_trust` (link.md 6.2) and the board's Revoke; read by 8.3 and `GET /v1/peers/trusted`. |
 | `peer_tag` | Session id, tag, the device that set it, when (3.4; schema v16). Deleted when the session ends or goes away. |
 | `peer_audit` | Matrix changes, pause/resume, loop-guard stops (`loop_guard`) and thread resumes (`thread_resume`, 6.3) and the machines that refused one (`thread_resume_refused`, 6.3), refusals at machines, `off`/`on`, revocations, the trusted sender approved (`trust`), turned off at the machine (`trust_off`) or revoked on the board or phone (`trust_revoke`; detail `machine`, `sender`). |
 
@@ -1347,19 +1404,32 @@ captured on reply sockets.
   the header and the mode (`prompting`) of a delivered message, the matrix evaluated with the
   recorded account and never the reply rule, the rates of the pseudo-session, and the audit line's
   `from_kind`. `internal/agent`: `trust` refused under a Claude Code ancestor, `service_send`
-  identity from the peer credentials only. `cmd/wy`: `wy peers trust doorbell` (the
-  question, `--yes`, `--account`, `--program`, not supported off Linux) and `--off`; a Go
-  test without the `trusttest` tag proves the default build refuses approval from a session.
-  `internal/hub`: `peer_trust` from a machine, the `trust` answer, a trusted envelope relayed
-  and refused once revoked or for another account, `GET /v1/peers/trusted`, the revoke
-  endpoint's scopes.
+  identity from the peer credentials only; the approval guard refuses a caller with no
+  controlling terminal (`tty_nr` 0, as `setsid` or `systemd-run` leave it), with a marker
+  name in its environment, under a Claude Code ancestor, whose terminal's session leader is
+  under one, whose walk is cut short (65 levels, an unreadable process), or whose start time
+  changes while it is read; a send is refused for an incomplete walk. The install checks
+  refuse a fake venv (no `RECORD`, a hash that does not match, a script that is not the
+  launcher, no `entry_points.txt` entry). A revocation on the same machine applies to the
+  next send despite the directory cache. `cmd/wy`: `wy peers trust doorbell` (the question,
+  no `--yes`, `--account`, `--program`, not supported off Linux) and `--off`, a test-build
+  record shown as such; a Go test without the `trusttest` tag proves the default build refuses
+  approval from a session. `internal/hub`: `peer_trust` from a machine (with `test_build`), the
+  `trust` answer, a trusted envelope relayed and refused once revoked, for another account,
+  for a session or machine that is not the link's, or to a receiver without `peer_service`;
+  `GET /v1/peers/trusted`, the revoke endpoint's scopes and its answer for a machine the hub
+  has no record of.
 - **`trusttest` build tag** (a developer test aid; it never ships): with `-tags trusttest`,
-  `wy peers trust doorbell` and `--off` may run inside a Claude Code session and ask no
-  question, and print `TEST BUILD: approval guard is off`; `wy version` shows `+trusttest`.
-  Everything else (the identity check, tag-only sends, the audit, the record's format) is the
-  same, so a record a test build made is honoured by a release build. `check-release-seams.sh`
-  refuses a release script or workflow that passes the tag and proves a release binary lacks
-  its warning.
+  the approval guard of 4.1a step 2 is off and nothing else: `wy peers trust doorbell` and
+  `--off` may run inside a Claude Code session, without a terminal, and ask no question, and
+  print `TEST BUILD: approval guard is off`; `wy version` shows `+trusttest`. Everything else
+  (the identity check of a send, the install checks, tag-only sends, the audit) is the same.
+  The record it writes carries `"test_build": true`; a release build honours it (the owner
+  keeps a test approval) and shows it as "approved by a test build" in `wy peers trust`, on
+  the board and on the phone. `check-release-seams.sh` refuses a release script, workflow or
+  `app/scripts/fetch-wy.mjs` that passes the tag; `build.sh` and `fetch-wy.mjs` clear `GOFLAGS`
+  so a tag cannot come in through the environment either; and the release workflow scans the
+  binaries it built in `dist/` and fails if one holds the test build's markers.
 - **SessionStart context (`internal/hook`, 2.5):** silent with peers disabled, with no
   matrix, with only the reverse pair, when paused, under `wy peers off`, for other events and a
   bad payload; with a pair to another account it prints the SessionStart JSON with the fixed

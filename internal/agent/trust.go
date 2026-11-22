@@ -9,19 +9,21 @@ import (
 // trustReporter is the link's half of the trusted sender (peerlink.Remote.ReportTrust).
 type trustReporter interface{ ReportTrust() error }
 
-// trust is the `trust` op (peers.md 4.1a): approve, revoke or show the trusted sender. It runs
-// for a terminal only: a caller with any Claude Code-looking ancestor is refused, read from
-// the peer credentials (pid), never from the request. The trusttest build turns that guard off
-// (peers.TrustGuardOff) and says so in every answer.
+// trust is the `trust` op (peers.md 4.1a): approve, revoke or show the trusted sender. Set
+// and off run for the owner at a terminal only: peers.CheckApprover reads the caller from the
+// peer credentials (pid) and /proc (a controlling terminal, no Claude Code marker names in its
+// environment, no Claude Code process above it or its terminal's session leader, complete
+// walks, nothing replaced meanwhile), never from the request. The trusttest build turns that
+// guard off (peers.TrustGuardOff) and nothing else, and says so in every answer.
 func (s *server) trust(env peers.Env, req Request, pid int) Reply {
 	if _, ok := env.Proc.(peers.ProcDetail); !ok {
 		return fail(peers.CodeUnsupported, "not supported on this OS yet")
 	}
 	warn := peers.TrustTestWarning
 	if req.TrustOp != TrustShow && !peers.TrustGuardOff {
-		if c := peers.ClaudeCandidates(env.Proc, pid); len(c) > 0 {
-			s.logf("trust %s refused: claude pid %d above the caller", req.TrustOp, c[0].PID)
-			return fail(peers.CodeNotASession, "wy peers trust runs at a terminal that Claude Code did not start (a Claude Code process, pid %d, is above it)", c[0].PID)
+		if rf := peers.CheckApprover(env.Proc, pid, env.PeerAlive); rf != nil {
+			s.logf("trust %s refused: %s", req.TrustOp, rf.Detail)
+			return Reply{Error: &Error{Code: rf.Code, Detail: rf.Detail}}
 		}
 	}
 	report := func() {

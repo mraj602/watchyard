@@ -12,11 +12,14 @@ All notable changes to Watchyard are recorded here. The format follows
   the Doorbell program on this machine to send to tags (`wy peers send tag:<tag> [--one]
   --stdin`) as one chosen account. The agent checks the sender itself from the socket's peer
   credentials and `/proc` (interpreter and script in the approved venv), never from the
-  request. Doorbell never sends to a session by name or as a reply. Its messages carry the
+  request. Approval needs a controlling terminal whose session has no Claude Code process
+  above it, always asks y/N (no `--yes`), and accepts only an install whose `RECORD` matches. Doorbell never sends to a session by name or as a reply. Its messages carry the
   header "from doorbell (service) on <machine>", and the matrix, the limits and the audit
   (`service:doorbell`) apply. To revoke it, run `wy peers trust doorbell --off`, or use
   Settings → Peers → Trusted senders on the board or the phone. The hub has `peer_trust`
-  (migration 0021) and `GET /v1/peers/trusted`, `POST /v1/peers/trusted/revoke`.
+  (migration 0021) and `GET /v1/peers/trusted`, `POST /v1/peers/trusted/revoke`. The hub
+  relays Doorbell's messages only to agents from 1.3.0 (`client.caps` `peer_service` in the
+  link hello); an older receiver is refused with `receiver_too_old`.
 - **Tags in the UI**: session rows on the board and the phone show the session's tags as chips;
   search matches tags, and `tag:<name>` matches one tag exactly (a chip sets it). Settings →
   Peers lists every tag with its holders and the trusted senders that sent to it recently.

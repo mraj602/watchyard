@@ -24,7 +24,7 @@ func (r *Remote) ReportTrust() error {
 	up := peers.PeerTrustUp{T: link.TypePeerTrust, Op: "off", Sender: peers.TrustDoorbell}
 	if rec != nil {
 		up = peers.PeerTrustUp{T: link.TypePeerTrust, Op: "set", Sender: peers.TrustDoorbell, Account: rec.Account,
-			Program: rec.Program, Interpreter: rec.Interpreter, Venv: rec.Venv, ApprovedAt: rec.ApprovedAt.UTC().Format(time.RFC3339)}
+			Program: rec.Program, Interpreter: rec.Interpreter, Venv: rec.Venv, ApprovedAt: rec.ApprovedAt.UTC().Format(time.RFC3339), TestBuild: rec.TestBuild}
 	}
 	return r.send(up)
 }

@@ -3,6 +3,7 @@ package peerlink
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -183,4 +184,52 @@ func (h trustDirHub) Send(_ context.Context, v any) error {
 	b, _ := json.Marshal(rep)
 	go h.r.Ephemeral(link.TypePeers, b)
 	return nil
+}
+
+func TestHubRefusalReceiverTooOld(t *testing.T) {
+	r := hubRefusal(peers.PeerAck{Status: "refused", Detail: peers.ReasonReceiverTooOld})
+	if r.Code != peers.CodeRejected || !strings.Contains(r.Detail, "older than 1.3.0") {
+		t.Fatalf("refusal: %+v", r)
+	}
+}
+
+// A cached answer would hide a revocation for ListFresh; SessionsFresh asks the hub past the
+// cache, so a trusted send sees it at once (peers.md 4.1a).
+func TestSessionsFreshBypassesCacheForRevocation(t *testing.T) {
+	r, _ := trustRemote(t, false)
+	r.ListWait = 2 * time.Second
+	r.Fresh = time.Hour
+	r.Link = trustDirHub{r: r, rep: trustAnswer(trustApproved, false)}
+	if _, err := r.Sessions(); err != nil {
+		t.Fatal(err)
+	}
+	r.Link = trustDirHub{r: r, rep: trustAnswer(trustApproved, true)}
+	if _, err := r.Sessions(); err != nil {
+		t.Fatal(err)
+	}
+	if !hasRecord(t, r) {
+		t.Fatal("the cached answer was not used (the test proves nothing)")
+	}
+	if _, err := r.SessionsFresh(); err != nil {
+		t.Fatal(err)
+	}
+	if hasRecord(t, r) {
+		t.Error("SessionsFresh did not ask the hub past the cache")
+	}
+}
+
+// The approval a trusttest build made is reported with test_build.
+func TestReportTrustTestBuild(t *testing.T) {
+	r, sink := trustRemote(t, true)
+	rec := peers.TrustRecord{Venv: "/v", Program: "/v/bin/doorbell", Interpreter: "/py", Machine: "m_1", Account: "acc-work",
+		ApprovedAt: trustApproved, TestBuild: true}
+	if err := r.Env.SaveTrust(&rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ReportTrust(); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.got) != 1 || !sink.got[0].TestBuild || sink.got[0].Op != "set" {
+		t.Errorf("reported: %+v", sink.got)
+	}
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/mraj602/watchyard/internal/identity"
 	"github.com/mraj602/watchyard/internal/keys"
 	peerspkg "github.com/mraj602/watchyard/internal/peers"
+	"github.com/mraj602/watchyard/internal/peers/doorbelltest"
 )
 
 // trustCLI is a temp HOME with two logged-in folders and a Doorbell venv, and fake guard, tty
@@ -45,14 +46,13 @@ func newTrustCLI(t *testing.T) *trustCLI {
 	interp := filepath.Join(base, "py/bin/python3.12")
 	peersWriteFileT(t, interp, "#!fake\n", 0o755)
 	peersWriteFileT(t, filepath.Join(c.venv, "pyvenv.cfg"), "home = x\n", 0o644)
-	peersWriteFileT(t, filepath.Join(c.venv, "lib/python3.12/site-packages/agent_doorbell-1.0.dist-info/METADATA"), "Name: agent-doorbell\n", 0o644)
 	if err := os.MkdirAll(filepath.Join(c.venv, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(interp, filepath.Join(c.venv, "bin/python")); err != nil {
 		t.Fatal(err)
 	}
-	peersWriteFileT(t, filepath.Join(c.venv, "bin/doorbell"), "#!"+filepath.Join(c.venv, "bin/python")+"\n", 0o755)
+	doorbelltest.WriteDist(t, c.venv, "")
 
 	oldEnv, oldDeps := peersEnv, peersTrustDeps
 	t.Cleanup(func() { peersEnv, peersTrustDeps = oldEnv, oldDeps })
@@ -116,6 +116,16 @@ func (c *trustCLI) run(args ...string) (int, string, string) {
 	return code, o.String(), e.String()
 }
 
+// approve runs `wy peers trust doorbell args…` at a terminal that answers yes (and takes the
+// default account when asked).
+func (c *trustCLI) approve(args ...string) (int, string, string) {
+	c.tty = &fakeTTY{t: c.t, answers: []string{"", "y"}}
+	if len(args) > 0 {
+		c.tty = &fakeTTY{t: c.t, answers: []string{"y"}}
+	}
+	return c.run(append([]string{"doorbell"}, args...)...)
+}
+
 func (c *trustCLI) record() *peerspkg.TrustRecord {
 	rec, err := peerspkg.Env{State: c.state}.LoadTrust()
 	if err != nil {
@@ -129,7 +139,8 @@ func (c *trustCLI) record() *peerspkg.TrustRecord {
 func TestPeersTrustRefusedInsideSession(t *testing.T) {
 	c := newTrustCLI(t)
 	c.guardErr = &keys.GuardError{PID: 500, Name: "claude"}
-	for _, args := range [][]string{{"doorbell", "--yes"}, {"doorbell", "--off"}} {
+	c.tty = &fakeTTY{t: t, answers: []string{"", "y"}}
+	for _, args := range [][]string{{"doorbell"}, {"doorbell", "--off"}} {
 		code, out, errs := c.run(args...)
 		if code != peerspkg.ExitGuard || !strings.Contains(errs, "runs inside a Claude Code session (pid 500") || strings.Contains(out, "approved") {
 			t.Errorf("%v: %d %q %q", args, code, out, errs)
@@ -146,30 +157,34 @@ func TestPeersTrustRefusedInsideSession(t *testing.T) {
 func TestPeersTrustNotLinux(t *testing.T) {
 	c := newTrustCLI(t)
 	c.goos = "darwin"
-	code, out, _ := c.run("doorbell", "--yes")
+	code, out, _ := c.run("doorbell")
 	if code != peerspkg.ExitUnsupported || out != "wy peers trust: not supported on this OS yet\n" || len(c.calls) != 0 || c.record() != nil {
 		t.Errorf("%d %q %v", code, out, c.calls)
 	}
 }
 
-// --yes: no question; the first account by default, --account by label; the plan and the
-// record are printed.
-func TestPeersTrustYes(t *testing.T) {
+// There is no --yes: approval always asks at the terminal. --account picks by label; the plan
+// and the record are printed.
+func TestPeersTrustNoYes(t *testing.T) {
 	c := newTrustCLI(t)
-	code, out, errs := c.run("doorbell", "--yes", "--account", "personal")
+	if code, _, errs := c.run("doorbell", "--yes"); code != 2 || !strings.Contains(errs, "-yes") || len(c.calls) != 0 {
+		t.Errorf("--yes: %d %q %v", code, errs, c.calls)
+	}
+	code, out, errs := c.approve("--account", "personal")
 	if code != 0 {
 		t.Fatalf("%d %q %q", code, out, errs)
 	}
 	if len(c.calls) != 1 || c.calls[0].Program != filepath.Join(c.venv, "bin/doorbell") || c.calls[0].Account != "acc-personal" {
 		t.Errorf("calls: %+v", c.calls)
 	}
-	if !strings.Contains(out, "program:     "+filepath.Join(c.venv, "bin/doorbell")) || !strings.Contains(out, "Doorbell is approved on laptop") {
+	if !strings.Contains(c.tty.printed.String(), "program:     "+filepath.Join(c.venv, "bin/doorbell")) || !strings.Contains(out, "Doorbell is approved on laptop") ||
+		strings.Contains(out, "test build") {
 		t.Errorf("out: %q", out)
 	}
 	if rec := c.record(); rec == nil || rec.Account != "acc-personal" || rec.Venv != c.venv {
 		t.Errorf("record: %+v", rec)
 	}
-	if code, _, _ := c.run("doorbell", "--yes", "--account", "nobody"); code == 0 {
+	if code, _, _ := c.approve("--account", "nobody"); code == 0 {
 		t.Error("an unknown account accepted")
 	}
 }
@@ -190,7 +205,7 @@ func TestPeersTrustAsks(t *testing.T) {
 	if code, out, errs := c.run("doorbell"); code != 0 || c.record() == nil || c.record().Account != "acc-personal" {
 		t.Fatalf("yes: %d %q %q", code, out, errs)
 	}
-	// Without a terminal and without --yes: refused.
+	// Without a terminal: refused.
 	c.tty = nil
 	if code, _, errs := c.run("doorbell"); code != peerspkg.ExitGuard || !strings.Contains(errs, "terminal") {
 		t.Errorf("no tty: %d %q", code, errs)
@@ -199,7 +214,7 @@ func TestPeersTrustAsks(t *testing.T) {
 
 func TestPeersTrustOff(t *testing.T) {
 	c := newTrustCLI(t)
-	if code, _, _ := c.run("doorbell", "--yes"); code != 0 {
+	if code, _, _ := c.approve(); code != 0 {
 		t.Fatal("approve")
 	}
 	code, out, _ := c.run("doorbell", "--off")
@@ -211,7 +226,7 @@ func TestPeersTrustOff(t *testing.T) {
 		t.Errorf("off again: %d %q", code, out)
 	}
 	// Without the agent, --off still removes the record here.
-	if code, _, _ := c.run("doorbell", "--yes"); code != 0 {
+	if code, _, _ := c.approve(); code != 0 {
 		t.Fatal("approve")
 	}
 	c.noAgent = true
@@ -220,7 +235,7 @@ func TestPeersTrustOff(t *testing.T) {
 		t.Errorf("off without agent: %d %q", code, out)
 	}
 	// Approval needs the agent.
-	if code, _, errs := c.run("doorbell", "--yes"); code == 0 || !strings.Contains(errs, "agent is not running") {
+	if code, _, errs := c.approve(); code == 0 || !strings.Contains(errs, "agent is not running") {
 		t.Errorf("approve without agent: %d %q", code, errs)
 	}
 }
@@ -236,8 +251,17 @@ func TestPeersTrustUsageAndShow(t *testing.T) {
 	if code, out, _ := c.run(); code != 0 || !strings.Contains(out, "not approved") {
 		t.Errorf("show: %d %q", code, out)
 	}
-	c.run("doorbell", "--yes")
-	if code, out, _ := c.run(); code != 0 || !strings.Contains(out, "sends as:    work (acc-work)") {
+	c.approve()
+	if code, out, _ := c.run(); code != 0 || !strings.Contains(out, "sends as:    work (acc-work)") || strings.Contains(out, "test build") {
 		t.Errorf("show approved: %d %q", code, out)
+	}
+	// A record a test build made is shown as such, and still shown as approved.
+	rec := c.record()
+	rec.TestBuild = true
+	if err := (peerspkg.Env{State: c.state}).SaveTrust(rec); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ := c.run(); code != 0 || !strings.Contains(out, "Doorbell is approved on laptop") || !strings.Contains(out, "approved by a test build") {
+		t.Errorf("show test build: %d %q", code, out)
 	}
 }

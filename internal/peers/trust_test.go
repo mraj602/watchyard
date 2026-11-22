@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mraj602/watchyard/internal/peers"
+	"github.com/mraj602/watchyard/internal/peers/doorbelltest"
 )
 
 // doorbellVenv makes a virtual environment at dir holding the agent-doorbell distribution and
@@ -21,18 +22,13 @@ func (f *fx) doorbellVenv(dir string, shebang string) string {
 		f.t.Fatal(err)
 	}
 	f.write(filepath.Join(dir, "pyvenv.cfg"), "home = "+filepath.Dir(real)+"\n")
-	f.write(filepath.Join(dir, "lib", "python3.12", "site-packages", "agent_doorbell-0.4.1.dist-info", "METADATA"),
-		"Metadata-Version: 2.1\nName: agent-doorbell\nVersion: 0.4.1\n")
 	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
 		f.t.Fatal(err)
 	}
 	if err := os.Symlink(real, filepath.Join(dir, "bin", "python")); err != nil {
 		f.t.Fatal(err)
 	}
-	if shebang == "" {
-		shebang = "#!" + filepath.Join(dir, "bin", "python")
-	}
-	f.write(filepath.Join(dir, "bin", "doorbell"), shebang+"\nimport sys\nfrom doorbell.cli import main\nsys.exit(main())\n")
+	doorbelltest.WriteDist(f.t, dir, shebang)
 	return resolved(f.t, real)
 }
 
@@ -88,7 +84,7 @@ func TestResolveDoorbellUVLayout(t *testing.T) {
 func TestResolveDoorbellPipxTrampoline(t *testing.T) {
 	f := newFx(t)
 	venv := filepath.Join(f.home, ".local/pipx/venvs/agent-doorbell")
-	interp := f.doorbellVenv(venv, "#!/bin/sh")
+	interp := f.doorbellVenv(venv, "#!/bin/sh\n'''exec' \""+filepath.Join(venv, "bin/python")+"\" \"$0\" \"$@\"\n' '''")
 	venv = resolved(t, venv)
 	in, err := peers.ResolveDoorbellInstall(filepath.Join(venv, "bin/doorbell"))
 	if err != nil {

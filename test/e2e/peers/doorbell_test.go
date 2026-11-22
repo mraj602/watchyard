@@ -13,6 +13,7 @@ import (
 	"github.com/mraj602/watchyard/internal/hub/store"
 	"github.com/mraj602/watchyard/internal/link"
 	"github.com/mraj602/watchyard/internal/peers"
+	"github.com/mraj602/watchyard/internal/peers/doorbelltest"
 	"github.com/mraj602/watchyard/internal/peers/fakeinbox"
 )
 
@@ -40,8 +41,6 @@ func (m *machine) doorbellInstall() string {
 		m.t.Fatal(err)
 	}
 	m.write(filepath.Join(venv, "pyvenv.cfg"), "home = "+filepath.Dir(real)+"\n")
-	m.write(filepath.Join(venv, "lib", "python3.12", "site-packages", "agent_doorbell-0.4.1.dist-info", "METADATA"),
-		"Metadata-Version: 2.1\nName: agent-doorbell\nVersion: 0.4.1\n")
 	if err := os.MkdirAll(filepath.Join(venv, "bin"), 0o755); err != nil {
 		m.t.Fatal(err)
 	}
@@ -49,10 +48,7 @@ func (m *machine) doorbellInstall() string {
 		m.t.Fatal(err)
 	}
 	script := filepath.Join(venv, "bin", "doorbell")
-	m.write(script, "#!"+filepath.Join(venv, "bin", "python")+"\nimport sys\nfrom doorbell.cli import main\nsys.exit(main())\n")
-	if err := os.Chmod(script, 0o755); err != nil {
-		m.t.Fatal(err)
-	}
+	doorbelltest.WriteDist(m.t, venv, "")
 	return script
 }
 
@@ -224,31 +220,47 @@ func TestDoorbellNeedsActiveTrust(t *testing.T) {
 	deliveredLine(t, line)
 	onlyContent(t, in, 1)
 
-	// 2. The owner revokes at the hub: refused at once, even with the machine's record in place.
+	// 2. The owner revokes at the hub. A machine that has not heard of it keeps its record
+	// (here its directory answers lose the trust state, as an older hub's would): the hub
+	// refuses the envelope itself.
 	if _, err := w.h.st.RevokePeerTrustOwner(w.h.ctx, laptopID, peers.TrustDoorbell, "dev-owner"); err != nil {
 		t.Fatal(err)
 	}
-	// With the 5 s directory cache in force the machine has not heard yet: its record stays,
-	// and the hub refuses the envelope.
-	w.laptop.remote.Fresh = 0
-	if _, err := w.laptop.remote.Sessions(); err != nil { // fills the cache after the revocation
-		t.Fatal(err)
-	}
-	if r, err := w.laptop.svcEnv().LoadTrust(); err != nil || r == nil {
-		t.Fatalf("record after the revocation was already read: %v %v", r, err)
-	}
 	w.h.assertRevoked(laptopID, "dev-owner")
-	line = w.laptop.ring1(t, rec, "ci", "after the revocation")
+	w.h.setRogue(func(ctx context.Context, device string, u link.Up) (bool, string, any, error) {
+		if u.T != link.TypePeersList {
+			return false, "", nil, nil
+		}
+		typ, body, err := w.h.relay.Up(ctx, device, u)
+		if rep, ok := body.(peers.PeersReply); ok {
+			rep.Trust = nil
+			body = rep
+		}
+		return true, typ, body, err
+	})
+	line = w.laptop.ring1(t, rec, "ci", "the machine has not heard")
 	hubRefused(t, line, "forbidden")
 	noMore(t, in, 1)
+	w.h.assertRevoked(laptopID, "dev-owner") // its re-report of the same approval changed nothing
 
-	// The cache runs out: the next fresh read removes the record.
-	w.h.clk.Advance(6 * time.Second)
+	// The hub answers in full again. The directory cache (5 s) still holds the answer without
+	// the trust state, so an ordinary read keeps the record; the next trusted send asks past
+	// the cache, learns of the revocation, deletes the record and is refused at the machine.
+	w.h.setRogue(nil)
+	w.laptop.remote.Fresh = 0
 	if _, err := w.laptop.remote.Sessions(); err != nil {
 		t.Fatal(err)
 	}
+	if r, err := w.laptop.svcEnv().LoadTrust(); err != nil || r == nil {
+		t.Fatalf("record after a cached read: %v %v", r, err)
+	}
+	lines, rf := w.laptop.ring(rec, "ci", "after the revocation")
+	if rf == nil || rf.Code != peers.CodeNotASession || !strings.Contains(rf.Detail, "revoked") || len(lines) != 0 {
+		t.Fatalf("send after the revocation: %+v %+v", lines, rf)
+	}
+	noMore(t, in, 1)
 	if r, err := w.laptop.svcEnv().LoadTrust(); err != nil || r != nil {
-		t.Fatalf("record after a fresh read: %v %v", r, err)
+		t.Fatalf("record after the send: %v %v", r, err)
 	}
 	if _, err := os.Stat(w.laptop.svcEnv().TrustPath()); !os.IsNotExist(err) {
 		t.Errorf("trusted.json: %v", err)

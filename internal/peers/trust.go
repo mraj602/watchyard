@@ -32,7 +32,8 @@ const (
 )
 
 // TrustRecord is <state>/peers/trusted.json's Doorbell entry. Every path is resolved (no
-// symlinks). A record made by any build, the trusttest build included, is valid for every build.
+// symlinks). A record made by any build, the trusttest build included, is valid for every build
+// (a test build's is marked TestBuild).
 type TrustRecord struct {
 	// Venv is the virtual environment that holds agent-doorbell; Program its bin/doorbell
 	// console script; Interpreter the real file its venv python resolves to.
@@ -46,6 +47,9 @@ type TrustRecord struct {
 	Account      string    `json:"account"`
 	AccountLabel string    `json:"account_label,omitempty"`
 	ApprovedAt   time.Time `json:"approved_at"`
+	// TestBuild: a trusttest build (its approval guard off) made the record. Every build
+	// honours it and shows it as "approved by a test build" (peers.md 15).
+	TestBuild bool `json:"test_build,omitempty"`
 }
 
 type trustFile struct {
@@ -120,8 +124,8 @@ type DoorbellInstall struct {
 
 // ResolveDoorbellInstall finds the install from path: the console script (any symlink to it,
 // such as ~/.local/bin/doorbell) or the venv folder. Every symlink is resolved; the venv must
-// hold pyvenv.cfg and the agent-doorbell distribution, the script must be the venv's
-// bin/doorbell, and the interpreter is the one the script's first line names (a #!/bin/sh
+// hold pyvenv.cfg and the agent-doorbell distribution as installed (CheckDoorbellInstall), the
+// script must be the venv's bin/doorbell and its launcher, and the interpreter is the one the script's first line names (a #!/bin/sh
 // trampoline means <venv>/bin/python), resolved to the real file.
 func ResolveDoorbellInstall(path string) (DoorbellInstall, error) {
 	if path == "" {
@@ -158,8 +162,8 @@ func ResolveDoorbellInstall(path string) (DoorbellInstall, error) {
 	if st, err := os.Stat(filepath.Join(in.Venv, "pyvenv.cfg")); err != nil || st.IsDir() {
 		return DoorbellInstall{}, fmt.Errorf("%s is not a Python virtual environment (no pyvenv.cfg)", in.Venv)
 	}
-	if !HasDoorbellDist(in.Venv) {
-		return DoorbellInstall{}, fmt.Errorf("%s does not hold the %s package", in.Venv, DoorbellDist)
+	if err := CheckDoorbellInstall(in.Venv, in.Program); err != nil {
+		return DoorbellInstall{}, err
 	}
 	interp, err := shebangInterpreter(in.Program, in.Venv)
 	if err != nil {
@@ -251,12 +255,15 @@ func normDist(s string) string {
 
 // ---- the identity check ----
 
-// ProcDetail is the part of the process reader the trusted sender's check needs on top of
-// Proc: the whole command line and the working folder. LinuxProc has it; macOS's ps reader
-// does not, so the check is Linux only (peers.md 4.1a, 14). No environment is read.
+// ProcDetail is the part of the process reader the trusted sender's checks need on top of
+// Proc: the whole command line, the working folder, the stat fields and (for the approval
+// guard only) the environment's names, never a value. LinuxProc has it; macOS's ps reader does
+// not, so the trusted sender is Linux only (peers.md 4.1a, 14).
 type ProcDetail interface {
 	Argv(pid int) ([]string, error)
 	Cwd(pid int) (string, error)
+	Stat(pid int) (ProcStat, error)
+	EnvNames(pid int) ([]string, error)
 }
 
 // Argv is /proc/<pid>/cmdline split on NUL.
@@ -422,8 +429,12 @@ func within(path, dir string) bool {
 // FindDoorbell walks up from start (itself included, at most MaxWalk steps) to the nearest
 // process that runs the recorded Doorbell; 0 and the last reason when none does.
 func FindDoorbell(p Proc, start int, rec TrustRecord) (pid int, reason string) {
+	return findDoorbellIn(p, Ancestors(p, start), rec)
+}
+
+func findDoorbellIn(p Proc, walk []ProcInfo, rec TrustRecord) (pid int, reason string) {
 	reason = "no Doorbell process above this command"
-	for _, a := range Ancestors(p, start) {
+	for _, a := range walk {
 		ok, why := MatchesDoorbell(p, a, rec)
 		if ok {
 			return a.PID, ""
@@ -437,8 +448,9 @@ func FindDoorbell(p Proc, start int, rec TrustRecord) (pid int, reason string) {
 
 // TrustedSender identifies the requester (StartPID, from the socket's peer credentials) as the
 // approved Doorbell (peers.md 4.1a). Nothing the requester says is read: only the process
-// tree, the record and the venv. Any refusal is not_a_session, so the caller keeps the answer
-// of 4.1 with this reason added.
+// tree, the record and the venv. The walk must be complete, and every process it read (the
+// requester and Doorbell among them) must be unchanged at the end. Any refusal is
+// not_a_session, so the caller keeps the answer of 4.1 with this reason added.
 func (e Env) TrustedSender() (TrustRecord, *Refusal) {
 	no := func(format string, a ...any) (TrustRecord, *Refusal) {
 		return TrustRecord{}, Refuse(CodeNotASession, "not inside a Claude Code session, and not the approved Doorbell: "+format, a...)
@@ -446,11 +458,16 @@ func (e Env) TrustedSender() (TrustRecord, *Refusal) {
 	if e.Proc == nil {
 		return no("this OS is not supported")
 	}
-	if _, ok := e.Proc.(ProcDetail); !ok {
+	d, ok := e.Proc.(ProcDetail)
+	if !ok {
 		return no("the trusted sender is checked on Linux only")
 	}
-	if c := ClaudeCandidates(e.Proc, e.StartPID); len(c) > 0 {
-		return no("a Claude Code process (pid %d) is above this command", c[0].PID)
+	walk := snapWalk(e.Proc, d, e.StartPID)
+	if c := walk.claude(); c != nil {
+		return no("a Claude Code process (pid %d) is above this command", c.PID)
+	}
+	if !walk.complete {
+		return no("the processes above this command cannot all be read, so a session above it cannot be ruled out")
 	}
 	rec, err := e.LoadTrust()
 	if err != nil {
@@ -465,13 +482,25 @@ func (e Env) TrustedSender() (TrustRecord, *Refusal) {
 	if !e.accountHere(rec.Account) {
 		return no("the account it sends as is no longer logged in to a folder on this machine; approve it again")
 	}
-	if !HasDoorbellDist(rec.Venv) {
-		return no("%s no longer holds the %s package; approve it again", rec.Venv, DoorbellDist)
+	if err := CheckDoorbellInstall(rec.Venv, rec.Program); err != nil {
+		return no("%s no longer holds the install that was approved (%v); approve it again", rec.Venv, err)
 	}
-	if pid, why := FindDoorbell(e.Proc, e.StartPID, *rec); pid == 0 {
+	if pid, why := findDoorbellIn(e.Proc, walk.procs, *rec); pid == 0 {
 		return no("%s", why)
 	}
+	if !walk.stable(d) {
+		return no("a process changed while it was checked")
+	}
+	if e.PeerAlive != nil && !e.PeerAlive() {
+		return no("this command ended while it was checked")
+	}
 	return *rec, nil
+}
+
+// SameApproval reports whether b is still the approval a: the same venv, account and time.
+func SameApproval(a, b TrustRecord) bool {
+	return a.Venv == b.Venv && a.Program == b.Program && a.Interpreter == b.Interpreter &&
+		a.Account == b.Account && a.ApprovedAt.Equal(b.ApprovedAt)
 }
 
 // accountHere reports whether a managed slot of this machine is logged in to account.
@@ -519,7 +548,8 @@ func (e Env) ApproveDoorbell(program, account string) (TrustRecord, error) {
 		return TrustRecord{}, fmt.Errorf("account %s is not logged in to a folder Watchyard manages on this machine", account)
 	}
 	rec := TrustRecord{Venv: in.Venv, Program: in.Program, Interpreter: in.Interpreter, Machine: e.Machine.ID,
-		MachineName: e.Machine.Name, Account: account, AccountLabel: label, ApprovedAt: e.now().UTC().Truncate(time.Second)}
+		MachineName: e.Machine.Name, Account: account, AccountLabel: label, ApprovedAt: e.now().UTC().Truncate(time.Second),
+		TestBuild: TrustGuardOff}
 	if err := e.SaveTrust(&rec); err != nil {
 		return TrustRecord{}, err
 	}

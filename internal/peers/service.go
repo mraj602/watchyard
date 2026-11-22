@@ -50,8 +50,8 @@ func (e Env) serviceSender(rec TrustRecord, all []Session) Session {
 // caller: to must be a tag address; the targets are the holders the recorded account may start
 // a thread with (not blocked; --same-host keeps this machine's), in TagHolders order. Broadcast
 // sends to each; one delivers to the first and passes the message on only when that holder has
-// gone. A refusal of the whole send (not a tag, no hub, no holder, bad content) comes back as
-// rf; per-holder outcomes as lines.
+// gone. A refusal of the whole send (not a tag, no hub, no holder, bad content, the approval
+// revoked meanwhile) comes back as rf; per-holder outcomes as lines.
 func (e Env) SendService(rec TrustRecord, to, text string, one, sameHost bool, o SendOpts) (lines []ServiceLine, rf *Refusal) {
 	tag, isTag, bad := ParseTagAddress(strings.TrimSpace(to))
 	if bad != nil {
@@ -72,9 +72,14 @@ func (e Env) SendService(rec TrustRecord, to, text string, one, sameHost bool, o
 	if e.Remote == nil {
 		return nil, Refuse(CodeHubUnreachable, "tags are held at the hub and need the wy agent's link to it, so nothing was sent to tag %s", tag)
 	}
-	dir, all, remoteErr := e.directoryAll()
+	// Asked now, past the cache: the hub's answer carries this machine's trust state, and a
+	// revocation in it deletes the record before the record is read again below.
+	dir, all, remoteErr := e.directoryWith(true)
 	if remoteErr != nil {
 		return nil, Refuse(CodeHubUnreachable, "tags are held at the hub, which cannot be reached now, so nothing was sent to tag %s", tag)
+	}
+	if cur, err := e.LoadTrust(); err != nil || cur == nil || !SameApproval(rec, *cur) {
+		return nil, Refuse(CodeNotASession, "not inside a Claude Code session, and not the approved Doorbell: its approval was revoked or replaced")
 	}
 	svc := e.serviceSender(rec, all)
 	var targets []ListEntry

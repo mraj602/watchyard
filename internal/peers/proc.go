@@ -219,33 +219,61 @@ func IsClaudeProgram(p ProcInfo) bool {
 }
 
 // Ancestors returns start and the processes above it, nearest first, up to MaxWalk steps,
-// stopping at pid 1 or a pid that cannot be read. Callers pass os.Getppid().
+// stopping at pid 1 or a pid that cannot be read. Callers pass os.Getppid(). It does not say
+// whether it reached the top: WalkAncestors does, for the checks that must not take a cut
+// walk as "nothing above".
 func Ancestors(p Proc, start int) []ProcInfo {
-	var out []ProcInfo
+	out, _ := WalkAncestors(p, start)
+	return out
+}
+
+// WalkAncestors is Ancestors plus whether the walk is complete (peers.md 2.3): it ended at the
+// top of the tree, because the last process read has pid 1 above it (a subreaper such as
+// systemd --user is passed through to pid 1) or none (parent 0: pid 1 itself, or the top of a
+// PID namespace). A walk cut short by MaxWalk, by a process that cannot be read or by a loop
+// is not complete.
+func WalkAncestors(p Proc, start int) (out []ProcInfo, complete bool) {
 	pid := start
-	for i := 0; i < MaxWalk && pid > 1; i++ {
+	switch {
+	case pid == 1:
+		return nil, true // pid 1 is the top; it is not read (as before)
+	case pid <= 0:
+		return nil, false
+	}
+	for i := 0; i < MaxWalk; i++ {
 		in, err := p.Info(pid)
 		if err != nil {
-			break
+			return out, false
 		}
 		out = append(out, in)
+		if in.PPID <= 1 {
+			return out, true
+		}
 		if in.PPID == pid {
-			break
+			return out, false
 		}
 		pid = in.PPID
 	}
-	return out
+	return out, false
 }
 
 // ClaudeCandidates are the ancestors of start that look like Claude Code, nearest first.
 func ClaudeCandidates(p Proc, start int) []ProcInfo {
+	c, _ := ClaudeCandidatesComplete(p, start)
+	return c
+}
+
+// ClaudeCandidatesComplete is ClaudeCandidates plus whether the walk was complete; a check that
+// clears a process of having a session above it must refuse when it was not.
+func ClaudeCandidatesComplete(p Proc, start int) ([]ProcInfo, bool) {
+	all, complete := WalkAncestors(p, start)
 	var out []ProcInfo
-	for _, a := range Ancestors(p, start) {
+	for _, a := range all {
 		if LooksLikeClaude(a) {
 			out = append(out, a)
 		}
 	}
-	return out
+	return out, complete
 }
 
 // NearestClaude is the pid of the nearest ancestor of start that looks like Claude Code, or 0.

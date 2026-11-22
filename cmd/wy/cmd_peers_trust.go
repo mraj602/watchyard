@@ -16,12 +16,13 @@ import (
 	peerspkg "github.com/mraj602/watchyard/internal/peers"
 )
 
-// The trusted sender (peers.md 4.1a): `wy peers trust doorbell [--account] [--program]
-// [--yes]`, `wy peers trust doorbell --off` and `wy peers trust`. The CLI runs the signing
-// guard's environment and ancestry steps and asks y/N on the terminal; the agent repeats the
-// ancestry check from the peer credentials, resolves the install again and writes the record.
+// The trusted sender (peers.md 4.1a): `wy peers trust doorbell [--account] [--program]`,
+// `wy peers trust doorbell --off` and `wy peers trust`. The CLI runs the signing guard's
+// environment and ancestry steps as a courtesy and always asks y/N on the terminal (there is no
+// --yes); the agent decides, from the peer credentials and /proc (peers.CheckApprover), then
+// resolves the install again and writes the record.
 
-const peersTrustUsage = `usage: wy peers trust doorbell [--account <account>] [--program <path>] [--yes]
+const peersTrustUsage = `usage: wy peers trust doorbell [--account <account>] [--program <path>]
        wy peers trust doorbell --off
        wy peers trust
 `
@@ -59,7 +60,6 @@ func peersTrust(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("peers trust", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	off := fs.Bool("off", false, "revoke the trusted sender on this machine")
-	yes := fs.Bool("yes", false, "do not ask (the guard still runs)")
 	account := fs.String("account", "", "the account it sends as: a label, a number from the list, or a uuid")
 	program := fs.String("program", "", "the doorbell console script or its venv (default: doorbell on PATH)")
 	pos, err := parsePeersFlags(fs, args)
@@ -75,7 +75,7 @@ func peersTrust(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if len(pos) == 0 {
-		if *off || *yes || *account != "" || *program != "" {
+		if *off || *account != "" || *program != "" {
 			fmt.Fprint(stderr, peersTrustUsage)
 			return errUsage
 		}
@@ -100,7 +100,8 @@ func peersTrust(args []string, stdout, stderr io.Writer) error {
 	if *off {
 		return trustOff(d, pe, stdout)
 	}
-	return trustSet(d, pe, *program, *account, *yes || peerspkg.TrustGuardOff, stdout)
+	// The test build asks nothing (its guard is off, and it may run without a terminal).
+	return trustSet(d, pe, *program, *account, peerspkg.TrustGuardOff, stdout)
 }
 
 // trustGuardErr words a signing-guard refusal for this command.
@@ -130,6 +131,9 @@ func trustShow(d trustDeps, pe peerEnv, stdout io.Writer) error {
 
 func printTrust(w io.Writer, rec peerspkg.TrustRecord) {
 	fmt.Fprintf(w, "Doorbell is approved on %s (since %s).\n", rec.MachineName, rec.ApprovedAt.Local().Format("2006-01-02 15:04"))
+	if rec.TestBuild {
+		fmt.Fprintln(w, "  approved by a test build (its approval guard was off); it is honoured. Approve it again with a release build to replace it.")
+	}
 	fmt.Fprintf(w, "  program:     %s\n  interpreter: %s\n  venv:        %s\n  sends as:    %s (%s)\n",
 		rec.Program, rec.Interpreter, rec.Venv, rec.AccountLabel, rec.Account)
 	fmt.Fprintln(w, "It may send only to tags (wy peers send tag:<tag> --stdin). Revoke: wy peers trust doorbell --off, or Settings → Peers on the board.")
@@ -165,7 +169,9 @@ func printOff(w io.Writer, had bool) {
 	fmt.Fprintln(w, "Doorbell was not approved on this machine; nothing changed.")
 }
 
-func trustSet(d trustDeps, pe peerEnv, program, account string, yes bool, stdout io.Writer) error {
+// trustSet approves Doorbell; noAsk (the trusttest build only) skips the terminal and the
+// questions.
+func trustSet(d trustDeps, pe peerEnv, program, account string, noAsk bool, stdout io.Writer) error {
 	if program == "" {
 		p, err := d.lookPath(peerspkg.DoorbellScript)
 		if err != nil {
@@ -182,10 +188,10 @@ func trustSet(d trustDeps, pe peerEnv, program, account string, yes bool, stdout
 		return peersExit(peerspkg.ExitPolicy, errors.New("no folder Watchyard manages on this machine is logged in to an account; Doorbell needs one to send as"))
 	}
 	var tty keysTTY
-	if !yes {
+	if !noAsk {
 		t, err := d.tty()
 		if err != nil {
-			return peersExit(peerspkg.ExitGuard, errors.New("wy peers trust needs you at a terminal (or --yes)"))
+			return peersExit(peerspkg.ExitGuard, errors.New("wy peers trust needs you at a terminal"))
 		}
 		defer t.Close()
 		tty = t

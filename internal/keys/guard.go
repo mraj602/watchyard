@@ -28,6 +28,10 @@ const MaxAncestors = 64
 // credential, whose value the guard never reads.
 var claudeEnv = []string{"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_MESSAGING_SOCKET"}
 
+// IsClaudeEnvName reports whether name is one of the variables of step 1 (a name only; the
+// agent's approval guard tests another process's environment names with it, peers.md 4.1a).
+func IsClaudeEnvName(name string) bool { return slices.Contains(claudeEnv, name) }
+
 // Proc is what the guard knows of one process.
 type Proc struct {
 	PPid  int

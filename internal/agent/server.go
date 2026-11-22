@@ -34,6 +34,9 @@ type Config struct {
 	UID int
 	// PeerCred reads the connecting process's pid and uid (default peers.PeerPID).
 	PeerCred func(*net.UnixConn) (pid, uid int, err error)
+	// PeerAlive takes the connecting process's pidfd: a check that it is still alive (nil
+	// when the kernel has no SO_PEERPIDFD) and a close (default peers.PeerAlive).
+	PeerAlive func(*net.UnixConn) (alive func() bool, closeFn func())
 	// Tick is the housekeeping period (default 1 minute).
 	Tick time.Duration
 	Now  func() time.Time
@@ -50,6 +53,9 @@ type server struct {
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.Load == nil || cfg.Socket == "" {
 		return errors.New("agent: Config needs Socket and Load")
+	}
+	if cfg.PeerAlive == nil {
+		cfg.PeerAlive = peers.PeerAlive
 	}
 	if cfg.PeerCred == nil {
 		cfg.PeerCred = peers.PeerPID
@@ -206,10 +212,16 @@ func (s *server) handle(c *net.UnixConn) {
 		enc(fail(peers.CodeFailed, "bad request"))
 		return
 	}
-	enc(s.dispatch(req, pid))
+	alive, closeFn := s.cfg.PeerAlive(c)
+	defer closeFn()
+	enc(s.dispatchFrom(req, pid, alive))
 }
 
-func (s *server) dispatch(req Request, pid int) Reply {
+func (s *server) dispatch(req Request, pid int) Reply { return s.dispatchFrom(req, pid, nil) }
+
+// dispatchFrom runs one request from pid; alive reports whether that process still lives
+// (its pidfd), for the trust checks.
+func (s *server) dispatchFrom(req Request, pid int, alive func() bool) Reply {
 	env, enabled, err := s.cfg.Load()
 	if err != nil {
 		return fail(peers.CodeFailed, "%v", err)
@@ -217,7 +229,7 @@ func (s *server) dispatch(req Request, pid int) Reply {
 	if !enabled {
 		return fail(peers.CodeOff, "peers are not enabled on this machine")
 	}
-	env.StartPID = pid
+	env.StartPID, env.PeerAlive = pid, alive
 	if s.cfg.Remote != nil {
 		env.Remote = s.cfg.Remote
 	}

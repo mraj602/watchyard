@@ -14,6 +14,7 @@ import (
 
 	"github.com/mraj602/watchyard/internal/identity"
 	"github.com/mraj602/watchyard/internal/peers"
+	"github.com/mraj602/watchyard/internal/peers/doorbelltest"
 )
 
 // trustAgent is an agent over a fake /proc and a throwaway HOME with the work account logged
@@ -23,6 +24,7 @@ type trustAgent struct {
 	base, home, state, proc string
 	venv, interp            string
 	pid                     atomic.Int64 // the caller the peer credentials report
+	gone                    atomic.Bool  // the caller's pidfd says it has ended
 	r                       *running
 }
 
@@ -51,6 +53,27 @@ func (a *trustAgent) addProc(pid, ppid int, comm, exe string, argv []string, sta
 	}
 }
 
+// onTTY puts pid on /dev/pts/0 in session (the pid of its leader).
+func (a *trustAgent) onTTY(pid, session int) {
+	a.t.Helper()
+	p := filepath.Join(a.proc, fmt.Sprint(pid), "stat")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	s := string(b)
+	i := strings.LastIndexByte(s, ')')
+	f := strings.Fields(s[i+1:])
+	f[3], f[4] = fmt.Sprint(session), "34816"
+	a.write(p, s[:i+1]+" "+strings.Join(f, " ")+"\n", 0o600)
+}
+
+// terminal is a shell (the session leader of /dev/pts/0) under the terminal emulator.
+func (a *trustAgent) terminal(shell int) {
+	a.addProc(shell, 1, "bash", "/usr/bin/bash", []string{"bash"}, shell*10)
+	a.onTTY(shell, shell)
+}
+
 func newTrustAgent(t *testing.T) *trustAgent {
 	base, err := os.MkdirTemp("", "wyt")
 	if err != nil {
@@ -69,14 +92,13 @@ func newTrustAgent(t *testing.T) *trustAgent {
 	a.interp = filepath.Join(base, "py/bin/python3.12")
 	a.write(a.interp, "#!fake\n", 0o755)
 	a.write(filepath.Join(a.venv, "pyvenv.cfg"), "home = x\n", 0o644)
-	a.write(filepath.Join(a.venv, "lib/python3.12/site-packages/agent_doorbell-0.4.1.dist-info/METADATA"), "Name: agent-doorbell\n", 0o644)
 	if err := os.MkdirAll(filepath.Join(a.venv, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(a.interp, filepath.Join(a.venv, "bin/python")); err != nil {
 		a.t.Fatal(err)
 	}
-	a.write(filepath.Join(a.venv, "bin/doorbell"), "#!"+filepath.Join(a.venv, "bin/python")+"\n", 0o755)
+	doorbelltest.WriteDist(t, a.venv, "")
 	if err := os.MkdirAll(a.proc, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +108,7 @@ func newTrustAgent(t *testing.T) *trustAgent {
 				Proc: peers.LinuxProc{Root: a.proc}, FS: identity.OSFS{}, SlotLabels: map[string]string{"~/.claude-2": "work"}}, true, nil
 		}
 		c.PeerCred = func(*net.UnixConn) (int, int, error) { return int(a.pid.Load()), os.Getuid(), nil }
+		c.PeerAlive = func(*net.UnixConn) (func() bool, func()) { return func() bool { return !a.gone.Load() }, func() {} }
 	})
 	t.Cleanup(func() { a.r.stop(t) })
 	return a
@@ -116,6 +139,8 @@ func TestTrustRefusedInsideSession(t *testing.T) {
 	a.claude(500, 1)
 	a.addProc(501, 500, "bash", "/usr/bin/bash", []string{"bash"}, 4300)
 	a.addProc(502, 501, "wy", "/usr/local/bin/wy", []string{"wy", "peers", "trust", "doorbell"}, 4301)
+	a.onTTY(501, 501)
+	a.onTTY(502, 501)
 	a.pid.Store(502)
 	rep := a.call(Request{Op: OpTrust, TrustOp: TrustSet, Program: a.venv, Account: "acc-work"})
 	if rep.Error == nil || rep.Error.Code != peers.CodeNotASession || !strings.Contains(rep.Error.Detail, "pid 500") {
@@ -135,8 +160,9 @@ func TestTrustRefusedInsideSession(t *testing.T) {
 // From a terminal: set writes the record (resolved by the agent), show reads it, off removes it.
 func TestTrustFromTerminal(t *testing.T) {
 	a := newTrustAgent(t)
-	a.addProc(900, 1, "bash", "/usr/bin/bash", []string{"bash"}, 9000)
+	a.terminal(900)
 	a.addProc(901, 900, "wy", "/usr/local/bin/wy", []string{"wy"}, 9001)
+	a.onTTY(901, 900)
 	a.pid.Store(901)
 	rep := a.call(Request{Op: OpTrust, TrustOp: TrustSet, Program: filepath.Join(a.venv, "bin/doorbell"), Account: "acc-work"})
 	if rep.Error != nil || rep.Trust == nil || rep.Trust.Venv != a.venv || rep.Trust.Interpreter != a.interp || rep.Warning != "" {
@@ -158,7 +184,7 @@ func TestTrustFromTerminal(t *testing.T) {
 // not_a_session whatever the request says.
 func TestServiceSendIdentity(t *testing.T) {
 	a := newTrustAgent(t)
-	a.addProc(900, 1, "bash", "/usr/bin/bash", []string{"bash"}, 9000)
+	a.terminal(900)
 	a.pid.Store(900)
 	if rep := a.call(Request{Op: OpTrust, TrustOp: TrustSet, Program: a.venv, Account: "acc-work"}); rep.Error != nil {
 		t.Fatalf("set: %+v", rep)
@@ -197,6 +223,47 @@ func TestServiceSendIdentity(t *testing.T) {
 	rep = a.call(Request{Op: OpServiceSend, To: "tag:ci", Text: "x", Stdin: true})
 	if rep.Error == nil || rep.Error.Code != peers.CodeNotASession {
 		t.Errorf("plain terminal: %+v", rep)
+	}
+}
+
+// The exploits of the review: a session starting wy outside its tree without a terminal
+// (env -i setsid -f wy …, systemd-run --user wy …) or writing the op to the socket from a
+// process of its own; a session's environment names; a requester that is gone (its pid may be
+// reused). Each is refused by the agent with nothing written, whatever the request says.
+func TestTrustGuardRefusesWithoutTerminal(t *testing.T) {
+	a := newTrustAgent(t)
+	set := Request{Op: OpTrust, TrustOp: TrustSet, Program: a.venv, Account: "acc-work"}
+	// setsid -f / systemd-run: re-parented to pid 1 (or systemd --user), no controlling terminal.
+	a.addProc(910, 1, "systemd", "/usr/lib/systemd/systemd", []string{"/usr/lib/systemd/systemd", "--user"}, 9100)
+	a.addProc(911, 910, "wy", "/usr/local/bin/wy", []string{"wy", "peers", "trust", "doorbell"}, 9101)
+	a.pid.Store(911)
+	if rep := a.call(set); rep.Error == nil || rep.Error.Code != peers.CodeNotASession || !strings.Contains(rep.Error.Detail, "no controlling terminal") {
+		t.Errorf("no terminal: %+v", rep)
+	}
+	// At a terminal, but with a Claude Code marker in the environment.
+	a.terminal(920)
+	a.addProc(921, 920, "wy", "/usr/local/bin/wy", []string{"wy"}, 9201)
+	a.onTTY(921, 920)
+	a.write(filepath.Join(a.proc, "921", "environ"), "PATH=/usr/bin\x00CLAUDECODE=1\x00", 0o600)
+	a.pid.Store(921)
+	if rep := a.call(set); rep.Error == nil || !strings.Contains(rep.Error.Detail, "CLAUDECODE") {
+		t.Errorf("marker: %+v", rep)
+	}
+	// A clean terminal, but the requester ended while the agent read /proc.
+	a.write(filepath.Join(a.proc, "921", "environ"), "PATH=/usr/bin\x00", 0o600)
+	a.gone.Store(true)
+	if rep := a.call(set); rep.Error == nil || !strings.Contains(rep.Error.Detail, "ended while it was checked") {
+		t.Errorf("gone: %+v", rep)
+	}
+	if rep := a.call(Request{Op: OpTrust, TrustOp: TrustOff}); rep.Error == nil || rep.Error.Code != peers.CodeNotASession {
+		t.Errorf("off while gone: %+v", rep)
+	}
+	if a.approved() {
+		t.Fatal("a record was written")
+	}
+	a.gone.Store(false)
+	if rep := a.call(set); rep.Error != nil || rep.Trust == nil {
+		t.Errorf("the owner at the terminal: %+v", rep)
 	}
 }
 
