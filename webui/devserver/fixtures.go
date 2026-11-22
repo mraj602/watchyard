@@ -133,7 +133,9 @@ func Fixtures(now time.Time) *Data {
 	done1 := sess("c41e0000-0000-4000-8000-000000000008", "done", "", false, 25*min, "seat_work", "work", "#6A4FD6", "m_laptop", "laptop", "docs", "changelog", "Updated CHANGELOG.md with the three fixes.", 9)
 	p1 := sess("c41e0000-0000-4000-8000-000000000009", "working", "", false, 40*time.Second, "seat_personal", "personal", "#0E7C76", "m_laptop", "laptop", "watchyard", "hub-ingest", "Writing server/ingest.go", 88)
 	p2 := sess("c41e0000-0000-4000-8000-00000000000a", "working", "", false, 7*min, "seat_personal", "personal", "#0E7C76", "m_gpu", "gpu-box", "blog", "draft-post", "Fetching three sources for the intro", 31)
-	p3 := sess("c41e0000-0000-4000-8000-00000000000b", "done", "started", false, 2*hour, "seat_personal", "personal", "#0E7C76", "m_laptop", "laptop", "finance", "october-export", "Exported 214 rows to october.csv.", 12)
+	p3 := sess("c41e0000-0000-4000-8000-00000000000b", "done", "started", false, 2*hour, "seat_personal", "personal", "#0E7C76", "m_laptop", "laptop", "finance", "october-export", "Exported 214 rows to october.csv for the Café Lumière account.", 12)
+	// A name besides the title, and an accent: the sessions search (pwa.md 3.0b) finds both.
+	p3["name"] = "rapport-financier"
 	gone := sess("c41e0000-0000-4000-8000-00000000000c", "gone", "", false, 5*hour, "seat_client", "client", "#9A7400", "m_laptop", "laptop", "storefront", "seo-audit", "Ended without a goodbye (terminal closed).", 47)
 	gone["ended_at"] = ago(5 * hour)
 	stale := sess("c41e0000-0000-4000-8000-00000000000d", "working", "", false, 14*hour, "seat_personal", "personal", "#0E7C76", "m_vps", "old-vps", "cron-jobs", "", "", 15)

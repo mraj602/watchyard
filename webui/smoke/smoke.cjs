@@ -6,7 +6,7 @@
 //      OUT_DIR (screenshots).
 //
 // Per size (1440 and 390 px wide):
-//   board login, every screen, live updates, keyboard   
+//   board login, every screen, live updates, keyboard, the sessions search
 //   a phone claim by QR secret, the phone screens, Seen from the row menu, swipe Snooze
 //   an owner sign-in, Alerts/Settings/Devices and the Add phone dialog
 //   Settings → Peers as the owner (grid, pause/resume, widen, audit) and as a paired phone (narrow only)
@@ -147,6 +147,60 @@ async function auditChecks(page, sizeName) {
   await page.waitForFunction(() => !document.querySelector('[data-key=history]'), { timeout: 6000 }).catch(() => {});
 }
 
+// ---- sessions search (pwa.md 3.0b) -----------------------------------------------------------
+
+async function searchChecks(page, sizeName) {
+  const t = (m) => page.tag(`search: ${m}`);
+  const text = (sel) => page.$eval(sel, (e) => e.textContent).catch(() => '');
+  const box = '[data-key=session-search]';
+  const rows = () => page.$$eval('.sessions-table tbody tr.srow .c-session b', (e) => e.map((x) => x.textContent));
+  const setQ = async (q) => {
+    await page.$eval(box, (e) => { e.value = ''; e.dispatchEvent(new Event('input', { bubbles: true })); });
+    await page.focus(box);
+    await page.keyboard.type(q);
+  };
+  await page.evaluate(() => { location.hash = '#/sessions'; });
+  await page.waitForSelector(`${box}`);
+  // Case and accents are ignored; the match is marked; the count says how many.
+  await setQ('CAFE lumiere');
+  await page.waitForFunction(() => document.querySelectorAll('.sessions-table tr.srow').length === 1, { timeout: 4000 }).catch(() => {});
+  const one = await rows();
+  if (one.length !== 1 || one[0] !== 'finance') fail(t(`"CAFE lumiere" shows ${JSON.stringify(one)}`));
+  const marks = await page.$$eval('.sessions-table mark', (e) => e.map((x) => x.textContent));
+  if (!marks.includes('Café') || !marks.includes('Lumière')) fail(t(`marks: ${JSON.stringify(marks)}`));
+  if (!/^1 of \d+ sessions? matches$/.test(await text('[data-key=search-count]'))) fail(t(`count: ${await text('[data-key=search-count]')}`));
+  if (!/Open 1\b/.test(await text('[data-key=f-open]'))) fail(t(`Open chip: ${await text('[data-key=f-open]')}`));
+  // A redraw and a live update keep the very same box, its text, focus and caret.
+  await page.$eval(box, (e) => { e.wyMark = 1; e.setSelectionRange(2, 4); });
+  await page.evaluate(() => window.dispatchEvent(new Event('wy-rerender')));
+  await page.evaluate(() => fetch('/_dev/promote', { method: 'POST' }));
+  await sleep(1200);
+  const kept = await page.$eval(box, (e) => ({ same: e.wyMark === 1, value: e.value, focused: document.activeElement === e, sel: [e.selectionStart, e.selectionEnd] }));
+  if (!kept.same || kept.value !== 'CAFE lumiere' || !kept.focused || kept.sel.join() !== '2,4') fail(t(`a redraw did not keep the box: ${JSON.stringify(kept)}`));
+  if ((await rows()).join() !== 'finance') fail(t('a redraw dropped the search'));
+  // A term found only in a field the row does not show adds that field's line.
+  await setQ('rapport');
+  await page.waitForSelector('.search-extra', { timeout: 4000 }).catch(() => {});
+  if (!/^Name: rapport-financier$/.test(await text('.search-extra'))) fail(t(`extra line: ${await text('.search-extra')}`));
+  // Matches under another chip: one button searches them all, the query kept.
+  await setQ('seo-audit');
+  await page.waitForSelector('[data-key=search-all]', { timeout: 4000 }).catch(() => fail(t('no Search all sessions button')));
+  if (!/No sessions here match “seo-audit”/.test(await text('[data-key=sessions-empty]'))) fail(t(`empty: ${await text('[data-key=sessions-empty]')}`));
+  await shot(page, `${sizeName}-sessions-search-empty`);
+  await page.click('[data-key=search-all]');
+  await page.waitForFunction(() => /filter=all/.test(location.hash), { timeout: 4000 }).catch(() => {});
+  await page.waitForFunction(() => document.querySelectorAll('.sessions-table tr.srow').length === 1, { timeout: 4000 }).catch(() => {});
+  if ((await rows()).join() !== 'storefront' || (await page.$eval(box, (e) => e.value)) !== 'seo-audit') fail(t('Search all sessions lost the query or the row'));
+  await setQ('lumi');
+  await shot(page, `${sizeName}-sessions-search`);
+  // Escape clears it; every session is back.
+  await page.focus(box);
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('[data-key=search-count]'), { timeout: 4000 }).catch(() => {});
+  if ((await page.$eval(box, (e) => e.value)) !== '' || (await rows()).length < 5) fail(t('Escape did not clear the search'));
+  await resetHub();
+}
+
 // ---- the board login flow  -------------------------------------------------
 
 async function boardFlow(sizeName, w, hgt) {
@@ -181,6 +235,7 @@ async function boardFlow(sizeName, w, hgt) {
   await Promise.all([page.waitForSelector('#nav a[aria-current=page]'), page.click('.login-token button[type=submit]')]);
   for (const [name, hash, sel] of BOARD_PAGES) await visit(page, sizeName, name, hash, sel);
   await auditChecks(page, sizeName);
+  await searchChecks(page, sizeName);
   for (const [name, hash, sel] of [['more', '#/more', '.more-list'], ['alerts-readonly', '#/more/alerts', '.log'], ['settings-readonly', '#/more/settings', '[data-key=build]'], ['devices-readonly', '#/more/devices', '.calm']]) {
     await visit(page, sizeName, name, hash, sel);
   }
