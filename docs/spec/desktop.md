@@ -447,6 +447,8 @@ account in a hidden or background start until the window is shown.
   in this view; the app has no peers screen of its own. The desktop token is read-only, so the
   page enables its controls (matrix edits, Pause all peers, resume) only after the owner
   sign-in above; until then it shows the matrix and the audit and says why.
+- Sessions: the Hub view's Sessions page is the board's `#/sessions`, with its search box
+  (pwa.md 3.0b); the app adds no session list or search of its own.
 - `hub:route` loads `<hub>/<route>` (for example `#/sessions/<id>`). Notification clicks and
   tray items use it.
 - Account-tab handoff: a `https://claude.ai/code/session_[A-Za-z0-9]+` link from the board goes

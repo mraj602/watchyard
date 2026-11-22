@@ -226,7 +226,7 @@ Accounts, More**:
 | App route (expo-router) | Hash route it mirrors | Screen |
 | --- | --- | --- |
 | `/` (tab Now) | `#/` | Needs-you inbox with swipe Seen / Snooze (`POST /v1/alerts/{id}/seen`, `/snooze`), alert status words, rings per account, running count per machine |
-| `/sessions?filter=&by=` | `#/sessions` | Grouped list with filter chips |
+| `/sessions?filter=&by=` | `#/sessions` | Grouped list with a search box (pwa.md 3.0b) and filter chips |
 | `/sessions/[id]?alert=` | `#/sessions/<id>` | State history, last message, **Open in Claude** (`remote_url` in the seat's claude.ai tab on Android, P17; elsewhere with the wrong-account note), **Copy resume command**, Snooze |
 | `/accounts?seat=` | `#/accounts` | One compact row per account that opens in place (P17.8), "most room", **Count down on Lock Screen** (iOS, P12) |
 | `/more` | `#/more` | Alerts, Machines, Peers, Settings |
@@ -256,6 +256,13 @@ every pair in `deny` and `same_account: false` (`blockAllEdit`); Allow all is no
 (owner-only; the screen says "Allow pairs from a computer (board, Peers)"). The turn limit
 (`max_turns`) is shown read-only as "Replies between two sessions without you: N" ("No limit" for 0)
 with the loop-guard explanation and the no-limit line (peers.md 6.3, 5.4).
+
+**Session search** (`SessionsScreen`) is the board's (pwa.md 3.0b): a `TextInput` above the
+chips (`testID` `session-search`, clear button `session-search-clear`), matched on the device
+over `data.sessions` with `src/lib/format/search.ts`, the port of
+`webui/static/components/search-fmt.js`. The query is the screen's state, so the 15 s polls
+keep it. Found terms are tinted spans inside the row's `Text`; a term found only in a field the
+row does not show adds the "Name: …" / "Message: …" line.
 
 Owner-only PWA screens (Devices, Add phone, rule editing) are not in the app. Analytics (More, Analytics; `GET /v1/analytics/{report}`, analytics.md) is: a range (7, 30, 90 days), a seat filter, totals, daily cost bars, a compact weekday by hour heatmap, models, projects, the five dearest sessions, limit windows (peak and final percent as bars) and limit hits.
 Wording, ages and state words come from `src/lib/format` and match `webui/static/format.js`
@@ -742,6 +749,10 @@ profiles, no `extra.eas.projectId`, no `googleServicesFile` and no push credenti
   `validatePayload(…, exact)` (Go key order, no unknown keys), and every fixture with its
   validator. `placeholder-alert.json` and `placeholder-refresh.json` stand in until the `message-*.json`
   goldens replace them.
+- `test/search.test.ts` runs `src/lib/format/search.ts` and `webui/static/components/search-fmt.js`
+  on one case table (same terms, matches, ranges and excerpts); `test/sessions-search.test.tsx`
+  renders the Sessions screen, types a query, refreshes the data and checks the query, the
+  rows, the counts and the extra match line.
 - `test/imports.test.ts` walks the import graph from `src/lib` and `src/contract` and fails on
   any package import or a relative import that leaves them (P1). `eslint.config.js` also
   forbids `react`, `react-native*`, `expo*`, `@expo/*` and `@react-native*` in `src/lib/**`
