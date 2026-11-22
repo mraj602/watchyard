@@ -57,6 +57,11 @@ All notable changes to Watchyard are recorded here. The format follows
   `weekly_drop` (the 7-day window fell more than 10 points without a reset: something
   changed, check). Each expires 24 hours after it fires. Schema version 17 adds `seat_watch`,
   `seat_verdict` and their rules.
+- A search box on the Sessions screen of the board (and so of the desktop app's Hub view) and
+  of the Android app: it matches folders, titles, names and the last message, ignores case and
+  accents, marks what it found, adds a line when the match is in a field the row does not show,
+  and keeps the query while the list refreshes. It runs on the device over the list it already
+  has: no new API and no message text beyond the existing last-message tail.
 
 ### Changed
 

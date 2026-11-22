@@ -35,11 +35,17 @@ There are two kinds of sign-in:
 - **Read-only:** a device token or a pairing code (`wy hub pair --kind browser`) signs a
   browser in to read the board; controls that change things are hidden or explain why.
 
-Screens: **Now** (what needs you, account limits), **Sessions** (filter by state, group by
-machine), **Accounts** (limits, resets, pace, most room right now), **Machines** (last seen,
+Screens: **Now** (what needs you, account limits), **Sessions** (search, filter by state,
+group by machine), **Accounts** (limits, resets, pace, most room right now), **Machines** (last seen,
 backlog, version, reach), **Alerts** (rules, quiet hours, recent notifications), **Analytics**
 ([usage.md](usage.md)), **Peers** ([peers.md](peers.md)), **Keys** ([peers.md](peers.md)),
 **Devices** (owner: paired phones, browsers and machines; rename, revoke, add), **Settings**.
+
+The search box on **Sessions** finds sessions by folder, title, name or Claude's last message,
+ignoring case and accents ("cafe" finds "Café"), and marks what it found. It searches only the
+list already on the screen (the last 2 days) on your device; nothing is sent to the hub, and
+there is message text to search only while machines send last messages (`privacy.last_message`,
+on by default). The desktop app's Hub view and the Android app have the same box.
 
 "Most room right now" is a suggestion. Watchyard never switches accounts for you.
 
