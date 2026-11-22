@@ -49,6 +49,10 @@ Each episode alerts at most once, so restarts and replays never send duplicates.
 | `limit_95` | The same window reached 95 % | On, at once |
 | `reset` | A window that passed 80 % has reset | Off |
 | `machine_silent` | A machine with live sessions sent nothing for an hour | On |
+| `limit_change` | A model's 5-hour capacity moved more than 1.2× (or under 0.83×) against last week on most accounts that mostly run Claude Code | On, low urgency |
+| `usage_reset` | Anthropic or the org owner reset an account's usage: both windows back to about 0 % in several sessions | On, low urgency |
+| `seat_change` | A config folder logged in to another account or org | On, low urgency |
+| `weekly_drop` | An account's 7-day use fell more than 10 points without a reset: something changed, check | On, low urgency |
 
 "Turn finished" is not an alert: the board shows it. Limit alerts use the highest value a
 window reached, so a window that dips back under 80 % does not alert again. See

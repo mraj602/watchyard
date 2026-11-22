@@ -22,6 +22,7 @@ import type {
   RulesReply,
   SessionDetail,
   SessionsPage,
+  UsageRelation,
 } from '../../contract/api';
 import { HEALTH_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from '../../contract/constants';
 import type { Clock, FetchLike, RequestInitLike, ResponseLike } from '../../contract/platform';
@@ -111,6 +112,8 @@ export interface HubClient {
   peerMessages(q?: { limit?: number }): Promise<{ messages: PeerMessage[] }>;
   /** GET /v1/analytics/{report} (analytics.md): tokens, API-equivalent cost, models, projects, heatmap, sessions, limit windows and hits. */
   analytics<R extends keyof AnalyticsReplies>(report: R, q?: AnalyticsQuery): Promise<AnalyticsReplies[R]>;
+  /** GET /v1/accounts/{seat}/relation: the seat's daily 5 h per 7 d ratio, capacity index, calibration and the picker's newest verdict (api.yaml UsageRelation). */
+  relation(seat: string): Promise<UsageRelation>;
 }
 
 interface Call {
@@ -300,6 +303,7 @@ export function createHubClient(deps: HubClientDeps): HubClient {
     pausePeers: (paused) => call<MatrixInfo>('POST', '/v1/peers/pause', { paused }),
     peerAudit: (q = {}) => call<{ entries: PeerAuditEntry[] }>('GET', `/v1/peers/audit${query({ limit: q.limit })}`),
     peerMessages: (q = {}) => call<{ messages: PeerMessage[] }>('GET', `/v1/peers/messages${query({ limit: q.limit })}`),
+    relation: (seat) => call<UsageRelation>('GET', `/v1/accounts/${seg(seat)}/relation`),
     analytics: (report, q = {}) => call<AnalyticsReplies[typeof report]>('GET', `/v1/analytics/${seg(report)}${query({ days: q.days, seat: q.seat })}`),
   };
 }

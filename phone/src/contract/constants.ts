@@ -61,6 +61,7 @@ export const ANDROID_CHANNELS: readonly {
   { id: 'wy_needs_you', name: 'Needs you', importance: 'HIGH' },
   { id: 'wy_limits', name: 'Limits', importance: 'DEFAULT' },
   { id: 'wy_machines', name: 'Machines', importance: 'LOW' },
+  { id: 'wy_usage', name: 'Usage changes', importance: 'LOW' },
   { id: 'wy_test', name: 'Test', importance: 'DEFAULT' },
 ];
 

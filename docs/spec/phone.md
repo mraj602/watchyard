@@ -226,7 +226,7 @@ Accounts, More**:
 | App route (expo-router) | Hash route it mirrors | Screen |
 | --- | --- | --- |
 | `/` (tab Now) | `#/` | Needs-you inbox with swipe Seen / Snooze (`POST /v1/alerts/{id}/seen`, `/snooze`), alert status words, rings per account, running count per machine |
-| `/sessions?filter=&by=` | `#/sessions` | Grouped list with filter chips |
+| `/sessions?filter=&by=` | `#/sessions` | Grouped list with a search box (pwa.md 3.0b) and filter chips |
 | `/sessions/[id]?alert=` | `#/sessions/<id>` | State history, last message, **Open in Claude** (`remote_url` in the seat's claude.ai tab on Android, P17; elsewhere with the wrong-account note), **Copy resume command**, Snooze |
 | `/accounts?seat=` | `#/accounts` | One compact row per account that opens in place (P17.8), "most room", **Count down on Lock Screen** (iOS, P12) |
 | `/more` | `#/more` | Alerts, Machines, Peers, Settings |
@@ -256,6 +256,13 @@ every pair in `deny` and `same_account: false` (`blockAllEdit`); Allow all is no
 (owner-only; the screen says "Allow pairs from a computer (board, Peers)"). The turn limit
 (`max_turns`) is shown read-only as "Replies between two sessions without you: N" ("No limit" for 0)
 with the loop-guard explanation and the no-limit line (peers.md 6.3, 5.4).
+
+**Session search** (`SessionsScreen`) is the board's (pwa.md 3.0b): a `TextInput` above the
+chips (`testID` `session-search`, clear button `session-search-clear`), matched on the device
+over `data.sessions` with `src/lib/format/search.ts`, the port of
+`webui/static/components/search-fmt.js`. The query is the screen's state, so the 15 s polls
+keep it. Found terms are tinted spans inside the row's `Text`; a term found only in a field the
+row does not show adds the "Name: …" / "Message: …" line.
 
 Owner-only PWA screens (Devices, Add phone, rule editing) are not in the app. Analytics (More, Analytics; `GET /v1/analytics/{report}`, analytics.md) is: a range (7, 30, 90 days), a seat filter, totals, daily cost bars, a compact weekday by hour heatmap, models, projects, the five dearest sessions, limit windows (peak and final percent as bars) and limit hits.
 Wording, ages and state words come from `src/lib/format` and match `webui/static/format.js`
@@ -294,6 +301,7 @@ the permission prompt only once a channel exists):
 | `wy_needs_you` | Needs you | HIGH | `needs_permission`, `asked`, `failed`, summaries |
 | `wy_limits` | Limits | DEFAULT | `limit_80`, `limit_95`, `reset` |
 | `wy_machines` | Machines | LOW | `machine_silent` |
+| `wy_usage` | Usage changes | LOW | `limit_change`, `usage_reset`, `seat_change`, `weekly_drop` (push.md 3.9) |
 | `wy_test` | Test | DEFAULT | test pushes |
 | `wy_connection` | Connection (always on) | MIN | The link service's persistent notification (push.md 14.4) |
 
@@ -315,7 +323,7 @@ alert colour behind it is the brand gold `#E8B04B`; the always-on connection not
 | `connection` | hairline mark, no badge | none | the persistent note (14.4) and the "stopped" note |
 | `needs_you` | dot | gold | `needs_permission`, `asked` |
 | `failed` | exclamation | red `#E5534B` | `failed` |
-| `limit` | gauge | orange `#F0883E` | `limit_80`, `limit_95` |
+| `limit` | gauge | orange `#F0883E` | `limit_80`, `limit_95`, the usage notices |
 | `reset` | return arrow | green `#3FB68B` | `reset` |
 | `machine` | crescent | grey `#9AA4AE` | `machine_silent` |
 | `summary` | stacked ticks | gold | summaries |
@@ -744,6 +752,10 @@ profiles, no `extra.eas.projectId`, no `googleServicesFile` and no push credenti
   `validatePayload(…, exact)` (Go key order, no unknown keys), and every fixture with its
   validator. `placeholder-alert.json` and `placeholder-refresh.json` stand in until the `message-*.json`
   goldens replace them.
+- `test/search.test.ts` runs `src/lib/format/search.ts` and `webui/static/components/search-fmt.js`
+  on one case table (same terms, matches, ranges and excerpts); `test/sessions-search.test.tsx`
+  renders the Sessions screen, types a query, refreshes the data and checks the query, the
+  rows, the counts and the extra match line.
 - `test/imports.test.ts` walks the import graph from `src/lib` and `src/contract` and fails on
   any package import or a relative import that leaves them (P1). `eslint.config.js` also
   forbids `react`, `react-native*`, `expo*`, `@expo/*` and `@react-native*` in `src/lib/**`
@@ -1059,7 +1071,15 @@ Calm and compact: seven accounts fit on one screen.
   when you next use this account", peak, pace); **Signed in** (the Claude Code
   line per machine, the phone tab line with "as of the tab's last visit", and its action: **Open
   claude.ai**, **Sign in on this phone** or **Fix this tab**, which opens the sheet of
-  P17.7); then the plan and organisation, email, live sessions and when claude.ai usage was
-  read; and **Count down on Lock Screen** where the Live Activity qualifies (iOS, P12).
+  P17.7); then the details: the plan and organisation, email, live sessions and when claude.ai
+  usage was read, and under them **Usage and the picker**, a closed disclosure (the only place
+  these show; no screen or tab of its own) that loads `GET /v1/accounts/{seat}/relation` when
+  first opened (again when opened more than 5 minutes later) and shows what the board shows
+  (pwa.md 3.0a): the picker's newest verdict with its age and machine, the calibration factors
+  (measured, blending or fallback, with `n`), the 14 daily 5 h per 7 d bars with each day's model
+  initial and a legend, and per model the capacity index normalised to last week (bars with a
+  line at 1.0, muted with the note when the account is not Claude-Code-heavy). Its pure logic
+  is in `lib/format/relation.ts` (jest); and **Count down on Lock Screen** where the Live
+  Activity qualifies (iOS, P12).
 - **Under the list**, one muted line: "The bar shows the tighter of the 5 h and 7 d limits. Tap
   an account for everything else."

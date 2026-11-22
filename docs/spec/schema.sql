@@ -1,4 +1,4 @@
--- Watchyard hub schema, version 16.
+-- Watchyard hub schema, version 19.
 --
 -- One SQLite file (WAL mode). Applied by the hub at start inside one transaction
 -- after `PRAGMA foreign_keys = ON`. Later versions add numbered migrations
@@ -25,6 +25,10 @@
 --   v15 indexes: record_machine_kind_slot_ts, token_row_session_ts, limit_sample_reset,
 --       limit_sample_idle (the hub's hot reads).
 --   v16 peer_tag (peers.md 3.4).
+--   v17 account_lease (record.md 4.10, setup.md 8.5).
+--   v18 seat_calibration (setup.md 8.5, Calibration).
+--   v19 seat_watch, seat_verdict and the usage-notice base rules (setup.md 8.5, Usage relation;
+--       push.md 3.9; record.md 4.11).
 --
 -- Conventions
 --   * Times are INTEGER milliseconds since the Unix epoch, UTC (`*_at`, `ts`).
@@ -49,7 +53,7 @@ CREATE TABLE schema_version (
 ) STRICT;
 
 INSERT INTO schema_version (version, applied_at, wy_version)
-VALUES (16, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
+VALUES (19, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
 
 -- Hub-wide settings that are not secrets (retention days, last-message policy, …).
 CREATE TABLE setting (
@@ -416,6 +420,60 @@ CREATE INDEX limit_sample_reset ON limit_sample(seat_id, window_key, resets_at);
 CREATE INDEX limit_sample_idle ON limit_sample(seat_id, window_key, ts)
   WHERE source = 'web' AND resets_at IS NULL AND used_pct = 0;
 
+-- One row per pick `wy account next` recorded on some machine (record.md 4.10). Other
+-- machines' pickers read the recent ones through GET /v1/usage (setup.md 8.5). `wy hub prune`
+-- removes rows older than its cut, like token_row.
+CREATE TABLE account_lease (
+  id            TEXT    NOT NULL PRIMARY KEY,         -- payload.lease_id (a ULID made by the picker)
+  seat_id       TEXT    NOT NULL REFERENCES seat(id),
+  machine_id    TEXT    NOT NULL REFERENCES machine(id),
+  ts            INTEGER NOT NULL,                     -- pick time
+  session_id    TEXT,                                 -- --session-id; not an FK: the session starts later
+  kind          TEXT    NOT NULL CHECK (kind IN ('aggressive', 'protected')),
+  c5            REAL    NOT NULL,
+  cf            REAL    NOT NULL,
+  strategy      TEXT    NOT NULL,
+  urgent        INTEGER NOT NULL DEFAULT 0 CHECK (urgent IN (0, 1)),
+  model         TEXT,
+  record_id     TEXT    NOT NULL
+) STRICT;
+CREATE INDEX account_lease_seat_ts ON account_lease(seat_id, ts);
+
+-- One row per seat: the calibration of `wy account next`'s lanes strategy (setup.md 8.5,
+-- Calibration), brought up to date every 15 minutes by `wy hub serve` from the samples, token
+-- rows and leases after its cursors. GET /v1/usage returns `factors` as they are.
+CREATE TABLE seat_calibration (
+  seat_id       TEXT    NOT NULL PRIMARY KEY REFERENCES seat(id),
+  account_uuid  TEXT    NOT NULL,                     -- the login it was calibrated for: another
+  org_uuid      TEXT    NOT NULL,                     -- one restarts it (reason seat_change)
+  cursor        INTEGER NOT NULL,                     -- samples and token rows up to here are folded in
+  lease_cursor  INTEGER NOT NULL,                     -- leases picked up to here are folded in
+  state         TEXT    NOT NULL CHECK (json_valid(state)),    -- internal/calib State
+  factors       TEXT    NOT NULL CHECK (json_valid(factors)),  -- api.yaml Calibration
+  updated_at    INTEGER NOT NULL
+) STRICT;
+
+-- One row per seat: what the calibration job watches for usage notices (push.md 3.9) and the
+-- usage relation it folds (setup.md 8.5, Usage relation), brought up to date with the
+-- calibration. GET /v1/accounts/{seat}/relation reads `relation`.
+CREATE TABLE seat_watch (
+  seat_id       TEXT    NOT NULL PRIMARY KEY REFERENCES seat(id),
+  cursor        INTEGER NOT NULL,                     -- samples up to here are watched
+  state         TEXT    NOT NULL CHECK (json_valid(state)),     -- internal/calib Watch: level, candidate, masks
+  relation      TEXT    NOT NULL CHECK (json_valid(relation)),  -- internal/calib Relation: 15 days of sums
+  updated_at    INTEGER NOT NULL
+) STRICT;
+
+-- The newest verdict of `wy account next` about each seat, from any machine (record.md 4.11).
+CREATE TABLE seat_verdict (
+  seat_id       TEXT    NOT NULL PRIMARY KEY REFERENCES seat(id),
+  machine_id    TEXT    NOT NULL REFERENCES machine(id),
+  ts            INTEGER NOT NULL,                     -- the run's time (record ts)
+  strategy      TEXT    NOT NULL,
+  verdict       TEXT    NOT NULL CHECK (json_valid(verdict)),   -- the account's item, plus next_free
+  record_id     TEXT    NOT NULL
+) STRICT;
+
 -- The full claude.ai usage response per seat per poll. Every field kept (iguana_necktie…).
 CREATE TABLE web_usage (
   seat_id       TEXT    NOT NULL REFERENCES seat(id),
@@ -484,6 +542,12 @@ INSERT INTO rule (id, trigger, base, enabled, delay_s, bypass_quiet, scope, upda
   ('rule_limit_95',         'limit_95',         1, 1,    0, 0, '{"windows":["five_hour","seven_day"]}', 0),
   ('rule_reset',            'reset',            1, 0,    0, 0, '{"windows":["five_hour","seven_day"]}', 0),
   ('rule_machine_silent',   'machine_silent',   1, 1, 3600, 0, '{}', 0);
+-- v19: the usage notices (push.md 3.9).
+INSERT INTO rule (id, trigger, base, enabled, delay_s, bypass_quiet, scope, updated_at) VALUES
+  ('rule_limit_change',     'limit_change',     1, 1,    0, 0, '{}', 0),
+  ('rule_usage_reset',      'usage_reset',      1, 1,    0, 0, '{}', 0),
+  ('rule_seat_change',      'seat_change',      1, 1,    0, 0, '{}', 0),
+  ('rule_weekly_drop',      'weekly_drop',      1, 1,    0, 0, '{}', 0);
 
 -- One row per episode (push.md 3.2 and 4).
 CREATE TABLE alert (

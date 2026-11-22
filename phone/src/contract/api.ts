@@ -44,7 +44,11 @@ export type Trigger =
   | 'limit_80'
   | 'limit_95'
   | 'reset'
-  | 'machine_silent';
+  | 'machine_silent'
+  | 'limit_change'
+  | 'usage_reset'
+  | 'seat_change'
+  | 'weekly_drop';
 
 /** api.yaml AlertBrief. */
 export interface AlertBrief {
@@ -522,4 +526,91 @@ export interface AnalyticsQuery {
   days?: number;
   /** One seat id, or "unattributed". */
   seat?: string;
+}
+
+/** api.yaml CalibrationFactor: `f` in 5-hour points per million weighted units, `ratio` in 5-hour points per weekly point, `lane_price` in 5-hour points. */
+export interface CalibrationFactor {
+  value: number;
+  fallback: number;
+  measured: number | null;
+  weight: number;
+  n: number;
+  days: number;
+  implausible: boolean;
+}
+
+/** api.yaml Calibration (setup.md 8.5). */
+export interface Calibration {
+  at: Iso;
+  since: Iso | null;
+  reset: { at: Iso; reason: 'seat_change' | 'under_read' | 'over_read' } | null;
+  f: CalibrationFactor;
+  ratio: CalibrationFactor;
+  lane_price: CalibrationFactor;
+  lane_charge: number;
+  lane_units: number | null;
+  unexplained_pct_per_hour: number | null;
+  unexplained_hours: number;
+}
+
+/** api.yaml RelationDay: one hub day's 5-hour per weekly point. */
+export interface RelationDay {
+  day: string;
+  ratio: number | null;
+  d5: number;
+  d7: number;
+  pairs: number;
+  model: string | null;
+  rise: number;
+  rise_cc: number;
+}
+
+/** api.yaml RelationHeavy: whether a week's 5-hour rise was Claude Code tokens. */
+export interface RelationHeavy {
+  heavy: boolean;
+  rise: number;
+  cc_share: number | null;
+}
+
+/** api.yaml RelationModel: a model's 5-hour capacity index (API dollars per 5-hour point). */
+export interface RelationModel {
+  model: string;
+  this_week: number | null;
+  last_week: number | null;
+  change: number | null;
+  days: { day: string; index: number | null; normalised: number | null; d5: number; usd: number }[];
+}
+
+/** api.yaml Verdict: what one run of `wy account next` decided about the seat (record.md 4.11). */
+export interface Verdict {
+  at: Iso;
+  machine: string;
+  machine_name: string | null;
+  strategy: string;
+  kind?: 'aggressive' | 'protected' | null;
+  eligible: boolean;
+  reason?: string | null;
+  skip_level?: number | null;
+  rank?: number | null;
+  expiring?: boolean;
+  free_at?: Iso | null;
+  next_free?: Iso | null;
+  weekly_pct?: number | null;
+  five_hour_pct?: number | null;
+  burst?: number | null;
+  burst_cap?: number | null;
+  stale?: boolean;
+}
+
+/** GET /v1/accounts/{seat}/relation (api.yaml UsageRelation). */
+export interface UsageRelation {
+  seat: string;
+  time: Iso;
+  tz: string;
+  today: string;
+  days: RelationDay[];
+  heavy: { this_week: RelationHeavy; last_week: RelationHeavy };
+  models: RelationModel[];
+  calibration: Calibration | null;
+  verdict: Verdict | null;
 }

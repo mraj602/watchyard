@@ -40,7 +40,7 @@ export function freshData(patch: Partial<HubData> = {}): HubData {
 const mark = (a: AlertBrief | null | undefined, id: string, patch: Partial<AlertBrief>): AlertBrief | null | undefined =>
   a && a.id === id ? { ...a, ...patch } : a;
 
-/** What the screens dispatch: Seen and Snooze land on every copy of the alert. */
+/** What the screens dispatch: Seen and Snooze land on every copy of the alert; `loaded` is a poll. */
 export function testReduce(state: HubData, action: DataAction): HubData {
   const patchAlert = (id: string, patch: Partial<AlertBrief>): HubData => ({
     ...state,
@@ -54,6 +54,15 @@ export function testReduce(state: HubData, action: DataAction): HubData {
       return patchAlert(action.alert, { status: 'snoozed', snoozed_until: action.until });
     case 'offline':
       return { ...state, offline: true };
+    case 'loaded':
+      // A poll's reply (only what it carries), as the provider's reducer takes it.
+      return {
+        ...state,
+        ...(action.overview ? { overview: action.overview } : {}),
+        ...(action.sessions ? { sessions: action.sessions } : {}),
+        fetchedAt: action.at,
+        offline: false,
+      };
     default:
       return state;
   }

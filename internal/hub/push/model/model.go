@@ -67,10 +67,21 @@ const (
 	TriggerLimit95         Trigger = "limit_95"
 	TriggerReset           Trigger = "reset"
 	TriggerMachineSilent   Trigger = "machine_silent"
+	// The usage notices (push.md 3.9).
+	TriggerLimitChange Trigger = "limit_change"
+	TriggerUsageReset  Trigger = "usage_reset"
+	TriggerSeatChange  Trigger = "seat_change"
+	TriggerWeeklyDrop  Trigger = "weekly_drop"
 )
 
 // Triggers lists every trigger in display order.
-var Triggers = []Trigger{TriggerNeedsPermission, TriggerAsked, TriggerFailed, TriggerLimit80, TriggerLimit95, TriggerReset, TriggerMachineSilent}
+var Triggers = []Trigger{TriggerNeedsPermission, TriggerAsked, TriggerFailed, TriggerLimit80, TriggerLimit95, TriggerReset,
+	TriggerMachineSilent, TriggerLimitChange, TriggerUsageReset, TriggerSeatChange, TriggerWeeklyDrop}
+
+// IsNotice reports whether t is a usage notice (push.md 3.9).
+func (t Trigger) IsNotice() bool {
+	return t == TriggerLimitChange || t == TriggerUsageReset || t == TriggerSeatChange || t == TriggerWeeklyDrop
+}
 
 // Valid reports whether t is a trigger this build knows.
 func (t Trigger) Valid() bool {
@@ -114,6 +125,7 @@ const (
 	ReasonRecovered     = "recovered"
 	ReasonResetPassed   = "reset_passed"
 	ReasonDirect        = "direct"
+	ReasonExpired       = "expired" // a usage notice 24 h after it fired (push.md 3.9)
 )
 
 // AlertBrief is the short form: the stream event, the Session.alert field and the top of
@@ -168,8 +180,30 @@ type Facts struct {
 	Peak      float64 `json:"peak,omitempty"`
 	ResetsAt  Time    `json:"resets_at,omitempty"`
 	RemoteURL string  `json:"remote_url,omitempty"`
-	Sessions  int     `json:"sessions,omitempty"` // machine_silent: live sessions
+	Sessions  int     `json:"sessions,omitempty"` // machine_silent: live sessions; usage_reset: agreeing sources
 	LastSeen  Time    `json:"last_seen,omitempty"`
+	// Usage notices (push.md 3.9). weekly_drop: Peak the level before, Pct the new one,
+	// ResetsAt the weekly reset; usage_reset: ResetsAt the weekly reset.
+	Model   string  `json:"model,omitempty"`    // limit_change: model label
+	Up      bool    `json:"up,omitempty"`       // limit_change: limits look higher
+	Change  float64 `json:"change,omitempty"`   // limit_change: the moved accounts' median change
+	Moved   int     `json:"moved,omitempty"`    // limit_change: reference accounts past the threshold
+	Refs    int     `json:"refs,omitempty"`     // limit_change: reference accounts
+	Folder  string  `json:"folder,omitempty"`   // seat_change: the folder
+	Was     string  `json:"was,omitempty"`      // seat_change: the previous seat's name
+	OrgOnly bool    `json:"org_only,omitempty"` // seat_change: same account, another org
+	Org     string  `json:"org,omitempty"`      // seat_change: the new org's name
+}
+
+// Notice is one usage notice the calibration job hands to the engine (push.md 3.9): its
+// trigger, episode key, subject (Seat, Machine: "" for none), since_at and text inputs.
+type Notice struct {
+	Trigger Trigger
+	Episode string
+	Seat    string
+	Machine string
+	SinceMS int64
+	Facts   Facts
 }
 
 // Delivery is one attempt to bring one alert to one target (api.yaml Delivery).

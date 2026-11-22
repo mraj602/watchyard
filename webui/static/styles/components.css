@@ -135,6 +135,16 @@ body.dragging-seat, body.dragging-seat * { cursor: grabbing !important; user-sel
 .field { font-size: 14px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
 select, input[type="password"], input[type="text"] { border: 1px solid var(--btn-border); border-radius: 8px; background: var(--panel); padding: 6px 8px; min-height: 36px; }
 
+/* sessions search (pwa.md 3.0b): its own row under the heading, × inside the box */
+.search-box { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.search-field { position: relative; flex: 0 1 30em; min-width: 0; display: flex; }
+.search-field input[type="search"] { flex: 1 1 auto; min-width: 0; width: 100%; border: 1px solid var(--btn-border); border-radius: 8px; background: var(--panel); color: var(--ink); font: inherit; font-size: 14px; padding: 6px 36px 6px 10px; min-height: 36px; }
+.search-field input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+.search-clear { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); width: 32px; height: 32px; border: 0; background: none; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; border-radius: 6px; }
+.search-clear:hover { color: var(--ink); }
+.search-extra { display: block; margin-top: 2px; overflow-wrap: anywhere; }
+mark { background: var(--warn-bg); color: inherit; border-radius: 2px; box-shadow: 0 0 0 1px var(--warn-bg); }
+
 /* sessions table */
 .table-wrap { background: var(--panel); border: 1px solid var(--hair); border-radius: var(--radius); overflow-x: auto; }
 .sessions-table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -276,6 +286,17 @@ select, input[type="password"], input[type="text"] { border: 1px solid var(--btn
 .ana-legend .ana-cell { width: 12px; height: 12px; min-height: 0; aspect-ratio: auto; }
 .ana-bar.is-history { background: var(--track); }
 .ana-axis { display: flex; justify-content: space-between; margin-top: 4px; }
+/* An account's usage and the picker (pwa.md 3.0a): small bars inside Details. */
+.rel-body { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; }
+.rel-body h4 { margin: 10px 0 2px; font-size: .9rem; }
+.rel-bars { position: relative; height: 72px; padding-top: 0; }
+.rel-bars .ana-bar.is-empty { background: var(--track); min-height: 2px; }
+.rel-line { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--muted, #888); pointer-events: none; }
+.rel-initials { display: flex; gap: 2px; padding: 0 10px; }
+.rel-initials span { flex: 1 1 0; text-align: center; min-width: 1px; overflow: hidden; }
+.rel-chart.is-muted .ana-bar { opacity: .45; }
+.rel-state { margin-left: 8px; }
+.rel-model { margin-top: 6px; }
 .ana-list { list-style: none; padding: 0; margin: 0; }
 .ana-row { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-top: 1px solid var(--hair-soft); }
 .ana-row:first-child { border-top: 0; }

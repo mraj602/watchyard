@@ -61,6 +61,27 @@ test('golden: machine_silent', () => {
   );
 });
 
+test('golden: usage notices (push.md 3.9): the hub title, else the trigger in words; the accounts route', () => {
+  const seat = { id: 'st1', label: 'work' };
+  assert.deepEqual(
+    notifyText({ alert: { id: 'u1', trigger: 'usage_reset', seat: 'st1', title: 'work · usage reset' }, seat }),
+    { title: 'work', body: 'usage reset', route: '#/accounts?seat=st1' },
+  );
+  assert.deepEqual(
+    notifyText({ alert: { id: 'u2', trigger: 'weekly_drop', seat: 'st1', title: 'work · 7-day dropped 64% → 31%' }, seat }),
+    { title: 'work', body: '7-day dropped 64% → 31%', route: '#/accounts?seat=st1' },
+  );
+  assert.equal(notifyText({ alert: { id: 'u3', trigger: 'weekly_drop', seat: 'st1' }, seat }).body,
+    'weekly use dropped: something changed, check');
+  assert.equal(notifyText({ alert: { id: 'u4', trigger: 'seat_change', seat: 'st1' }, seat }).body, 'changed account');
+  assert.deepEqual(
+    notifyText({ alert: { id: 'u5', trigger: 'limit_change', title: 'Opus 4.6 limits look higher' } }),
+    { title: 'Usage and limit changes', body: 'Opus 4.6 limits look higher', route: '#/accounts' },
+  );
+  assert.equal(notifyText({ alert: { id: 'u6', trigger: 'limit_change' } }).body, 'limits changed');
+  assert.equal(routeFor({ id: 'u7', trigger: 'seat_change', seat: 's/1' }, null), '#/accounts?seat=s%2F1');
+});
+
 test('title falls back from label to the email local part to Unattributed', () => {
   const t = (s, seat) => notifyText({ alert: { id: 'a', trigger: 'asked' }, session: s, seat }).title;
   assert.equal(t(session({ seat_label: null }), { email: 'alex@example.com' }), 'alex · api');

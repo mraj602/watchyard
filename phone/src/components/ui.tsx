@@ -105,6 +105,8 @@ export function Page({ title, meta, children, toast, back, logo, right }: {
         contentContainerStyle={s.page}
         refreshControl={<RefreshControl refreshing={busy} onRefresh={refresh} />}
         contentInsetAdjustmentBehavior="automatic"
+        // A tap on a chip or a row works while the keyboard is up (the Sessions search).
+        keyboardShouldPersistTaps="handled"
       >
         {back ? <BackButton /> : null}
         {title ? (

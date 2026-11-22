@@ -227,6 +227,10 @@ class FramesTest {
     assertEquals(IconKind.LIMIT, k("alert", "limit_95"))
     assertEquals(IconKind.RESET, k("alert", "reset"))
     assertEquals(IconKind.MACHINE, k("alert", "machine_silent"))
+    for (t in listOf("limit_change", "usage_reset", "seat_change", "weekly_drop")) {
+      assertEquals(IconKind.LIMIT, k("alert", t))
+      assertEquals(Channels.USAGE, Payloads.channelFor("alert", t))
+    }
     assertEquals(IconKind.SUMMARY, k("summary", null))
     assertEquals(IconKind.SUMMARY, k("summary", "asked"))
     assertEquals(IconKind.GENERIC, k("test", null))

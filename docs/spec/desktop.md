@@ -447,6 +447,8 @@ account in a hidden or background start until the window is shown.
   in this view; the app has no peers screen of its own. The desktop token is read-only, so the
   page enables its controls (matrix edits, Pause all peers, resume) only after the owner
   sign-in above; until then it shows the matrix and the audit and says why.
+- Sessions: the Hub view's Sessions page is the board's `#/sessions`, with its search box
+  (pwa.md 3.0b); the app adds no session list or search of its own.
 - `hub:route` loads `<hub>/<route>` (for example `#/sessions/<id>`). Notification clicks and
   tray items use it.
 - Account-tab handoff: a `https://claude.ai/code/session_[A-Za-z0-9]+` link from the board goes
@@ -532,7 +534,12 @@ account in a hidden or background start until the window is shown.
   ("asked a question", "needs permission", "5-hour at 82 %") and, when present, the session's
   question cut to 140 characters (`shared/notify-text.js`, golden tests). Clicking it shows
   the window and runs `hub:route #/sessions/<id>?alert=<al>`, or `#/accounts?seat=<id>` for
-  limit triggers. An alert id is notified once per run. No notification is shown when
+  limit triggers and the usage notices (`#/accounts` for `limit_change`, which has no seat;
+  push.md 3.9). A usage notice's title is the account (the seat label or email), or "Usage and
+  limit changes" when it has none (`limit_change`); its body is the hub's own push title
+  ("7-day dropped 64% → 31%", without the leading account name the title already says)
+  when the alert carries one, else its trigger in words ("usage reset", "changed account",
+  "weekly use dropped: something changed, check", "limits changed"). An alert id is notified once per run. No notification is shown when
   `settings.notifications` is false, or when the window is focused and showing the Hub view
   on that session.
 - There are no Snooze or Seen buttons, because the desktop token has no `push` scope. The

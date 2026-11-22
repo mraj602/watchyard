@@ -67,4 +67,4 @@ export interface RefreshData {
 }
 
 /** Android channels (phone.md P6.1). */
-export type AndroidChannelId = 'wy_needs_you' | 'wy_limits' | 'wy_machines' | 'wy_test';
+export type AndroidChannelId = 'wy_needs_you' | 'wy_limits' | 'wy_machines' | 'wy_usage' | 'wy_test';

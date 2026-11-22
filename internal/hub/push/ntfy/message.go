@@ -136,6 +136,8 @@ func tagsFor(p model.Payload) []string {
 		return []string{"arrows_counterclockwise"}
 	case model.TriggerMachineSilent:
 		return []string{"zzz"}
+	case model.TriggerLimitChange, model.TriggerUsageReset, model.TriggerSeatChange, model.TriggerWeeklyDrop:
+		return []string{"bar_chart"}
 	}
 	return nil
 }

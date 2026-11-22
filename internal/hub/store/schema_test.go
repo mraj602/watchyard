@@ -48,7 +48,7 @@ func TestSpecSchemaApplies(t *testing.T) {
 		"schema_version", "setting", "owner", "account", "org", "seat", "machine", "slot",
 		"slot_login", "web_seat", "device", "hub_secret", "pair_code", "channel", "push_target", "record",
 		"session", "session_state", "hook_event", "token_row", "limit_hit", "history_day",
-		"limit_sample", "web_usage", "usage_window", "rollup_daily", "rule", "alert", "delivery",
+		"limit_sample", "account_lease", "seat_calibration", "web_usage", "usage_window", "rollup_daily", "rule", "alert", "delivery",
 		"session_transition", "pull_target",
 		"owner_key", "device_key", "revocation_doc", "link_state", "link_queue",
 		"matrix_doc", "peer_thread", "peer_message", "peer_audit", "peer_tag",
@@ -142,8 +142,8 @@ func TestSchemaV3Seeds(t *testing.T) {
 	if n := count(`SELECT count(*) FROM channel WHERE kind IN ('webpush', 'ntfy') AND enabled = 1`); n != 2 {
 		t.Errorf("channels seeded: %d, want 2", n)
 	}
-	if n := count(`SELECT count(*) FROM rule WHERE base = 1`); n != 7 {
-		t.Errorf("base rules seeded: %d, want 7", n)
+	if n := count(`SELECT count(*) FROM rule WHERE base = 1`); n != 11 {
+		t.Errorf("base rules seeded: %d, want 11", n)
 	}
 	if n := count(`SELECT enabled FROM rule WHERE id = 'rule_reset'`); n != 0 {
 		t.Errorf("rule_reset must be off by default")
