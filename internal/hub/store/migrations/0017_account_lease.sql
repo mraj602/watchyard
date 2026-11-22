@@ -1,4 +1,4 @@
--- Version 15: account_lease (record.md 4.10, setup.md 8.5): the picks `wy account next`
+-- Version 17: account_lease (record.md 4.10, setup.md 8.5): the picks `wy account next`
 -- recorded, so every machine's picker can count the others' leases.
 
 CREATE TABLE account_lease (

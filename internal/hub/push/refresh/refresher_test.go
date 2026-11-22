@@ -372,3 +372,22 @@ func TestRefresherThroughLinkSender(t *testing.T) {
 		t.Fatalf("%s %v", q.got[0].body, err)
 	}
 }
+
+// A seen alert lowers the needs-you count, so its event starts a refresh; other alert
+// changes do not.
+func TestRefresherSeenEvent(t *testing.T) {
+	h := newRefreshRig(t, nil)
+	h.at(time.Hour)
+	h.broker.Publish(events.Event{Type: "alert", Data: []byte(`{"change":"fired"}`)})
+	h.rf.Sync()
+	h.at(time.Hour + 20*time.Second)
+	h.expect(0)
+	h.exec(`UPDATE session_state SET needs_you = 0 WHERE session_id = 's1'`)
+	h.broker.Publish(events.Event{Type: "alert", Data: []byte(`{"change":"seen"}`)})
+	h.rf.Sync()
+	h.at(time.Hour + 30*time.Second)
+	got := h.expect(1)
+	if got[0].Msg.Payload.NeedsYou != 0 {
+		t.Fatalf("%+v", got[0].Msg.Payload)
+	}
+}

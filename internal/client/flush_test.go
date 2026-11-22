@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -682,5 +683,69 @@ func TestHealth(t *testing.T) {
 	dead := &Client{BaseURL: "http://127.0.0.1:1"}
 	if _, err := dead.Health(context.Background()); err == nil {
 		t.Fatal("want error")
+	}
+}
+
+// A hub that cannot answer a large batch in time gets smaller batches, run after run: the
+// smaller size is kept in the cursor because a run may have time for one attempt only.
+func TestSlowHubGetsSmallerBatches(t *testing.T) {
+	ob := outbox.New(filepath.Join(t.TempDir(), "outbox"))
+	ids := fill(t, ob, 300, "2026-10-12")
+	h := newHub(t)
+	h.script = func(_ int, ids []string) hubMode {
+		if len(ids) > 100 {
+			return modeTimeout
+		}
+		return modeOK
+	}
+	clk := newClock()
+	o := opts(ob, h.client(), clk)
+	o.Force = true
+
+	res := Flush(context.Background(), o)
+	if res.Err == nil {
+		t.Fatal("want a timeout")
+	}
+	if c := ob.ReadCursor(); c.BatchMax != 150 || c.Offset != 0 {
+		t.Fatalf("after one timeout of 300: %+v", c)
+	}
+	for i := 0; i < 10 && !res.Drained; i++ {
+		res = Flush(context.Background(), o)
+	}
+	if !res.Drained {
+		t.Fatalf("never drained: %+v", res)
+	}
+	assertDelivered(t, h, ids)
+	if c := ob.ReadCursor(); c.BatchMax == 0 || c.BatchMax > 300 {
+		t.Fatalf("batch_max after drain: %+v", c)
+	}
+
+	// Once the hub keeps up again the cap grows back and is cleared.
+	h.script = nil
+	fill(t, ob, 3000, "2026-10-13")
+	res = Flush(context.Background(), o)
+	if res.Err != nil || !res.Drained {
+		t.Fatalf("second flush: %+v", res)
+	}
+	if c := ob.ReadCursor(); c.BatchMax != 0 {
+		t.Fatalf("batch_max not cleared: %+v", c)
+	}
+}
+
+func TestTooSlow(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want bool
+	}{
+		{&StatusError{Status: 503, RetryAfter: 5 * time.Second}, true},
+		{&StatusError{Status: 500}, true},
+		{&StatusError{Status: 503, RetryAfter: 300 * time.Second}, false}, // a frozen hub
+		{&StatusError{Status: 429, RetryAfter: 7 * time.Second}, false},
+		{context.DeadlineExceeded, true},
+		{errors.New("connection refused"), false},
+	} {
+		if got := tooSlow(c.err); got != c.want {
+			t.Errorf("tooSlow(%v) = %v, want %v", c.err, got, c.want)
+		}
 	}
 }

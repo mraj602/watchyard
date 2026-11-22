@@ -412,8 +412,11 @@ is no other end: nothing about the episode changes later.
   earlier notification (same tag). Snoozing a `pending` alert simply moves its first push.
 - **Seen** (`POST /v1/alerts/{id}/seen` or action token): allowed in `pending`, `fired`,
   `snoozed`; sets `seen_at`, `seen_by` (device id), status `seen`, drops `due_at`, and marks
-  its not-yet-sent deliveries `skipped` (`seen`). It does not change the session. The Now
-  inbox still lists the session (it still needs you), dimmed, with "seen".
+  its not-yet-sent deliveries `skipped` (`seen`). It does not change the session's state, but
+  the session leaves the Needs-you list, `counts.needs_you` and the badge count (6.5, 13.5)
+  until its state next changes (a new episode, so a new alert; states.md 1). Other session
+  lists still show it, with its real state and the alert brief. The hub's own count (the
+  `needs_you` of a payload, a widget refresh and `GET /v1/overview`) omits such sessions.
 - Snooze and seen on `cancelled`, `closed` or `skipped` alerts: 409 `conflict`, except seen on
   a `skipped` alert whose episode is still open, which is allowed (so the inbox can quiet a
   `rule_off` or `stale` row).
@@ -1259,7 +1262,8 @@ with `delivered_at IS NULL` and `last_error` not `collapsed`, is a miss.
 ### 13.5 Widget refresh
 
 The widgets redraw from `refresh` frames over the link. `refresh.Refresher` (`internal/hub/push/refresh`)
-subscribes to the `events.Broker`, with session and usage changes debounced 10 s. For each
+subscribes to the `events.Broker`, with session and usage changes and `alert` events
+with `change = seen` (which lower the needs-you count) debounced 10 s. For each
 enabled link target whose device has `prefs.widgets = true` and is not revoked, it computes a
 digest: the needs-you count, the `used_pct` of each seat x watched window bucketed to 5 points,
 and the next `resets_at`. When the digest differs from the last one sent to that target, and

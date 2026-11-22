@@ -418,10 +418,12 @@ func (tx *Tx) AlertMachines(ids []string, now int64) ([]AlertMachineRow, error) 
 	return out, rows.Err()
 }
 
-// AlertNeedsYou counts live sessions needing you (the badge count of push.md 6.5).
+// AlertNeedsYou counts live sessions needing you (the badge count of push.md 6.5), leaving
+// out those whose current alert is seen (push.md 4).
 func (tx *Tx) AlertNeedsYou() (int, error) {
 	var n int
-	err := tx.queryRow(`SELECT count(*) FROM session_state WHERE needs_you = 1 AND state NOT IN ('ended', 'gone')`).Scan(&n)
+	err := tx.queryRow(`SELECT count(*) FROM session_state st JOIN session s ON s.id = st.session_id
+		WHERE st.needs_you = 1 AND st.state NOT IN ('ended', 'gone') AND NOT ` + sessionSeenExpr).Scan(&n)
 	return n, err
 }
 

@@ -115,6 +115,24 @@ object TabPolicy {
   /** The first URL a tab loads must be one the tab may show; anything else starts at claude.ai. */
   fun startUrl(url: String?): String = if (route(url) == Route.TAB) url!! else HOME
 
+  // ---- P17.5: microphone, camera and file chooser
+
+  const val AUDIO_CAPTURE = "android.webkit.resource.AUDIO_CAPTURE"
+  const val VIDEO_CAPTURE = "android.webkit.resource.VIDEO_CAPTURE"
+
+  /** Only claude.ai itself and its subdomains (https, default port) may use the mic or camera. */
+  fun mediaOrigin(origin: String?): Boolean = parse(origin)?.let(::claudeHost) != null
+
+  /** The resources of a page's permission request to grant: audio and video capture from a claude.ai origin; nothing else. */
+  fun grantable(origin: String?, resources: List<String>): List<String> =
+    if (!mediaOrigin(origin)) emptyList() else resources.filter { it == AUDIO_CAPTURE || it == VIDEO_CAPTURE }.distinct()
+
+  private val IMAGE_EXT = Regex("\\.(png|jpe?g|gif|webp|heic|heif)$", RegexOption.IGNORE_CASE)
+
+  /** Whether a file chooser's accept types include images, so a camera photo is offered next to the files. */
+  fun acceptsImages(types: List<String>): Boolean =
+    types.any { val t = it.trim(); t.startsWith("image/", ignoreCase = true) || t == "*/*" || IMAGE_EXT.containsMatchIn(t) }
+
   // ---- P17.7: which account the tab is signed in to
 
   /** claude.ai paths where a tab is not signed in (desktop.md C5, NOT_READABLE_PATHS). */

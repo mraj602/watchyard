@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- phone.md P17.5: the only folder the camera option of a tab's file chooser writes to. -->
+<paths>
+  <cache-path name="wy_tabs_camera" path="wy-tabs-camera/"/>
+</paths>

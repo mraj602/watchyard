@@ -19,14 +19,17 @@ import (
 	peerspkg "github.com/mraj602/watchyard/internal/peers"
 )
 
-const peersUsage = `usage: wy peers list [--all] [--json]
+const peersUsage = `usage: wy peers list [--all] [--json] [--tag <tag>]
        wy peers send <to> <text> [--ttl 1h] [--wait 10] [--stdin]
+       wy peers send tag:<tag> [--one] [--same-host] --stdin
+       wy peers tag add|rm <tag>
+       wy peers tags
        wy peers off | on
        wy peers enable | disable | status | audit
        wy peers matrix | allow | deny | same-account | max-turns | pause | resume
 
 Message Claude Code sessions in other accounts through Watchyard (docs/spec/peers.md).
-send and list work inside a Claude Code session (list --all also at a terminal).
+send, list and the tag commands work inside a Claude Code session (list --all also at a terminal).
 `
 
 // peersEnv builds the environment of one `wy peers` run. A variable so tests can give a
@@ -91,6 +94,14 @@ func runPeers(args []string, stdout, stderr io.Writer) error {
 		return peersSend(rest, os.Stdin, stdout, stderr)
 	case "off", "on":
 		return peersOffOn(sub == "off", rest, stdout, stderr)
+	case "tag":
+		if len(rest) == 0 {
+			fmt.Fprint(stderr, peersTagUsage)
+			return errUsage
+		}
+		return peersTagCmd(rest[0], rest[1:], stdout, stderr)
+	case "tags":
+		return peersTagCmd(peerspkg.TagList, rest, stdout, stderr)
 	}
 	if handled, err := peersMatrixCmd(sub, rest, stdout, stderr); handled {
 		return err
@@ -104,8 +115,15 @@ func peersList(args []string, stdout, stderr io.Writer) error {
 	fs.SetOutput(stderr)
 	all := fs.Bool("all", false, "show every session, with what the matrix allows")
 	asJSON := fs.Bool("json", false, "print JSON")
+	tag := fs.String("tag", "", "only sessions that hold this tag")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
+	}
+	if *tag != "" {
+		if rf := peerspkg.CheckTag(*tag); rf != nil {
+			fmt.Fprintf(stderr, "wy peers list: %s\n", rf.Detail)
+			return errUsage
+		}
 	}
 	if fs.NArg() > 0 {
 		fmt.Fprintf(stderr, "wy peers list: unexpected argument %q\n", fs.Arg(0))
@@ -126,6 +144,9 @@ func peersList(args []string, stdout, stderr io.Writer) error {
 		return peersExit(peerspkg.ExitCode(rf.Code), rf)
 	}
 	e := pe.Env
+	if *tag != "" {
+		entries = filterTag(entries, *tag)
+	}
 	if *asJSON {
 		if entries == nil {
 			entries = []peerspkg.ListEntry{}
@@ -134,6 +155,10 @@ func peersList(args []string, stdout, stderr io.Writer) error {
 		enc.SetIndent("", "  ")
 		enc.SetEscapeHTML(false)
 		return enc.Encode(entries)
+	}
+	if len(entries) == 0 && *tag != "" {
+		fmt.Fprintf(stdout, "No session you may message holds tag %s.\n", *tag)
+		return nil
 	}
 	if len(entries) == 0 {
 		if asked && !*all {
@@ -154,7 +179,15 @@ func peersList(args []string, stdout, stderr io.Writer) error {
 // cannot be reached now) says why, and a closing line says what the owner does about it.
 func printPeerList(stdout io.Writer, entries []peerspkg.ListEntry) error {
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "HANDLE\tACCOUNT\tPROJECT\tSTATE\tCAN")
+	tagged := false
+	for _, le := range entries {
+		tagged = tagged || len(le.Tags) > 0
+	}
+	if tagged {
+		fmt.Fprintln(tw, "HANDLE\tACCOUNT\tPROJECT\tSTATE\tCAN\tTAGS")
+	} else {
+		fmt.Fprintln(tw, "HANDLE\tACCOUNT\tPROJECT\tSTATE\tCAN")
+	}
 	certs := false
 	for _, le := range entries {
 		can := le.Can
@@ -166,6 +199,14 @@ func printPeerList(stdout io.Writer, entries []peerspkg.ListEntry) error {
 			can += " (may ask for approval)"
 		}
 		// Local entries carry the full folder, remote ones its base name: show the base name for both.
+		if tagged {
+			tags := strings.Join(le.Tags, ",")
+			if tags == "" {
+				tags = "-"
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", le.Handle, le.AccountLabel, baseName(le.Project), le.State, can, tags)
+			continue
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", le.Handle, le.AccountLabel, baseName(le.Project), le.State, can)
 	}
 	if err := tw.Flush(); err != nil {
@@ -185,6 +226,8 @@ func peersSend(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	ttl := fs.Duration("ttl", time.Hour, "how long a queued message may wait (1m-24h; used for other machines)")
 	wait := fs.Int("wait", 10, "seconds to wait for a final status (0-60; same-machine sends are final at once)")
 	useStdin := fs.Bool("stdin", false, "read the text from standard input")
+	one := fs.Bool("one", false, "tag address only: deliver to exactly one holder (idle or done first)")
+	sameHost := fs.Bool("same-host", false, "tag address only: only holders on this machine under this OS user")
 	pos, err := parsePeersFlags(fs, args)
 	if err != nil {
 		return err
@@ -202,6 +245,15 @@ func peersSend(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return errUsage
 	}
 	to := pos[0]
+	tag, isTag, bad := peerspkg.ParseTagAddress(to)
+	if bad != nil {
+		fmt.Fprintf(stderr, "wy peers send: %s\n", bad.Detail)
+		return errUsage
+	}
+	if !isTag && (*one || *sameHost) {
+		fmt.Fprintln(stderr, "wy peers send: --one and --same-host go with a tag address (tag:<tag>)")
+		return errUsage
+	}
 	var text string
 	if *useStdin {
 		// Read one byte past the cap: text cut at the cap could end inside a UTF-8 character
@@ -231,6 +283,9 @@ func peersSend(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	caller, rf := pe.Env.Whoami()
 	if rf != nil {
 		return peersExit(peerspkg.ExitCode(rf.Code), errors.New(rf.Detail))
+	}
+	if isTag {
+		return peersSendTag(pe, caller, tag, text, *one, *sameHost, *ttl, *wait, stdout)
 	}
 	res, rf, err := peersDeliver(pe, caller, to, text, *ttl, *wait)
 	if err != nil {

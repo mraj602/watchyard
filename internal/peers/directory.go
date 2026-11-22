@@ -31,6 +31,8 @@ type Session struct {
 	// Blocked is why messages to this remote session cannot go now although the matrix may
 	// allow them (Reachability: certificates; "" when they can).
 	Blocked string
+	// Tags are the session's tags at the hub (peers.md 3.4), sorted; none without a hub.
+	Tags []string
 }
 
 // ListEntry is one line of `wy peers list --json` (peers.md 3.2).
@@ -55,6 +57,10 @@ type ListEntry struct {
 	// says the matrix allows it (link keys not owner-certified, a revoked machine; peers.md
 	// 3.2). A send to it is refused with the same reason and the fix.
 	Blocked string `json:"blocked,omitempty"`
+	// Tags are the session's tags (peers.md 3.4), omitted when none.
+	Tags []string `json:"tags,omitempty"`
+	// SameHost: the session runs on this machine under this OS user (what --same-host keeps).
+	SameHost bool `json:"same_host,omitempty"`
 }
 
 // AccountLabel is the label shown for an account on this machine: the slots.labels entry for
@@ -140,6 +146,9 @@ func (e Env) nameLocal(out []Session) {
 	taken := map[string]bool{}
 	for i := range out {
 		n, ok := names[out[i].Entry.SessionID]
+		if ok && n.Mine {
+			out[i].Tags = NormTags(n.Tags)
+		}
 		if !ok || !n.Mine || n.Handle == "" || taken[strings.ToLower(n.Handle)] {
 			continue
 		}
@@ -253,7 +262,7 @@ func (e Env) Entries(dir []Session, from *Session, all bool) []ListEntry {
 			Session: s.Entry.SessionID, Handle: s.Handle, Aliases: s.Aliases, Name: s.Name, Account: s.Account,
 			AccountLabel: s.AccountLabel, Machine: s.MachineName, Project: s.Project,
 			State: s.Entry.Status, Local: !s.Remote && from != nil && from.Account != "" && from.Account == s.Account,
-			Can: "none",
+			Can: "none", Tags: NormTags(s.Tags), SameHost: !s.Remote,
 		}
 		if s.Remote {
 			le.State, le.Blocked = s.State, s.Blocked

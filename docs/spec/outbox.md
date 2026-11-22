@@ -111,7 +111,7 @@ cursor: a spill file is deleted as soon as its one record is answered.
 
 Flush loop:
 
-1. Read records from the cursor onward, up to **500 records or 4 MiB**, whichever first, plus
+1. Read records from the cursor onward, up to **500 records (or `batch_max`, step 4) or 4 MiB**, whichever first, plus
    any spill files.
 2. `POST /v1/ingest` with the batch (gzip when over 1 KiB).
 3. On `200`: the reply lists every id as accepted or rejected. Append the rejected ones with
@@ -122,6 +122,13 @@ Flush loop:
 4. On a network error, `429`, or `5xx`: stop, keep the cursor, and retry on the next trigger
    with backoff (1 s, 2 s, 4 s … up to 5 min, reset after a success). The backoff state is
    kept in `cursor.json` (`retry_after`, `failures`).
+   When the failure says the hub could not answer the batch in time (a timeout, or a `5xx`
+   whose `Retry-After` is under a minute, so not a frozen hub) and the batch had several
+   records, the batch limit is halved and kept in `cursor.json` as `batch_max`: one attempt
+   can use a whole run's budget, so the smaller size must outlive the run. Each accepted
+   batch raises `batch_max` by a quarter (at least 1); it is removed once it reaches the
+   500-record limit again. Without this, a hub that takes longer than the client timeout
+   for one full batch (a slow host, a large backlog) never receives anything again.
 5. On `401`/`403`: stop and record the error for `wy doctor` ("token rejected"). Do not
    retry until the token changes or `wy flush` is run by hand.
 6. On `400`/`413` for a batch of several records, halve the batch and retry, down to one

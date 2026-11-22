@@ -1,5 +1,5 @@
 // Alert status text (webui components/alerts.js) and the rule groups of the Alerts screen.
-import type { AlertBrief } from '../../contract/api';
+import type { Alert, AlertBrief } from '../../contract/api';
 import { clock } from './core';
 
 const REASONS: Record<string, string> = {
@@ -57,4 +57,16 @@ export function delayText(s: number | null | undefined): string {
   if (s < 60) return `${s} s`;
   if (s < 3600) return `${Math.round(s / 60)} min`;
   return `${Math.round(s / 3600)} h`;
+}
+
+const RECENT_MS = 48 * 3600_000;
+const OPEN_STATUS = ['pending', 'fired', 'snoozed'];
+
+/** Recent pushes: every open alert, plus history fired (else created) in the last 48 hours. */
+export function recentAlerts(list: Alert[], now: number): Alert[] {
+  return list.filter((a) => {
+    if (OPEN_STATUS.includes(a.status)) return true;
+    const t = Date.parse(a.fired_at || a.created_at || '');
+    return Number.isNaN(t) || now - t <= RECENT_MS;
+  });
 }

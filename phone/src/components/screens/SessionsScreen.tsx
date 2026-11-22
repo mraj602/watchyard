@@ -14,7 +14,7 @@ import { useTheme } from '../theme';
 import { Calm, Card, Chip, Dot, Muted, Page, StateTag } from '../ui';
 
 const FILTERS: { id: SessionFilter; label: string; test: (s: Session, now: number) => boolean }[] = [
-  { id: 'needs_you', label: 'Needs you', test: (s) => s.needs_you },
+  { id: 'needs_you', label: 'Needs you', test: (s) => s.needs_you && s.alert?.status !== 'seen' },
   { id: 'working', label: 'Working', test: (s) => s.state === 'working' },
   { id: 'done', label: 'Done', test: (s) => s.state === 'done' },
   { id: 'all', label: 'All', test: (s, now) => isLive(s, now) },

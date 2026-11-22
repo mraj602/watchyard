@@ -1,4 +1,4 @@
--- Version 16: seat_calibration (setup.md 8.5, Calibration): per seat, the lanes strategy's
+-- Version 18: seat_calibration (setup.md 8.5, Calibration): per seat, the lanes strategy's
 -- calibration state and factors, kept up to date by `wy hub serve` and returned by
 -- GET /v1/usage.
 

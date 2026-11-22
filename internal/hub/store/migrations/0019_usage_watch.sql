@@ -1,4 +1,4 @@
--- Version 17: seat_watch and seat_verdict (setup.md 8.5, Usage relation; record.md 4.11) and
+-- Version 19: seat_watch and seat_verdict (setup.md 8.5, Usage relation; record.md 4.11) and
 -- the base rules of the usage notices (push.md 3.9).
 
 -- One row per seat: what the calibration job watches for usage notices (push.md 3.9) and the

@@ -1,4 +1,4 @@
--- Watchyard hub schema, version 17.
+-- Watchyard hub schema, version 19.
 --
 -- One SQLite file (WAL mode). Applied by the hub at start inside one transaction
 -- after `PRAGMA foreign_keys = ON`. Later versions add numbered migrations
@@ -22,9 +22,12 @@
 --   v12 indexes: alert_seat, alert_machine, delivery_target.
 --   v13 session_state.peers (states.md 3.1, push.md 3.5).
 --   v14 device_accounts (keys.md 4.3, peers.md 5.3).
---   v15 account_lease (record.md 4.10, setup.md 8.5).
---   v16 seat_calibration (setup.md 8.5, Calibration).
---   v17 seat_watch, seat_verdict and the usage-notice base rules (setup.md 8.5, Usage relation;
+--   v15 indexes: record_machine_kind_slot_ts, token_row_session_ts, limit_sample_reset,
+--       limit_sample_idle (the hub's hot reads).
+--   v16 peer_tag (peers.md 3.4).
+--   v17 account_lease (record.md 4.10, setup.md 8.5).
+--   v18 seat_calibration (setup.md 8.5, Calibration).
+--   v19 seat_watch, seat_verdict and the usage-notice base rules (setup.md 8.5, Usage relation;
 --       push.md 3.9; record.md 4.11).
 --
 -- Conventions
@@ -50,7 +53,7 @@ CREATE TABLE schema_version (
 ) STRICT;
 
 INSERT INTO schema_version (version, applied_at, wy_version)
-VALUES (17, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
+VALUES (19, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
 
 -- Hub-wide settings that are not secrets (retention days, last-message policy, …).
 CREATE TABLE setting (
@@ -274,6 +277,7 @@ CREATE TABLE record (
 ) STRICT;
 CREATE INDEX record_kind_ts ON record(kind, ts);
 CREATE INDEX record_machine_ts ON record(machine_id, ts);
+CREATE INDEX record_machine_kind_slot_ts ON record(machine_id, kind, slot, ts);  -- a refold's session_list records (v15)
 CREATE INDEX record_untyped ON record(received_at) WHERE typed = 0;
 
 -- One Claude Code conversation.
@@ -366,6 +370,7 @@ CREATE TABLE token_row (
 ) STRICT;
 CREATE INDEX token_row_ts ON token_row(ts);
 CREATE INDEX token_row_session ON token_row(session_id);
+CREATE INDEX token_row_session_ts ON token_row(session_id, ts);                  -- LastTokenRowAt (v15)
 CREATE INDEX token_row_seat_ts ON token_row(seat_id, ts);
 
 -- "You've hit your limit" replies found in transcripts.
@@ -410,6 +415,10 @@ CREATE TABLE limit_sample (
   PRIMARY KEY (seat_id, window_key, ts, source)
 ) STRICT;
 CREATE INDEX limit_sample_ts ON limit_sample(ts);
+CREATE INDEX limit_sample_reset ON limit_sample(seat_id, window_key, resets_at); -- a window's sources (v15)
+-- the newest idle reading (v15):
+CREATE INDEX limit_sample_idle ON limit_sample(seat_id, window_key, ts)
+  WHERE source = 'web' AND resets_at IS NULL AND used_pct = 0;
 
 -- One row per pick `wy account next` recorded on some machine (record.md 4.10). Other
 -- machines' pickers read the recent ones through GET /v1/usage (setup.md 8.5). `wy hub prune`
@@ -533,7 +542,7 @@ INSERT INTO rule (id, trigger, base, enabled, delay_s, bypass_quiet, scope, upda
   ('rule_limit_95',         'limit_95',         1, 1,    0, 0, '{"windows":["five_hour","seven_day"]}', 0),
   ('rule_reset',            'reset',            1, 0,    0, 0, '{"windows":["five_hour","seven_day"]}', 0),
   ('rule_machine_silent',   'machine_silent',   1, 1, 3600, 0, '{}', 0);
--- v17: the usage notices (push.md 3.9).
+-- v19: the usage notices (push.md 3.9).
 INSERT INTO rule (id, trigger, base, enabled, delay_s, bypass_quiet, scope, updated_at) VALUES
   ('rule_limit_change',     'limit_change',     1, 1,    0, 0, '{}', 0),
   ('rule_usage_reset',      'usage_reset',      1, 1,    0, 0, '{}', 0),
@@ -777,3 +786,14 @@ CREATE TABLE peer_audit (
   detail        TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(detail))
 ) STRICT;
 CREATE INDEX peer_audit_at ON peer_audit(at);
+
+-- The tags a session gave itself (peers.md 3.4), held per session so every machine's directory
+-- shows them. Cleared when the session ends or goes away (its state becomes ended or gone).
+CREATE TABLE peer_tag (
+  session_id    TEXT    NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+  tag           TEXT    NOT NULL CHECK (length(tag) BETWEEN 1 AND 40 AND tag NOT GLOB '*[^a-z0-9-]*'),
+  device_id     TEXT    NOT NULL,                  -- the agent device that set it
+  created_at    INTEGER NOT NULL,
+  PRIMARY KEY (session_id, tag)
+) STRICT;
+CREATE INDEX peer_tag_tag ON peer_tag(tag);

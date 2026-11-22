@@ -26,14 +26,14 @@ All notable changes to Watchyard are recorded here. The format follows
 - Hub: `GET /v1/usage`, readable with a machine token: each seat's limit percentages, reset
   times and recent samples, other machines' recent leases (no session ids), plus the calling
   machine's own folders, and nothing else. `wy account next` reads it, so upgrade the hub
-  before the machines. Schema version 15 adds `account_lease`.
+  before the machines. Schema version 17 adds `account_lease`.
 - `wy account next` (`lanes`) calibrates each account: its meter factor (5-hour points per
   million token units), its 5-hour-to-weekly ratio and its lane price adjust themselves to
   its measured use after about 3 days and 20 measurements, restart after a run of one-sided
   misses or a change of login, and a margin covers the meter's recent under-reading. The
   hub does the work every 15 minutes and returns the factors in `GET /v1/usage`; without a
   hub the account is fitted from this machine's data. `--json` and `--explain` show the
-  factors. Schema version 16 adds `seat_calibration`.
+  factors. Schema version 18 adds `seat_calibration`.
 - `wy account next` (`lanes`) counts each lane once, whichever machine picked or runs it:
   `GET /v1/usage` returns each lease's session use per minute for its first 5 hours (with a
   hash of the session id, never the id) and the calling machine's own recent leases, and a
@@ -55,7 +55,7 @@ All notable changes to Watchyard are recorded here. The format follows
   server or owner reset put both windows back to about 0 %; the reset is kept out of
   calibration), `seat_change` (a folder logged in to another account or org) and
   `weekly_drop` (the 7-day window fell more than 10 points without a reset: something
-  changed, check). Each expires 24 hours after it fires. Schema version 17 adds `seat_watch`,
+  changed, check). Each expires 24 hours after it fires. Schema version 19 adds `seat_watch`,
   `seat_verdict` and their rules.
 - A search box on the Sessions screen of the board (and so of the desktop app's Hub view) and
   of the Android app: it matches folders, titles, names and the last message, ignores case and

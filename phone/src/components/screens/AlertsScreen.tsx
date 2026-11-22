@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { Pressable, Switch, Text, View } from 'react-native';
 import type { Alert, Rule } from '../../contract/api';
-import { OUTCOME, RULE_GROUPS, clock, delayText, reasonText } from '../../lib/format';
+import { OUTCOME, RULE_GROUPS, clock, delayText, reasonText, recentAlerts } from '../../lib/format';
 import { useHubApi } from '../hub-api';
 import { go } from '../nav';
 import { switchColors, useTheme } from '../theme';
@@ -32,7 +32,7 @@ export default function AlertsScreen() {
   useEffect(() => {
     if (!client) return;
     let live = true;
-    client.alerts({ limit: 20 }).then((r) => live && setAlerts(r.alerts), () => live && setAlerts(api.data.alerts));
+    client.alerts({ limit: 50 }).then((r) => live && setAlerts(r.alerts), () => live && setAlerts(api.data.alerts));
     return () => {
       live = false;
     };
@@ -42,7 +42,8 @@ export default function AlertsScreen() {
 
   const mute: string[] = (self?.prefs?.mute as string[] | undefined) ?? [];
   const offline = api.data.offline;
-  const list = alerts ?? (api.data.alerts.length ? api.data.alerts : null);
+  const all = alerts ?? (api.data.alerts.length ? api.data.alerts : null);
+  const list = all ? recentAlerts(all, api.now) : null;
 
   return (
     <Page back title="Alerts" meta="Switches choose what this phone gets; the hub sets the delays." toast={toast.node}>
