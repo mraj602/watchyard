@@ -234,6 +234,17 @@ func accountNext(e nextEnv, args []string) error {
 				warns = append(warns, "calibration copy: "+err.Error())
 			}
 		}
+		// Other machines' leases: kept after a /v1/usage read, used when the hub could not be
+		// read (setup.md 8.5, Leases and the ledger).
+		hlPath := filepath.Join(e.dirs.State.Path, "next", "hub_leases.json")
+		switch {
+		case src.Hub != nil && src.Hub.Leases != nil && !*noReserve:
+			if err := picker.SaveHubLeases(hlPath, in.Candidates, now); err != nil {
+				warns = append(warns, "hub leases copy: "+err.Error())
+			}
+		case src.Hub == nil && !*noHub:
+			picker.UseHubLeases(in.Candidates, picker.LoadHubLeases(hlPath, now))
+		}
 	}
 	ledger := leases.Ledger{Dir: filepath.Join(e.dirs.State.Path, "next")}
 	var res picker.Result

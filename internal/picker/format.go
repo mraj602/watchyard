@@ -235,6 +235,16 @@ func explainLanes(w io.Writer, res Result) error {
 		seen[r.key] = true
 		fmt.Fprintln(w, calibLine(r.Label, *r.Lanes.Calibration))
 	}
+	shown := map[string]bool{}
+	for _, r := range res.Ranked {
+		if r.Lanes == nil || shown[r.key] {
+			continue
+		}
+		shown[r.key] = true
+		for _, lc := range r.Lanes.LeaseCharges {
+			fmt.Fprintln(w, leaseLine(r.Label, lc))
+		}
+	}
 	for _, p := range res.Picks {
 		fmt.Fprintln(w, "Pick: "+Line(p.Ranked))
 	}
@@ -272,6 +282,42 @@ func calibLine(label string, c CalibView) string {
 	}
 	if c.UnexplainedPctPerHour != nil {
 		s += fmt.Sprintf("; claude.ai-only %.1f%%/h over %.1f h", *c.UnexplainedPctPerHour, c.UnexplainedHours)
+	}
+	return s
+}
+
+// leaseLine is the --explain line of one lease: "Lease claude-3 10:42 (other machine):
+// active; burned 1.20M units from hub = 1.7 points; charge 5h 6.3, reserve 6.3".
+func leaseLine(label string, lc LeaseChargeView) string {
+	who := "this machine"
+	if lc.Machine == "other" {
+		who = "other machine"
+		if lc.Copy {
+			who += ", kept copy"
+		}
+	} else if lc.SessionID != "" {
+		who += ", session " + lc.SessionID
+	}
+	state := lc.State
+	switch {
+	case lc.State == LeaseSettled:
+		state += " (a reading 10 minutes after the pick holds its use; nothing measures its session)"
+	case !lc.Launched:
+		state += ", not launched yet"
+	}
+	s := fmt.Sprintf("Lease %s %s (%s): %s; burned ", label, lc.At.Local().Format("Jan 2 15:04"), who, state)
+	if lc.BurnedFrom == burnNone {
+		s += "none (no source)"
+	} else {
+		s += fmt.Sprintf("%.2fM units from %s = %.1f points", lc.BurnedUnits/1e6, lc.BurnedFrom, lc.BurnedPct)
+	}
+	switch {
+	case lc.State == LeaseActive:
+		s += fmt.Sprintf("; charge 5h %.1f, reserve %.1f", lc.Charge5hPct, lc.ReservePct)
+	case lc.WeeklyKeptPct > 0:
+		s += fmt.Sprintf("; no 5h charge, weekly kept %.2f", lc.WeeklyKeptPct)
+	default:
+		s += "; no charge"
 	}
 	return s
 }

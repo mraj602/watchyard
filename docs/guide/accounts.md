@@ -72,6 +72,12 @@ Give each session the id you will start it with (`--session-id`, a UUID; `--exec
 stops counting after 10 minutes. `--no-reserve` asks without recording anything, and
 `--urgent` may go past an account's hourly cap (never past a limit) when nothing else is free.
 
+Sessions picked on another machine count too, once: through the hub, each machine sees how
+much every recent lease's session has used, so a lease counts only for what its session has
+not used yet, and what it has used is counted in the readings or the token meter. With the hub
+down, the leases from the last hub read are used until a new reading of that account shows
+them. `--explain` lists each lease with where its use was measured.
+
 The default strategy, `lanes`, treats each account as **aggressive** (use its room up to 98 %)
 or **protected** (kept for you: new sessions only while its week is behind an even pace plus
 10 points, under 85 %, and its 5 hours under 45 %; nothing ever falls back onto it). Accounts

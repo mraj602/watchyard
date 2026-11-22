@@ -59,8 +59,9 @@ type HubSample struct {
 	ResetsAt *time.Time `json:"resets_at"`
 }
 
-// HubLease is api.yaml UsageLease: another machine's lease of a seat.
+// HubLease is api.yaml UsageLease: a lease of a seat as the hub has it.
 type HubLease struct {
+	ID          string    `json:"id"`
 	At          time.Time `json:"at"`
 	Kind        string    `json:"kind"`
 	C5          float64   `json:"c5"`
@@ -71,6 +72,11 @@ type HubLease struct {
 	Ended       bool      `json:"ended"`
 	BurnedUnits float64   `json:"burned_units"`
 	Seen        bool      `json:"seen"`
+	// SessionHash is the SHA-256 (hex) of the lease's session id ("": none, or an older hub).
+	SessionHash string `json:"session_hash,omitempty"`
+	// Burn is the session's units per minute while the lease is live: [seconds after the
+	// pick, units]. Nil: not measured (not live, an older hub, or the kept copy).
+	Burn *[][2]float64 `json:"burn,omitempty"`
 }
 
 // HubData is what the picker reads from the hub.
@@ -80,6 +86,9 @@ type HubData struct {
 	Samples map[string][]HubSample
 	// Leases per seat id: other machines' leases (only from /v1/usage).
 	Leases map[string][]HubLease
+	// OwnLeases per seat id: this machine's leases of the last 5 hours as the hub measured
+	// them (only from /v1/usage, by a hub that has them).
+	OwnLeases map[string][]HubLease
 	// Calib per seat id: the hub's calibration factors (only from /v1/usage; a seat the hub
 	// has not calibrated yet has none).
 	Calib map[string]calib.Factors
@@ -154,6 +163,7 @@ func (h HubClient) FetchUsage(ctx context.Context, now time.Time) (HubData, erro
 			Windows      []HubWindow     `json:"windows"`
 			Samples      []HubSample     `json:"samples"`
 			Leases       []HubLease      `json:"leases"`
+			OwnLeases    []HubLease      `json:"own_leases"`
 			Calibration  json.RawMessage `json:"calibration"`
 			LiveSessions int             `json:"live_sessions"`
 			Places       []struct {
@@ -173,7 +183,8 @@ func (h HubClient) FetchUsage(ctx context.Context, now time.Time) (HubData, erro
 	if doc.Machine != nil {
 		machine = *doc.Machine
 	}
-	d := HubData{Samples: map[string][]HubSample{}, Leases: map[string][]HubLease{}, Calib: map[string]calib.Factors{}}
+	d := HubData{Samples: map[string][]HubSample{}, Leases: map[string][]HubLease{}, OwnLeases: map[string][]HubLease{},
+		Calib: map[string]calib.Factors{}}
 	for _, x := range doc.Seats {
 		s := HubSeat{ID: x.ID, Account: x.Account, Org: x.Org, Label: x.Label, Windows: x.Windows, LiveSessions: x.LiveSessions}
 		for _, p := range x.Places {
@@ -193,6 +204,7 @@ func (h HubClient) FetchUsage(ctx context.Context, now time.Time) (HubData, erro
 		d.Seats = append(d.Seats, s)
 		d.Samples[x.ID] = x.Samples
 		d.Leases[x.ID] = x.Leases
+		d.OwnLeases[x.ID] = x.OwnLeases
 		var f *calib.Factors
 		if len(x.Calibration) > 0 && json.Unmarshal(x.Calibration, &f) == nil && f != nil && !f.At.IsZero() {
 			d.Calib[x.ID] = *f

@@ -143,6 +143,39 @@ type LaneLease struct {
 	Ended    bool    // its session ended
 	Burned   float64 // weighted units its session used since T0
 	Seen     bool    // the meter saw its session
+	// Remote: another machine's lease. Settle: nothing measures its session (no hub burn and
+	// no local session), so a reading at least Settle after T0 ends it: that reading holds
+	// the lane's use so far (setup.md 8.5, effective state 3).
+	Remote, Settle bool
+	// Shown only (--json, --explain): where Burned came from ("local", "hub", "none") and
+	// whether the lease came from the kept copy of the last hub read.
+	From string
+	Copy bool
+}
+
+// Lease states in LeaseCharge.
+const (
+	LeaseActive  = "active"
+	LeaseSettled = "settled"
+	LeaseEnded   = "ended"
+	LeaseExpired = "expired"
+)
+
+// LeaseCharge is what one lease adds to its account (LaneRow.LeaseCharges): b, the 5-hour
+// charge and the reserve while active, and the weekly charge kept after it, in points.
+type LeaseCharge struct {
+	T0         time.Time
+	SID        string
+	Remote     bool
+	Copy       bool
+	Launched   bool
+	State      string
+	From       string
+	Burned     float64 // units
+	B          float64 // f × burned
+	Charge5    float64
+	Reserve    float64
+	WeeklyKept float64
 }
 
 // LaneInput is one call of the lanes ranker.
@@ -187,6 +220,9 @@ type LaneRow struct {
 	Expiring     bool
 	Forced       bool
 	ETA          *time.Time
+	// LeaseCharges are the account's leases younger than the lease life and older ones that
+	// keep a weekly charge, in lease order.
+	LeaseCharges []LeaseCharge
 }
 
 // LanePick is one placed pick.
@@ -305,6 +341,7 @@ type laneState struct {
 	lastLease       time.Time
 	hasLease        bool
 	fiveRst         time.Time
+	charges         []LeaseCharge
 }
 
 func laneLive(acc LaneAccount, c cleanSample, now time.Time, p LaneParams, leases []LaneLease) laneState {
@@ -353,18 +390,39 @@ func laneLive(acc LaneAccount, c cleanSample, now time.Time, p LaneParams, lease
 		if L.CF != nil {
 			cf = math.Max(0, *L.CF)
 		}
-		if age < p.LeaseTTL && !L.Ended {
-			add5 += math.Max(0, c5-b)
-			reserve += math.Max(0, cf-b)
+		lc := LeaseCharge{T0: L.T0, SID: L.SID, Remote: L.Remote, Copy: L.Copy, Launched: L.Launched, From: L.From,
+			Burned: math.Max(0, L.Burned), B: b}
+		if lc.From == "" {
+			lc.From = "none"
+		}
+		settled := L.Settle && !c.noTS && !c.ts.Before(L.T0.Add(p.Settle))
+		switch {
+		case L.Ended:
+			lc.State = LeaseEnded
+		case age >= p.LeaseTTL:
+			lc.State = LeaseExpired
+		case settled:
+			lc.State = LeaseSettled
+		default:
+			lc.State = LeaseActive
+		}
+		if lc.State == LeaseActive {
+			lc.Charge5, lc.Reserve = math.Max(0, c5-b), math.Max(0, cf-b)
+			add5 += lc.Charge5
+			reserve += lc.Reserve
 			st.leaseN++
 		} else if !L.Seen {
 			// Never seen by the meter: keep its weekly charge until a newer reading or a
-			// weekly reset.
+			// weekly reset (a settled lease has that reading).
 			wr := c.weeklyRst
 			resetSince := !wr.IsZero() && L.T0.Before(wr) && !wr.After(now)
 			if c.ts.Before(L.T0.Add(p.Settle)) && !resetSince {
-				keepw += math.Max(0, c5-b) / ratio
+				lc.WeeklyKept = math.Max(0, c5-b) / ratio
+				keepw += lc.WeeklyKept
 			}
+		}
+		if age < p.LeaseTTL || lc.WeeklyKept > 0 {
+			st.charges = append(st.charges, lc)
 		}
 	}
 	h2 := h + add5
@@ -606,7 +664,8 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 			row := LaneRow{Key: acc.Key, Protected: prot, Score: sc, Skip: skip, Reason: why, Weekly: v.w, FiveHour: v.h,
 				Reserve: v.wRes, HoursToReset: v.hrs, Leases: v.leaseN, Burst: v.capN, BurstCap: cp, Capped: capped,
 				Added5: v.add5, Meter5: v.m5, Meter7: v.m7, Margin5: v.g5, Margin7: v.g7, SampleAgeMin: v.ageMin, FiveReset: v.fiveRst,
-				Stale: v.stale, Unknown: v.unknown, SkipLevel: level, Last: last, Expiring: expiring && !skip}
+				Stale: v.stale, Unknown: v.unknown, SkipLevel: level, Last: last, Expiring: expiring && !skip,
+				LeaseCharges: v.charges}
 			if !v.noTS {
 				row.SampleAt = v.ts
 			}

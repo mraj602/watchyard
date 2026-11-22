@@ -49,6 +49,7 @@ func Candidates(slots []Slot, src Sources) []Candidate {
 				}
 				c.Windows = hubWindows(*seat, src.Hub.Samples[seat.ID])
 				c.RemoteLeases = src.Hub.Leases[seat.ID]
+				c.OwnLeases = src.Hub.OwnLeases[seat.ID]
 				if f, ok := src.Hub.Calib[seat.ID]; ok {
 					c.Calib = &f
 				}

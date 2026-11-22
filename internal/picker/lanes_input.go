@@ -53,6 +53,24 @@ type LaneView struct {
 	Unknown          []string   `json:"unknown"`
 	SkipLevel        int        `json:"skip_level"`
 	Calibration      *CalibView `json:"calibration"`
+	// LeaseCharges are the account's recent leases and what each adds (setup.md 8.5).
+	LeaseCharges []LeaseChargeView `json:"lease_charges"`
+}
+
+// LeaseChargeView is one item of LaneView.LeaseCharges (`--json`).
+type LeaseChargeView struct {
+	At            time.Time `json:"at"`
+	Machine       string    `json:"machine"` // this | other
+	SessionID     string    `json:"session_id,omitempty"`
+	Copy          bool      `json:"copy"`
+	Launched      bool      `json:"launched"`
+	State         string    `json:"state"`
+	BurnedFrom    string    `json:"burned_from"`
+	BurnedUnits   float64   `json:"burned_units"`
+	BurnedPct     float64   `json:"burned_pct"`
+	Charge5hPct   float64   `json:"charge_5h_pct"`
+	ReservePct    float64   `json:"reserve_pct"`
+	WeeklyKeptPct float64   `json:"weekly_kept_pct"`
 }
 
 // Decide ranks with the strategy of in (lanes or a projection strategy) and returns the
@@ -386,61 +404,116 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 			keyOf[sid] = slotKey[hs.Slot]
 		}
 	}
+	leased := map[string]bool{}
 	for _, l := range in.Leases {
 		if l.SessionID != "" {
 			keyOf[l.SessionID] = l.Key
+			leased[l.SessionID] = true
 		}
 	}
-	perKey := map[string][]unitAt{}
 	perSession := map[string][]unitAt{}
 	for _, t := range in.Outbox.Tokens {
-		u := unitAt{t.At, t.Units}
-		perSession[t.Session] = append(perSession[t.Session], u)
-		k := keyOf[t.Session]
-		if k == "" {
-			k = slotKey[t.Slot]
-		}
-		if k != "" {
-			perKey[k] = append(perKey[k], u)
-		}
+		perSession[t.Session] = append(perSession[t.Session], unitAt{t.At, t.Units})
 	}
 
-	// Leases: this machine's, then other machines' from the hub.
+	// Each leased session's use comes from one source, the larger (setup.md 8.5, effective
+	// state 3): this machine's token rows of it, or the hub's burn. The meter counts the
+	// session from that same source, so its tokens count once.
+	bs := newBurnSources(perSession, in.Outbox.Sessions)
+
+	// Leases: this machine's (with the hub's measure of them, by lease id), then other
+	// machines' from the hub or from the kept copy.
+	own := map[string]HubLease{}
+	for _, g := range groups {
+		for _, i := range g.idxs {
+			for _, hl := range cands[i].OwnLeases {
+				own[hl.ID] = hl
+			}
+		}
+	}
 	var ls []LaneLease
 	for _, l := range in.Leases {
 		ll := LaneLease{Key: l.Key, T0: l.At, SID: l.SessionID, C5: l.C5, CF: l.CF,
-			Launched: !l.Launched.IsZero(), Ended: !l.Ended.IsZero()}
+			Launched: !l.Launched.IsZero(), Ended: !l.Ended.IsZero(), From: burnNone}
+		var hub *HubLease
+		if hl, ok := own[l.ID]; ok && l.ID != "" {
+			hub = &hl
+			ll.Launched = ll.Launched || hl.Launched
+			ll.Ended = ll.Ended || hl.Ended
+			ll.Seen = hl.Seen
+		}
 		if l.SessionID != "" {
-			for _, u := range perSession[l.SessionID] {
-				if !u.at.Before(l.At) {
-					ll.Burned += u.units
-					ll.Seen = true
-				}
-			}
-			// The session's own hook events or tokens show it started even if the ledger
-			// missed its launched line.
+			b := bs.measure(l.Key, l.At, l.SessionID, hub)
+			ll.Burned, ll.From, ll.Seen = b.units, b.from, ll.Seen || b.seen
+			// The session's own hook events or tokens show it started (and maybe ended) even if
+			// the ledger missed its line.
 			if hs, ok := in.Outbox.Sessions[l.SessionID]; ok && !hs.Last.Before(l.At) {
 				ll.Launched = true
+				ll.Ended = ll.Ended || hs.Ended
 			}
 			ll.Launched = ll.Launched || ll.Seen
 		}
 		ls = append(ls, ll)
 	}
+	nLocal := len(ls)
+	for _, g := range groups {
+		rep := cands[g.rep]
+		for _, hl := range rep.RemoteLeases {
+			c5, cf := hl.C5, hl.CF
+			ll := LaneLease{Key: g.key, T0: hl.At, C5: &c5, CF: &cf, Launched: hl.Launched, Ended: hl.Ended, Seen: hl.Seen,
+				Remote: true, Copy: rep.RemoteCopy}
+			sid := bs.local(hl.SessionHash)
+			if sid != "" {
+				if !leased[sid] {
+					keyOf[sid] = g.key
+				}
+				if hs, ok := in.Outbox.Sessions[sid]; ok && !hs.Last.Before(hl.At) {
+					ll.Launched = true
+					ll.Ended = ll.Ended || hs.Ended
+				}
+			}
+			var hub *HubLease
+			if hl.Burn != nil {
+				h := hl
+				hub = &h
+			}
+			b := bs.measure(g.key, hl.At, sid, hub)
+			ll.Burned, ll.From, ll.Seen = b.units, b.from, ll.Seen || b.seen
+			ll.Launched = ll.Launched || b.seen
+			ll.Settle = !b.measured
+			ls = append(ls, ll)
+		}
+	}
+
+	// The meter: this machine's token rows of each account's sessions, with the sessions
+	// counted from the hub's burn instead of their rows of that lease's life.
+	perKey := map[string][]unitAt{}
+	for _, t := range in.Outbox.Tokens {
+		if bs.fromHub(t.Session, t.At) {
+			continue
+		}
+		k := keyOf[t.Session]
+		if k == "" {
+			k = slotKey[t.Slot]
+		}
+		if k != "" {
+			perKey[k] = append(perKey[k], unitAt{t.At, t.Units})
+		}
+	}
+	for k, us := range bs.hubUnits {
+		all := append(perKey[k], us...)
+		sort.SliceStable(all, func(i, j int) bool { return all[i].at.Before(all[j].at) })
+		perKey[k] = all
+	}
 
 	// The calibration of each account (setup.md 8.5, Calibration); the local fit's lane price
 	// pools this machine's ledger.
-	pool := calib.PoolLanes(now, localLanes(ls, perSession, now))
+	pool := calib.PoolLanes(now, localLanes(ls[:nLocal], perSession, now))
 	views := map[string]*CalibView{}
 
 	accts := make([]LaneAccount, 0, len(groups))
 	for ord, g := range groups {
 		rep := cands[g.rep]
-		for _, hl := range rep.RemoteLeases {
-			c5, cf := hl.C5, hl.CF
-			// Other machines' token use is not in this machine's meter: their leases keep
-			// their full charge while active (no burned units taken off).
-			ls = append(ls, LaneLease{Key: g.key, T0: hl.At, C5: &c5, CF: &cf, Launched: hl.Launched, Ended: hl.Ended, Seen: hl.Seen})
-		}
 		five := chooseReading(windowOf(rep, "five_hour"), now)
 		seven := chooseReading(windowOf(rep, "seven_day"), now)
 		sample := LaneSample{}
@@ -625,7 +698,20 @@ func laneView(row LaneRow, extra float64, now time.Time) LaneView {
 		WeeklyReservePct: pyRound(row.Reserve, 1), HoursToReset: pyRound(row.HoursToReset, 2),
 		Meter5hPct: pyRound(row.Meter5+row.Margin5, 1), Meter7dPct: pyRound(row.Meter7+row.Margin7, 2), Unexplained5hPct: pyRound(extra, 1),
 		Leases: row.Leases, Burst: row.Burst, BurstCap: row.BurstCap, Capped: row.Capped, Expiring: row.Expiring,
-		Stale: row.Stale, Unknown: append([]string{}, row.Unknown...), SkipLevel: row.SkipLevel}
+		Stale: row.Stale, Unknown: append([]string{}, row.Unknown...), SkipLevel: row.SkipLevel,
+		LeaseCharges: []LeaseChargeView{}}
+	for _, lc := range row.LeaseCharges {
+		x := LeaseChargeView{At: lc.T0.UTC(), Machine: "this", Copy: lc.Copy, Launched: lc.Launched, State: lc.State,
+			BurnedFrom: lc.From, BurnedUnits: math.Round(lc.Burned), BurnedPct: pyRound(lc.B, 2),
+			Charge5hPct: pyRound(lc.Charge5, 2), ReservePct: pyRound(lc.Reserve, 2), WeeklyKeptPct: pyRound(lc.WeeklyKept, 3)}
+		if lc.Remote {
+			x.Machine = "other"
+		} else {
+			x.SessionID = lc.SID
+		}
+		v.LeaseCharges = append(v.LeaseCharges, x)
+	}
+	sort.SliceStable(v.LeaseCharges, func(i, j int) bool { return v.LeaseCharges[i].At.Before(v.LeaseCharges[j].At) })
 	if !row.SampleAt.IsZero() {
 		t := row.SampleAt.UTC()
 		a := pyRound(now.Sub(row.SampleAt).Minutes(), 1)

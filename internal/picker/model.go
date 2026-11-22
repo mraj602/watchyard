@@ -64,8 +64,12 @@ type Candidate struct {
 	Windows []Window
 	// Source of the usage data: "hub", "hub+local", "local" or "none".
 	Source string
-	// RemoteLeases are other machines' leases of the seat, from the hub (lanes).
+	// RemoteLeases are other machines' leases of the seat, from the hub (lanes), or from the
+	// kept copy of the last hub read when RemoteCopy is set.
 	RemoteLeases []HubLease
+	RemoteCopy   bool
+	// OwnLeases are this machine's recent leases of the seat as the hub measured them (lanes).
+	OwnLeases []HubLease
 	// Calib is the hub's calibration of the seat (lanes; nil: none).
 	Calib *calib.Factors
 }

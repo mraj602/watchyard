@@ -34,6 +34,14 @@ All notable changes to Watchyard are recorded here. The format follows
   hub does the work every 15 minutes and returns the factors in `GET /v1/usage`; without a
   hub the account is fitted from this machine's data. `--json` and `--explain` show the
   factors. Schema version 16 adds `seat_calibration`.
+- `wy account next` (`lanes`) counts each lane once, whichever machine picked or runs it:
+  `GET /v1/usage` returns each lease's session use per minute for its first 5 hours (with a
+  hash of the session id, never the id) and the calling machine's own recent leases, and a
+  lease charges only what its session has not burned yet, while that session's tokens after
+  the reading go into the meter from the same source. With the hub down, other machines'
+  leases come from a copy kept at the last hub read (`<state>/next/hub_leases.json`) and stop
+  charging at the first reading 10 minutes after their pick. `--json` (`lease_charges`) and
+  `--explain` show each lease's state, where its burned units came from and its charge.
 
 ### Changed
 
