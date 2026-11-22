@@ -973,9 +973,58 @@ its weekly pace and a 5-hour floor leave over, and nothing ever falls back onto 
 decides from the current state only (the newest readings, the token meter since them and the
 live leases), never from a forecast of past use.
 
-*Kind.* `next.accounts.<key>.mode`: `aggressive` and `normal`, and an account with no mode,
-are aggressive; `protected` and `conservative` are protected. It is a setting, never derived
-from a label.
+*Kind.* Each account is protected or aggressive by its **mode**, a setting, never derived
+from a label. In plain words (the one wording every surface uses: `internal/picker`
+`ModeWords`, the board's `components/pick-mode.js`, the phone's `lib/format/pickMode.ts`):
+
+- **Protected**: "Kept for you. New sessions only while this week is behind an even pace and
+  the 5-hour window is under 45%." For the account you use yourself (in Chrome, the app, or
+  interactively in a terminal).
+- **Aggressive**: "Use it up. Sessions go here until 98% of the week or 5 hours." For
+  accounts that only run agents.
+- **Not chosen**: "Not chosen yet; treated as aggressive." (the behaviour before modes were
+  shared, so nothing changes for an account nobody chose for).
+
+Where the mode comes from, the first that is set wins, per machine:
+
+1. **This machine's `next.accounts.<key>.mode`** (config.toml, below; `mode_from` `local`):
+   `protected` and `conservative` are protected, `aggressive` and `normal` aggressive. It
+   keeps working as before and overrides the hub on this machine; `--explain` says "set on
+   this machine" and, when the hub's setting differs, names it.
+2. **The seat's hub setting** (`seat.pick_mode`, `Seat.mode` and `UsageSeat.mode` in
+   api.yaml, read with `GET /v1/usage`; `mode_from` `hub`): one setting per account, the
+   same on every machine. The owner sets it on the board or the phone (pwa.md 3.0a,
+   `PATCH /v1/accounts/{seat}` `mode`), or `wy setup` / `wy account add` propose it (below).
+   Each hub read keeps the seats' modes in `<state>/next/modes.json` (0600, by account, not
+   with `--no-reserve`); when the hub cannot be read the kept mode applies, with no age
+   limit (it is a setting), still `mode_from` `hub` and "(hub, cached)" in `--explain`.
+3. **This machine's proposal** `slots.modes.<folder>` (`mode_from` `proposed`): what setup
+   chose on a machine with a hub, sent to the hub in `slot_info` (record.md 4.7) and used
+   here until the hub has a mode for the seat. The hub takes a proposal only while nobody
+   has chosen for the seat (no mode, and the owner has not set Not chosen), so the first
+   machine's answer fills it and only the owner changes it after.
+4. **None** (`mode_from` `none`): not chosen, aggressive. `--explain` shows "not chosen yet;
+   treated as aggressive" for it, and the board and the phone show it highlighted with the
+   choice one click away.
+
+Each verdict (record.md 4.11) carries `mode_from`, so the board can say when a machine's
+local setting differs from the hub's. Moving an existing local setting to the hub is the
+owner's choice on the board; `wy` never rewrites config.toml for it.
+
+*Choosing in `wy setup` and `wy account add`.* Interactive runs ask once per account that has
+no mode yet (no local key, no hub setting, no proposal), after the labels: "How should `wy
+account next` use claude-3 (me@example.com)?" with the three answers **p** protected, **a**
+aggressive and **s** skip, each with its one-line definition (skip, the default, leaves it
+not chosen). A non-interactive run (`--yes`, no terminal) asks nothing. The answer goes:
+
+- with a hub connected (`hub.url` and a machine token): to `slots.modes.<folder>` in
+  config.toml, and a `slot_info` record with `mode` is queued for a logged-in folder (a
+  folder that logs in later sends it with its next `slot_info`, on `SessionStart`);
+- without a hub: to `next.accounts.<email>.mode` (the email of the folder's login, else its
+  label).
+
+`wy account add` asks the same for the new folder (it has no login yet: the proposal waits in
+`slots.modes` for its first `slot_info`; without a hub it is keyed by the new label).
 
 *Parameters.* Fixed, except the three marked *calibrated*: each account measures those from its
 own readings and token use and moves from the value shown (its fallback) to the measured one
@@ -1439,7 +1488,7 @@ aggressive`). The field is the part after the last dot, so emails with dots work
 
 | Field | Meaning |
 | --- | --- |
-| `mode` | `lanes`: `protected` or `conservative` make the account protected; `aggressive`, `normal` or no mode make it aggressive. Projection strategies: `conservative` and `protected` (caps 5 h 60, 7 d 70, model 70; preference 0.6), `normal` (90, 90, 90; 1), `aggressive` (98, 98, 98; 1.4). Default `normal`. |
+| `mode` | Overrides the hub setting on this machine (*Kind* above). `lanes`: `protected` or `conservative` make the account protected; `aggressive`, `normal` or no mode (and no hub setting) make it aggressive. Projection strategies: `conservative` and `protected` (caps 5 h 60, 7 d 70, model 70; preference 0.6), `normal` (90, 90, 90; 1), `aggressive` (98, 98, 98; 1.4). Default `normal`. |
 | `cap_5h`, `cap_7d`, `cap_model` | Explicit caps (0 < cap ≤ 100) over the mode's; `cap_model` defaults to `cap_7d` when only that is set. `lanes`: `cap_7d` is the aggressive weekly limit or the protected target `T`, `cap_5h` the aggressive 5-hour limit or the protected 5-hour floor. |
 | `reserve_pct` | Taken off every cap (room kept for something else). |
 | `priority` | `fill` order, lowest first; unset is after every set one. |
@@ -1486,7 +1535,8 @@ Unknown fields are reported by `wy doctor` as unknown keys.
   "accounts": [...], "warnings"}`. `picked` is the first pick, `picks` every pick in order,
   `waiting` the number of the K sessions not placed. Each account has `label`, `folder`,
   `dir`, `default_view`, `seat`, `email`, `seat_matched_by`, `logged_in`, `eligible`,
-  `excluded_reason`, `score`, `mode`, `settings_key`, `live_sessions`,
+  `excluded_reason`, `score`, `mode`, `mode_from` (*Kind*: `local`, `hub`, `proposed`, `none`),
+  `settings_key`, `live_sessions`,
   `pending_reservations`, `data_source` (`hub`, `hub+local`, `local`, `none`), `data_at`,
   `data_stale`, `free_at`, `reason` and `windows` (each: `key`, `kind`, `cap_pct`,
   `used_pct`, `reading_at`, `age_min`, `stale`, `now_pct`, `uncertainty_pct`,
@@ -1496,11 +1546,12 @@ Unknown fields are reported by `wy doctor` as unknown keys.
   also has `kind` and `lanes`: `{"weekly_pct", "five_hour_pct", "weekly_reserve_pct",
   "hours_to_reset", "reading_at", "reading_age_min", "five_hour_resets_at", "meter_5h_pct",
   "meter_7d_pct", "unexplained_5h_pct", "leases", "burst", "burst_cap", "capped",
-  "last_lease", "expiring", "stale", "unknown": [...], "skip_level", "calibration",
-  "lease_charges": [...]}`
+  "last_lease", "expiring", "stale", "unknown": [...], "skip_level", "weekly_cap",
+  "five_hour_cap", "calibration", "lease_charges": [...]}`
   (`leases` = active leases, `burst` = leases in the last 60 minutes, `meter_*` the token
   meter's points with its margins, `skip_level` 0 for a burst cap only, 1 stale, 2 a protected
-  rule, 3 a hard limit). `lease_charges` lists the account's leases younger than 5 hours and
+  rule, 3 a hard limit; `weekly_cap` and `five_hour_cap` the levels at which it takes no new
+  session now, as in record.md 4.11). `lease_charges` lists the account's leases younger than 5 hours and
   older ones that still keep a weekly charge, oldest first: `{"at", "machine": "this"|"other",
   "session_id" (this machine's leases only), "copy" (true: from the kept copy), "launched",
   "state": "active"|"settled"|"ended"|"expired", "burned_from": "local"|"hub"|"none",
@@ -1516,7 +1567,13 @@ Unknown fields are reported by `wy doctor` as unknown keys.
   pooled mean lane units, `corrector_*` the margin factors `k5`, `k7` and `margin_*` the margins
   `g5`, `g7` in points, `unexplained_from` how the unexplained rate was measured (null: none). Eligible
   accounts come first, in pick order for the first pick. Times are RFC 3339 UTC.
-- `--explain`: the same as a table, then the pick lines. For `lanes`: kind, weekly level
+- `--explain`: the same as a table, then the pick lines. For `lanes`, the kind column says
+  where it came from: `protected (hub)`, `protected (set on this machine)` (and `; hub says
+  aggressive` when the hub's setting differs), `aggressive (proposed here)`, or `not chosen
+  (treated as aggressive)`; under the table one line per kind shown gives its definition
+  (*Kind*), and an account that is not chosen adds "Choose on the board (Accounts, the account,
+  How should the picker use this account?) or: wy config set next.accounts.<email>.mode
+  protected". Then kind, weekly level
   (reserve level for protected) and reset, 5-hour level, leases and burst, data source and
   age, why; then one calibration line per account: `f`, `ρ`, the lane charge, their source and
   weights, the margins and the unexplained rate; then one line per lease of `lease_charges`:

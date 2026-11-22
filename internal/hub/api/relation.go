@@ -45,6 +45,9 @@ type VerdictDoc struct {
 	Burst       *int       `json:"burst"`
 	BurstCap    *int       `json:"burst_cap"`
 	Stale       bool       `json:"stale"`
+	ModeFrom    *string    `json:"mode_from"`
+	WeeklyCap   *float64   `json:"weekly_cap"`
+	FiveHourCap *float64   `json:"five_hour_cap"`
 }
 
 func (s *Server) seatRelation(w http.ResponseWriter, r *http.Request) {

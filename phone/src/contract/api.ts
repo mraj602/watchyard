@@ -159,6 +159,18 @@ export interface Window {
   state?: 'current' | 'reset' | 'idle';
 }
 
+/** api.yaml Seat.mode: the picker's use of an account. */
+export type PickMode = 'protected' | 'aggressive';
+
+/** api.yaml SeatPatch: what PATCH /v1/accounts/{seat} takes (owner only). A missing key leaves the field; `mode: null` is not chosen. */
+export interface SeatPatch {
+  label?: string | null;
+  colour?: string | null;
+  order?: number;
+  hidden?: boolean;
+  mode?: PickMode | null;
+}
+
 /** api.yaml Seat (an account card). */
 export interface Seat {
   id: string;
@@ -170,6 +182,8 @@ export interface Seat {
   label?: string | null;
   colour?: string | null;
   order?: number;
+  /** How `wy account next` uses the account, the same on every machine (setup.md 8.5 Kind); null or missing: not chosen, treated as aggressive. */
+  mode?: PickMode | null;
   hidden?: boolean;
   windows?: Window[];
   live_sessions?: number;
@@ -600,6 +614,12 @@ export interface Verdict {
   burst?: number | null;
   burst_cap?: number | null;
   stale?: boolean;
+  /** Where the kind came from on that machine (record.md 4.11); missing or null from an older wy. */
+  mode_from?: 'local' | 'hub' | 'proposed' | 'none' | null;
+  /** The weekly level at which it takes no new session now (protected: the pace line); null from an older wy. */
+  weekly_cap?: number | null;
+  /** The 5-hour level at which it takes no new session; null from an older wy. */
+  five_hour_cap?: number | null;
 }
 
 /** GET /v1/accounts/{seat}/relation (api.yaml UsageRelation). */

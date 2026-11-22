@@ -39,7 +39,19 @@ type AccountVerdict struct {
 	Burst       *int     `json:"burst,omitempty"`
 	BurstCap    *int     `json:"burst_cap,omitempty"`
 	Stale       bool     `json:"stale,omitempty"`
+	// ModeFrom is where the kind came from (setup.md 8.5, Kind): local, hub, proposed, none.
+	ModeFrom    string   `json:"mode_from,omitempty"`
+	WeeklyCap   *float64 `json:"weekly_cap,omitempty"`
+	FiveHourCap *float64 `json:"five_hour_cap,omitempty"`
 }
+
+// Verdict mode_from values (record.md 4.11).
+const (
+	ModeFromLocal    = "local"
+	ModeFromHub      = "hub"
+	ModeFromProposed = "proposed"
+	ModeFromNone     = "none"
+)
 
 func validTime(p *string) bool {
 	if p == nil {
@@ -82,6 +94,14 @@ func (p AccountVerdictsPayload) Validate() error {
 		}
 		if !validTime(a.FreeAt) || !validLevel(a.WeeklyPct) || !validLevel(a.FiveHourPct) {
 			return fmt.Errorf("account_verdicts: bad free_at or level")
+		}
+		switch a.ModeFrom {
+		case "", ModeFromLocal, ModeFromHub, ModeFromProposed, ModeFromNone:
+		default:
+			return fmt.Errorf("account_verdicts: bad mode_from %q", a.ModeFrom)
+		}
+		if !validLevel(a.WeeklyCap) || !validLevel(a.FiveHourCap) {
+			return fmt.Errorf("account_verdicts: bad cap")
 		}
 	}
 	return nil

@@ -94,6 +94,7 @@ export function fakeClient(over: Partial<Record<keyof HubClient, unknown>> = {})
     patchSelf: jest.fn(async (prefs: object) => ({ ...device, prefs })),
     unpairSelf: jest.fn(async () => undefined),
     testTarget: jest.fn(async () => ({ outcome: 'sent' })),
+    patchSeat: jest.fn(async (seat: string, patch: object) => ({ id: seat, account: 'a', org: 'o', ...patch })),
     patchTarget: jest.fn(async (id: string, patch: object) => ({ id, kind: 'link', status: 'ok', enabled: true, ...patch })),
     matrix: jest.fn(async () => structuredClone(peersMatrix)),
     editMatrix: jest.fn(async () => structuredClone(peersMatrix)),

@@ -53,7 +53,7 @@ func Fixtures(now time.Time) *Data {
 	d.Seats = []M{
 		{
 			"id": "seat_personal", "account": "3f1c6a2e-0000-4000-8000-000000000001", "org": "9b20d4f1-0000-4000-8000-000000000002",
-			"email": "you@example.com", "org_name": nil, "plan": "Max 20x", "label": "personal", "colour": "#0E7C76",
+			"email": "you@example.com", "org_name": nil, "plan": "Max 20x", "label": "personal", "colour": "#0E7C76", "mode": "protected",
 			"order": 0, "hidden": false,
 			"windows": []M{
 				win("five_hour", "5-hour", 62, 62, in(100*min), "both", M{"projected_pct": 85.0, "full_at": nil, "band": "on_track"}),
@@ -67,7 +67,7 @@ func Fixtures(now time.Time) *Data {
 		},
 		{
 			"id": "seat_work", "account": "3f1c6a2e-0000-4000-8000-000000000011", "org": "9b20d4f1-0000-4000-8000-000000000012",
-			"email": "you@work.example", "org_name": "Acme", "plan": "Team", "label": "work", "colour": "#6A4FD6",
+			"email": "you@work.example", "org_name": "Acme", "plan": "Team", "label": "work", "colour": "#6A4FD6", "mode": nil,
 			"order": 1, "hidden": false,
 			"windows": []M{
 				win("five_hour", "5-hour", 41, 55, in(70*min), "statusline", M{"projected_pct": 52.0, "full_at": nil, "band": "comfortable"}),
@@ -79,7 +79,7 @@ func Fixtures(now time.Time) *Data {
 		},
 		{
 			"id": "seat_client", "account": "3f1c6a2e-0000-4000-8000-000000000021", "org": "9b20d4f1-0000-4000-8000-000000000022",
-			"email": "you@client.example", "org_name": nil, "plan": "Max 5x", "label": "client", "colour": "#9A7400",
+			"email": "you@client.example", "org_name": nil, "plan": "Max 5x", "label": "client", "colour": "#9A7400", "mode": "aggressive",
 			"order": 2, "hidden": false,
 			"windows": []M{
 				win("five_hour", "5-hour", 100, 100, in(9*min), "both", M{"projected_pct": 100.0, "full_at": ago(2 * min), "band": "runaway"}),
@@ -94,7 +94,7 @@ func Fixtures(now time.Time) *Data {
 		{
 			// No colour from the API: the board must fall back to blue (4th seat).
 			"id": "seat_research", "account": "3f1c6a2e-0000-4000-8000-000000000031", "org": "9b20d4f1-0000-4000-8000-000000000032",
-			"email": "you@lab.example", "org_name": nil, "plan": "Pro", "label": "research", "colour": nil,
+			"email": "you@lab.example", "org_name": nil, "plan": "Pro", "label": "research", "colour": nil, "mode": nil,
 			"order": 3, "hidden": false,
 			"windows": []M{
 				win("five_hour", "5-hour", 8, 8, in(3*hour), "web", nil),

@@ -16,6 +16,11 @@
 }
 @font-face {
   font-family: 'Watchyard Symbols'; font-style: normal; font-weight: 100 900; font-display: swap;
+  src: url('../fonts/noto-sans-math-approx.woff2') format('woff2');
+  unicode-range: U+2248; /* almost equal, for the usage tiles */
+}
+@font-face {
+  font-family: 'Watchyard Symbols'; font-style: normal; font-weight: 100 900; font-display: swap;
   src: url('../fonts/noto-sans-symbols-info.woff2') format('woff2');
   unicode-range: U+24D8;
 }

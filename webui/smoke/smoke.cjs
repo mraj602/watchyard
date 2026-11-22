@@ -513,6 +513,114 @@ async function accountsFlow(page, sizeName) {
   await shot(page, `${sizeName}-o-accounts-expanded`);
   await page.click('[data-key=accounts-expand-all]');
   await page.waitForFunction(() => document.querySelectorAll('.acct-detail').length === 0, { timeout: 3000 }).catch(() => fail(t('Collapse all did not close every row')));
+  await usageFlow(page, sizeName);
+}
+
+// "Usage and the picker" and the mode control (pwa.md 3.0a), with the owner's account (seat_personal).
+async function usageFlow(page, sizeName) {
+  const t = (m) => page.tag(`usage: ${m}`);
+  const text = (sel) => page.$eval(sel, (e) => e.textContent).catch(() => null);
+  // A choice redraws the row twice (at once, then with the hub's answer): click once it is quiet.
+  const choose = async (mode) => {
+    await page.waitForFunction(() => !document.querySelector('fieldset.mode-pick[disabled]'), { timeout: 4000 });
+    await sleep(150);
+    await page.evaluate((m) => document.querySelector(`label[for=mode-seat_personal-${m}]`).click(), mode);
+  };
+  await page.evaluate(() => { try { localStorage.removeItem('wy-accounts-open'); } catch (_) {} });
+  await visit(page, sizeName, 'o-usage-closed', '#/accounts?seat=seat_personal', '[data-key=mode-seat_personal]');
+
+  // The choice: protected is on, each option has its definition right under it.
+  const sect = await text('[data-key=mode-seat_personal]');
+  if (!/How should the picker use this account\?/.test(sect)) fail(t('no question'));
+  for (const d of ['Kept for you. New sessions only while this week is behind an even pace and the 5-hour window is under 45%.',
+    'Use it up. Sessions go here until 98% of the week or 5 hours.', 'Not chosen yet; treated as aggressive.']) if (!sect.includes(d)) fail(t(`definition missing: ${d}`));
+  if (!(await page.$eval('[data-key=mode-opt-seat_personal-protected]', (e) => e.checked))) fail(t('protected is not selected'));
+  if (await page.$('[data-key=mode-unset-seat_personal]')) fail(t('a protected account shows the not-chosen line'));
+  // A change saves at once and survives a reload; another change puts it back.
+  await choose('aggressive');
+  await page.waitForFunction(async () => (await (await fetch('/v1/accounts', { cache: 'no-store' })).json()).accounts.find((a) => a.id === 'seat_personal').mode === 'aggressive', { timeout: 4000 })
+    .catch(() => fail(t('choosing Aggressive did not reach the hub')));
+  await page.waitForSelector('[data-key=mode-opt-seat_personal-aggressive]:checked', { timeout: 3000 }).catch(() => fail(t('Aggressive is not selected after saving')));
+  await choose('none');
+  await page.waitForSelector('[data-key=mode-unset-seat_personal]', { timeout: 4000 }).catch(() => fail(t('Not chosen shows no highlighted line')));
+  await choose('protected');
+  await page.waitForFunction(() => !document.querySelector('[data-key=mode-unset-seat_personal]'), { timeout: 4000 }).catch(() => fail(t('the highlighted line stayed after choosing Protected')));
+  if (!(await page.$eval('[data-key=mode-opt-seat_personal-protected]', (e) => e.checked))) fail(t('protected is not selected again'));
+  // A refusal puts the choice back and says why.
+  await page.evaluate(() => {
+    window.__fetch = window.fetch;
+    window.fetch = (u, o) => (o && o.method === 'PATCH' ? Promise.resolve(new Response(JSON.stringify({ error: 'the hub said no', code: 'bad_request' }), { status: 400, headers: { 'Content-Type': 'application/json' } })) : window.__fetch(u, o));
+  });
+  await choose('aggressive');
+  await page.waitForSelector('[data-key=mode-error-seat_personal]', { timeout: 4000 }).catch(() => fail(t('a refused change shows no reason')));
+  if (!(await page.$eval('[data-key=mode-opt-seat_personal-protected]', (e) => e.checked))) fail(t('a refused change did not restore the old choice'));
+  if (!/the hub said no/.test((await text('[data-key=mode-error-seat_personal]')) || '')) fail(t('the refusal reason is not shown'));
+  await page.evaluate(() => { window.fetch = window.__fetch; });
+  await choose('aggressive'); // a good save clears the reason
+  await page.waitForFunction(() => !document.querySelector('[data-key=mode-error-seat_personal]'), { timeout: 4000 }).catch(() => fail(t('the reason stayed after a good save')));
+  await choose('protected');
+  await page.waitForSelector('[data-key=mode-opt-seat_personal-protected]:checked', { timeout: 3000 }).catch(() => fail(t('protected is not back')));
+
+  // The work account was never chosen: the highlighted line and the read of its local override.
+  await page.click('[data-key=seat-toggle-seat_work]');
+  await page.waitForSelector('[data-key=mode-unset-seat_work]', { timeout: 3000 }).catch(() => fail(t('an unchosen account has no highlighted line')));
+  await page.click('[data-key=seat-toggle-seat_work]');
+
+  // Usage and the picker, opened.
+  await page.click('[data-key=rel-seat_personal] > summary');
+  await page.waitForSelector('[data-key=rel-tiles-seat_personal]', { timeout: 5000 }).catch(() => fail(t('the tiles never appeared')));
+  await sleep(200);
+  const body = await text('[data-key=rel-seat_personal] .rel-body') || '';
+  const want = ['Can take a new session: 3rd in line', '3rd in line: 2 other accounts get a new session before this one; they take turns.',
+    '5-hour 1% (stops at 45%)', 'Week 29%, the even pace allows 52% today', 'New sessions in the last hour: 0 (at most 2)',
+    '6.8% of the 5-hour limit = 1% of the week', '≈ 6.8 full 5-hour windows use up the week', 'One full 5-hour window ≈ 15% of the week', 'measured over 7 days',
+    'Each new session is set aside 8% of the 5-hour limit until its real use shows up (default; measured after 20 sessions, 1 so far)',
+    'This week 1% of the 5-hour limit bought about $1.67 of Opus 5.5 work at API prices. Last week: not enough data yet.',
+    'A change of more than 20% on most accounts raises an alert.', 'Sonnet 5.5: not used in the last 2 weeks.', 'Haiku 5.5: not used in the last 2 weeks.',
+    'Hover or tap a day to see its value.', 'Kept for you.'];
+  for (const w of want) if (!body.includes(w)) fail(t(`missing "${w}"`));
+  if ((body.match(/A change of more than 20%/g) || []).length !== 1) fail(t('the alert line is not shown exactly once'));
+  if ((body.match(/Hover or tap a day/g) || []).length !== 1) fail(t('the hover hint is not shown exactly once'));
+  for (const bad of [/(^|\s)[fcn]\s/, /lane/i, /normalised/i, /Tap a bar/]) if (bad.test(body)) fail(t(`the section matches ${bad}`));
+  // The chart: a picture with a summary, a table, a y axis, a gap mark; a day shows its value on one line.
+  const chart = await page.$eval('[data-key=rel-chart-seat_personal-ratio]', (e) => ({ role: e.querySelector('svg').getAttribute('role'), label: e.querySelector('svg').getAttribute('aria-label'),
+    rows: e.querySelectorAll('table.sr-only tr').length, gaps: e.querySelectorAll('.rel-gap').length, bars: e.querySelectorAll('.rel-bar').length, ticks: e.querySelectorAll('.rel-ytick').length,
+    days: e.querySelectorAll('button.rel-day').length, legend: e.querySelector('.rel-legend').textContent })).catch(() => null);
+  if (!chart) fail(t('no ratio chart'));
+  else {
+    if (chart.role !== 'img' || !/each day/.test(chart.label)) fail(t(`chart role/label ${chart.role} ${chart.label}`));
+    if (chart.rows !== 14 || chart.days !== 14 || chart.ticks !== 3 || chart.gaps < 1 || chart.bars < 1) fail(t(`chart parts ${JSON.stringify(chart)}`));
+    if (!/Opus 5\.5/.test(chart.legend) || !/no data/.test(chart.legend)) fail(t(`legend "${chart.legend}"`));
+  }
+  const fill = await page.$eval('.rel-bar', (e) => getComputedStyle(e).fill);
+  if (!fill || fill === 'none' || fill === 'rgb(0, 0, 0)') fail(t(`bars have no colour: ${fill}`));
+  await page.evaluate(() => document.querySelector('[data-key=rel-chart-seat_personal-ratio] button.rel-day:nth-of-type(13)').click());
+  const status = await text('[data-key=rel-status-seat_personal-ratio]');
+  if (!/^\d+ \w{3}: \d+(\.\d)?% of the 5-hour limit per 1% of the week · mostly Opus 5\.5 · 30 readings$/.test(status || '')) fail(t(`day status "${status}"`));
+  await shot(page, `${sizeName}-o-usage-open`);
+  await page.click('[data-key=rel-how-seat_personal] > summary');
+  const how = await text('[data-key=rel-how-seat_personal]');
+  if (!/How many % of the 5-hour limit a million tokens of Claude Code use cost: 1\.38, measured from 1504 readings over 7 days/.test(how || '')) fail(t('How this works lacks the meter factor sentence'));
+  await shot(page, `${sizeName}-o-usage-how`);
+  // The disclosure stays open across the page's redraws, and the other account shows its chart.
+  await sleep(300);
+  if (!(await page.$eval('[data-key=rel-seat_personal]', (e) => e.open))) fail(t('Usage and the picker closed by itself'));
+  await page.click('[data-key=seat-toggle-seat_work]');
+  await page.click('[data-key=rel-seat_work] > summary');
+  await page.waitForSelector('[data-key=rel-chart-seat_work-cap-Opus\\ 5\\.5]', { timeout: 5000 }).catch(() => fail(t('no capacity chart for an account with two weeks')));
+  const wt = await text('[data-key=rel-seat_work] .rel-body') || '';
+  if (!/Not taking new sessions now/.test(wt) || !/blocking/.test(wt) || !/Frees up /.test(wt)) fail(t('a skipped account does not say so'));
+  if (!/hub says|set on this machine|On laptop a setting on that machine makes it protected/.test(await text('[data-key=mode-seat_work]') || '')) fail(t('no local-override line for work'));
+  await shot(page, `${sizeName}-o-usage-work`);
+  // Dark mode: the same section, same colours from variables.
+  await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
+  await sleep(200);
+  await shot(page, `${sizeName}-o-usage-work-dark`);
+  await page.click('[data-key=seat-toggle-seat_work]');
+  await sleep(200);
+  await shot(page, `${sizeName}-o-usage-dark`);
+  await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' }]);
+  await page.evaluate(() => { try { localStorage.removeItem('wy-accounts-open'); } catch (_) {} });
 }
 
 async function orderFlow(page, sizeName) {

@@ -49,6 +49,23 @@ type Choices struct {
 	Login          string `json:"login,omitempty"`        // ask | never
 	ExpectPlan     string `json:"expect_plan,omitempty"`  // checked by the command layer, not the planner
 	Interactive    bool   `json:"interactive,omitempty"`  // a terminal is attached (login default: ask)
+	// Modes are the picker modes answered in an interactive run (setup.md 8.5, Choosing in wy
+	// setup): config key (slots.modes.<folder> or next.accounts.<key>.mode) -> protected or
+	// aggressive. They go into the config.toml action of the plan.
+	Modes map[string]string `json:"-"`
+}
+
+// ValidModeKey reports whether k is a config key a picker mode answer may set:
+// slots.modes.<folder> or next.accounts.<key>.mode.
+func ValidModeKey(k string) bool {
+	if rest, ok := strings.CutPrefix(k, "slots.modes."); ok {
+		return rest != ""
+	}
+	if rest, ok := strings.CutPrefix(k, "next.accounts."); ok {
+		key, ok := strings.CutSuffix(rest, ".mode")
+		return ok && key != ""
+	}
+	return false
 }
 
 // LabelColour is a label with an optional colour ("" = next free palette colour).

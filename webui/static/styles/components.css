@@ -286,17 +286,64 @@ mark { background: var(--warn-bg); color: inherit; border-radius: 2px; box-shado
 .ana-legend .ana-cell { width: 12px; height: 12px; min-height: 0; aspect-ratio: auto; }
 .ana-bar.is-history { background: var(--track); }
 .ana-axis { display: flex; justify-content: space-between; margin-top: 4px; }
-/* An account's usage and the picker (pwa.md 3.0a): small bars inside Details. */
-.rel-body { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; }
-.rel-body h4 { margin: 10px 0 2px; font-size: .9rem; }
-.rel-bars { position: relative; height: 72px; padding-top: 0; }
-.rel-bars .ana-bar.is-empty { background: var(--track); min-height: 2px; }
-.rel-line { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--muted, #888); pointer-events: none; }
-.rel-initials { display: flex; gap: 2px; padding: 0 10px; }
-.rel-initials span { flex: 1 1 0; text-align: center; min-width: 1px; overflow: hidden; }
-.rel-chart.is-muted .ana-bar { opacity: .45; }
-.rel-state { margin-left: 8px; }
-.rel-model { margin-top: 6px; }
+/* An account's usage and the picker (pwa.md 3.0a). */
+.rel-body { display: flex; flex-direction: column; gap: 8px; padding-top: 6px; }
+.rel-body h4 { margin: 14px 0 0; font-size: .95rem; }
+.rel-body > p, .rel-verdict p { margin: 0; }
+.rel-verdict { display: flex; flex-direction: column; gap: 4px; background: var(--panel); border: 1px solid var(--hair); border-left: 4px solid var(--ok-ink); border-radius: var(--radius); padding: 10px 12px; }
+.rel-verdict.is-blocked { border-left-color: var(--needs); }
+.rel-headline { font-size: 15px; }
+.rel-rules { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-variant-numeric: tabular-nums; }
+.rel-rules li.is-blocking { color: var(--needs-ink); font-weight: 600; }
+.rel-block { margin-left: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; background: var(--needs-bg); color: var(--needs-ink); border-radius: 8px; padding: 1px 7px; }
+.rel-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.rel-tile { display: flex; flex-direction: column; gap: 2px; background: var(--panel); border: 1px solid var(--hair); border-radius: var(--radius); padding: 10px 12px; font-size: 13px; line-height: 1.35; color: var(--muted); }
+.rel-tile-v { font-size: 24px; font-weight: 600; line-height: 1.15; color: var(--ink); font-variant-numeric: tabular-nums; }
+.rel-tile-lead { color: var(--muted); }
+.rel-sentence { max-width: 70ch; }
+.rel-chart { margin: 8px 0 0; display: flex; flex-direction: column; gap: 4px; max-width: 560px; }
+.rel-cap { display: flex; flex-direction: column; gap: 1px; }
+.rel-title { font-size: 14px; }
+.rel-stage { position: relative; background: var(--panel); border: 1px solid var(--hair); border-radius: var(--radius); }
+.rel-svg { display: block; width: 100%; height: auto; }
+.rel-days { position: absolute; inset: 0; }
+.rel-day { position: absolute; background: transparent; border: 0; padding: 0; cursor: pointer; border-radius: 4px; }
+.rel-day:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
+.rel-grid { stroke: var(--hair); stroke-width: 1; }
+.rel-axis { stroke: var(--btn-border); stroke-width: 1; }
+.rel-ytick, .rel-xtick, .rel-reftext { fill: var(--muted); font-size: 10px; font-family: var(--sans); }
+.rel-xtick, .rel-ytick { font-variant-numeric: tabular-nums; }
+.rel-ref { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 4 3; opacity: .7; }
+.rel-band { fill: transparent; }
+.rel-band.is-picked { fill: var(--hair-soft); }
+.rel-bar { fill: var(--rel-m1); }
+.rel-bar.m1 { fill: var(--rel-m1); } .rel-bar.m2 { fill: var(--rel-m2); } .rel-bar.m3 { fill: var(--rel-m3); }
+.rel-bar.m4 { fill: var(--rel-m4); } .rel-bar.m5 { fill: var(--rel-m5); } .rel-bar.m6 { fill: var(--rel-m6); }
+.rel-gap { fill: none; stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 2; opacity: .8; }
+.rel-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.rel-key { display: inline-flex; align-items: center; gap: 5px; }
+.rel-sw { width: 10px; height: 10px; border-radius: 2px; background: var(--rel-m1); display: inline-block; }
+.rel-sw.m1 { background: var(--rel-m1); } .rel-sw.m2 { background: var(--rel-m2); } .rel-sw.m3 { background: var(--rel-m3); }
+.rel-sw.m4 { background: var(--rel-m4); } .rel-sw.m5 { background: var(--rel-m5); } .rel-sw.m6 { background: var(--rel-m6); }
+.rel-sw-gap { background: none; border: 1px dashed var(--muted); }
+.rel-status { min-height: 1.45em; margin: 2px 0 0; }
+.rel-status.is-hint { color: var(--muted); }
+.rel-chart.is-muted .rel-bar { opacity: .45; }
+.rel-how { margin-top: 10px; }
+.rel-how-rows { margin-top: 8px; }
+@media (max-width: 560px) {
+  .rel-tiles { grid-template-columns: 1fr; }
+  .rel-tile { flex-direction: row; flex-wrap: wrap; align-items: baseline; column-gap: 6px; }
+}
+/* How the picker uses this account (owner's choice). */
+.mode-unset { margin: 0 0 8px; padding: 8px 12px; border-radius: var(--radius); background: var(--warn-bg); color: var(--warn-ink); border: 1px solid var(--warn-ink); font-size: 14px; font-weight: 600; }
+.mode-pick { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.mode-pick legend { padding: 0; margin-bottom: 6px; font-size: 14px; font-weight: 600; }
+.mode-opt { display: grid; grid-template-columns: 22px 1fr; column-gap: 8px; align-items: center; padding: 8px 10px; border: 1px solid var(--hair); border-radius: var(--radius); background: var(--panel); }
+.mode-opt.is-on { border-color: var(--link); background: var(--selected); }
+.mode-opt input { width: 18px; height: 18px; margin: 0; accent-color: var(--link); }
+.mode-opt label { cursor: pointer; font-size: 14px; }
+.mode-def { grid-column: 2; margin: 2px 0 0; }
 .ana-list { list-style: none; padding: 0; margin: 0; }
 .ana-row { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-top: 1px solid var(--hair-soft); }
 .ana-row:first-child { border-top: 0; }

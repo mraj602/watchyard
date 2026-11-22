@@ -53,7 +53,7 @@ CREATE TABLE schema_version (
 ) STRICT;
 
 INSERT INTO schema_version (version, applied_at, wy_version)
-VALUES (19, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
+VALUES (20, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
 
 -- Hub-wide settings that are not secrets (retention days, last-message policy, …).
 CREATE TABLE setting (
@@ -105,13 +105,19 @@ CREATE TABLE seat (
   sort_order    INTEGER NOT NULL DEFAULT 0,
   hidden        INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0, 1)),
   track_web     INTEGER NOT NULL DEFAULT 1 CHECK (track_web IN (0, 1)),
-  created_at    INTEGER NOT NULL, look_src TEXT CHECK (look_src IS NULL OR look_src IN ('ui', 'slot', 'import')),
+  created_at    INTEGER NOT NULL, look_src TEXT CHECK (look_src IS NULL OR look_src IN ('ui', 'slot', 'import')), pick_mode TEXT CHECK (pick_mode IS NULL OR pick_mode IN ('protected', 'aggressive')), pick_mode_src TEXT CHECK (pick_mode_src IS NULL OR pick_mode_src IN ('ui', 'slot')),
   UNIQUE (account_uuid, org_uuid)
 ) STRICT;
 -- sort_order: the display position (`order` on Seat). PUT /v1/seats/order puts the listed seats
 -- first and renumbers every seat 0..n-1; seats are listed by sort_order, created_at, id, so a
 -- new seat (max + 1) or one nobody ordered sorts after the ordered ones. No migration: the column
 -- is in version 1.
+-- pick_mode, pick_mode_src: v20 (setup.md 8.5, Kind). How `wy account next` should use the
+-- seat: 'protected', 'aggressive' or NULL (not chosen: aggressive). pick_mode_src: 'ui'
+-- (PATCH /v1/accounts/{seat}; also for null, Not chosen) or 'slot' (a slot_info `mode`,
+-- applied only while pick_mode and pick_mode_src are both NULL: nobody has chosen). Added by
+-- migration 0020 (ALTER TABLE ADD COLUMN), so the columns sit on the created_at line, as
+-- SQLite writes them.
 -- look_src: v5 (desktop.md C10). Who set label and colour last: 'ui' (PATCH /v1/accounts/{seat}),
 -- 'slot' (slot_info; applies only while look_src is NULL or 'slot'), 'import' (rows imported by earlier versions; nothing writes it now).
 

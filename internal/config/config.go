@@ -88,6 +88,9 @@ type Config struct {
 		Extra   []string          `toml:"extra"`
 		Labels  map[string]string `toml:"labels"`
 		Colours map[string]string `toml:"colours"`
+		// Modes is slots.modes: the picker mode proposed for each folder's login on a
+		// machine with a hub (setup.md 8.5, Kind): protected or aggressive.
+		Modes map[string]string `toml:"modes"`
 	} `toml:"slots"`
 	// Share is the [share] table of setup.md 9.2.
 	Share struct {
@@ -175,6 +178,7 @@ func Defaults() Config {
 	c.Slots.Extra = []string{}
 	c.Slots.Labels = map[string]string{}
 	c.Slots.Colours = map[string]string{}
+	c.Slots.Modes = map[string]string{}
 	c.Share.MCPExclude = []string{}
 	c.Statusline.Show = true
 	c.Terminal.Band = true
@@ -253,14 +257,19 @@ var known = map[string]spec{
 
 // labelsPrefix: "slots.labels.<slot>" is a free-form key; the slot (e.g. "~/.claude-2")
 // may contain dots, so everything after the prefix is the map key. coloursPrefix is the same
-// for "slots.colours.<slot>" (setup.md 9.2), whose value must be "#rrggbb".
+// for "slots.colours.<slot>" (setup.md 9.2), whose value must be "#rrggbb", and modesPrefix
+// for "slots.modes.<slot>" (setup.md 8.5, Kind), whose value is protected or aggressive.
 const (
 	labelsPrefix  = "slots.labels."
 	coloursPrefix = "slots.colours."
+	modesPrefix   = "slots.modes."
 )
 
 // slotMaps are the free-form slot tables, by prefix.
-var slotMaps = map[string]string{labelsPrefix: "labels", coloursPrefix: "colours"}
+var slotMaps = map[string]string{labelsPrefix: "labels", coloursPrefix: "colours", modesPrefix: "modes"}
+
+// ValidSlotMode reports whether s is a slots.modes value (protected or aggressive).
+func ValidSlotMode(s string) bool { return s == "protected" || s == "aggressive" }
 
 func slotMapKey(key string) (table, rest string, ok bool) {
 	for prefix, t := range slotMaps {
@@ -277,7 +286,7 @@ func Known() []string {
 	for k := range known {
 		out = append(out, k)
 	}
-	out = append(out, labelsPrefix+"<slot>", coloursPrefix+"<slot>", nextAccountsPrefix+"<account>.<field>")
+	out = append(out, labelsPrefix+"<slot>", coloursPrefix+"<slot>", modesPrefix+"<slot>", nextAccountsPrefix+"<account>.<field>")
 	sort.Strings(out)
 	return out
 }
@@ -340,7 +349,7 @@ func (f *File) Typed() (Config, error) {
 	for k := range known {
 		keys = append(keys, k)
 	}
-	keys = append(keys, "slots.labels", "slots.colours", "next.accounts")
+	keys = append(keys, "slots.labels", "slots.colours", "slots.modes", "next.accounts")
 	sort.Strings(keys)
 	for _, k := range keys {
 		parts := strings.Split(k, ".")
@@ -388,6 +397,9 @@ func (c *Config) normalize() {
 	if c.Slots.Colours == nil {
 		c.Slots.Colours = map[string]string{}
 	}
+	if c.Slots.Modes == nil {
+		c.Slots.Modes = map[string]string{}
+	}
 	if c.Share.MCPExclude == nil {
 		c.Share.MCPExclude = []string{}
 	}
@@ -405,7 +417,7 @@ func (f *File) Get(key string) (any, error) {
 	if sp, ok := known[key]; ok {
 		return sp.def, nil
 	}
-	if key == "slots.labels" || key == "slots.colours" || key == "next.accounts" {
+	if key == "slots.labels" || key == "slots.colours" || key == "slots.modes" || key == "next.accounts" {
 		return map[string]any{}, nil
 	}
 	return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
@@ -469,6 +481,9 @@ func (f *File) set(key string, args []string, fromPlan bool) error {
 		}
 		if table == "colours" && !colourRe.MatchString(args[0]) {
 			return fmt.Errorf("%s: want a colour #rrggbb, got %q", key, args[0])
+		}
+		if table == "modes" && !ValidSlotMode(args[0]) {
+			return fmt.Errorf("%s: want protected or aggressive, got %q", key, args[0])
 		}
 		if table == "labels" && !ValidLabel(args[0]) {
 			return fmt.Errorf("%s: invalid label %q (use a-z, 0-9 and -, at most 24 characters, starting with a letter or digit)", key, args[0])
@@ -610,7 +625,7 @@ func (f *File) Unknown() []string {
 			if _, ok := known[full]; ok {
 				continue
 			}
-			if full == "slots.labels" || full == "slots.colours" {
+			if full == "slots.labels" || full == "slots.colours" || full == "slots.modes" {
 				continue
 			}
 			if full == "next.accounts" {

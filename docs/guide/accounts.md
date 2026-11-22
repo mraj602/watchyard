@@ -9,6 +9,41 @@ more, so you set things up once.
 Use only your own accounts, each used within the terms of its plan. Watchyard never
 switches or rotates accounts for you, and it never shares a login between folders.
 
+## Choosing protected or aggressive
+
+`wy account next` (below) decides where new Claude Code sessions go. Tell it, once per
+account, how to treat that account:
+
+- **Protected**: kept for you. New sessions only while this week is behind an even pace and
+  the 5-hour window is under 45%. Choose it for the account you use yourself: in Chrome, the
+  Claude app, or interactively in a terminal. Agents then only borrow what you would not use
+  anyway, and nothing ever falls back onto it when the other accounts are full.
+- **Aggressive**: use it up. Sessions go here until 98% of the week or 5 hours. Choose it for
+  accounts that only run agents.
+- **Not chosen**: treated as aggressive, as before this setting existed. The board, the phone
+  app and `wy account next --explain` show "Not chosen yet; treated as aggressive." with the
+  choice one click away.
+
+**Where to choose.** On the board or in the phone app: Accounts, open the account, then **How
+should the picker use this account?** (owner only). The choice is kept on the hub, so every
+machine uses it. `wy setup` and `wy account add` also ask once per account that has none
+(protected, aggressive or skip); with a hub the answer goes to the hub, without one it is kept
+in this machine's config.
+
+**A setting on one machine still wins there.** `wy config set next.accounts.<email>.mode
+protected` (or `aggressive`) overrides the hub's choice on that machine only; `--explain` says
+"set on this machine", and the board names the machine when its setting differs from the
+hub's. Settings made this way before this release keep working unchanged; to share one, pick
+the same mode on the board and delete the `mode` line from this machine's config.toml (`wy paths`
+shows where it is).
+
+**At the limits.** A protected account stops taking new sessions as soon as its week gets
+ahead of an even pace (plus 10 points, never above 85%) or its 5 hours reach 45%, and takes
+at most 2 new sessions an hour; it frees up when the pace catches up or the window resets. An
+aggressive account stops at 98% of either window and takes at most 6 new sessions an hour.
+When no account can take a session, `wy account next` exits 4 and says when the first one
+frees up: sessions never spill onto a protected account.
+
 ## What Watchyard never touches
 
 - Logins: `.credentials.json`, the macOS Keychain item, `oauthAccount` and every other key of
@@ -108,10 +143,11 @@ strategies `cap_model`, `priority` (for `fill`) and `weight`.
 The full rules are in [setup.md 8.5](../spec/setup.md#85-wy-account-next).
 
 **Why an account was or was not picked:** open the account on the board or in the phone app,
-then **Usage and the picker** in its Details. It shows the newest verdict a machine sent (for
-example "Not picked: 7d 92% >= pace 85 (protected rule) · frees up Thu 14:00"), how far each
-calibration factor is measured, the daily 5-hour-to-weekly ratio with the day's main model,
-and the 5-hour capacity index per model. The capacity index only counts for weeks when
+then **Usage and the picker** in its Details. It shows the newest verdict a machine sent in
+words (its place in line, and each rule with its value against the limit, such as "5-hour 1%
+(stops at 45%)"), how the 5-hour limit relates to the week ("6.8% of the 5-hour limit = 1% of
+the week"), what a new session is set aside, daily charts, and what 1% of the 5-hour limit
+buys at API prices per model. **How this works** at the end explains the measurements. The capacity index only counts for weeks when
 Claude Code made most of the account's use; otherwise it says so. A machine without a hub
 sends no verdicts.
 

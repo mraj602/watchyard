@@ -11,9 +11,10 @@ import (
 
 func verdictRec(t *testing.T, machine string, at time.Time, eligible bool, reason string) []byte {
 	t.Helper()
-	lvl, rank, w := 2, 1, 61.5
+	lvl, rank, w, wc, fc := 2, 1, 61.5, 52.0, 45.0
 	free := at.Add(3 * time.Hour).Format(time.RFC3339)
-	a := record.AccountVerdict{Account: acctUUID, Org: orgUUID, Kind: record.LeaseProtected, Eligible: eligible, WeeklyPct: &w}
+	a := record.AccountVerdict{Account: acctUUID, Org: orgUUID, Kind: record.LeaseProtected, Eligible: eligible, WeeklyPct: &w,
+		ModeFrom: record.ModeFromHub, WeeklyCap: &wc, FiveHourCap: &fc}
 	if eligible {
 		a.Rank = &rank
 	} else {
@@ -63,7 +64,8 @@ func TestSeatRelation(t *testing.T) {
 	var v map[string]any
 	_ = json.Unmarshal(doc["verdict"], &v)
 	if v["eligible"] != false || v["reason"] != "7d 92% >= pace 85" || v["skip_level"] != 2.0 || v["machine"] != h.machine ||
-		v["strategy"] != "lanes" || v["kind"] != "protected" || v["weekly_pct"] != 61.5 || v["rank"] != nil || v["free_at"] == nil {
+		v["strategy"] != "lanes" || v["kind"] != "protected" || v["weekly_pct"] != 61.5 || v["rank"] != nil || v["free_at"] == nil ||
+		v["mode_from"] != "hub" || v["weekly_cap"] != 52.0 || v["five_hour_cap"] != 45.0 {
 		t.Fatalf("verdict = %v", v)
 	}
 	if _, ok := v["account"]; ok {

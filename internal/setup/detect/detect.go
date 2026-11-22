@@ -301,7 +301,7 @@ func (x *detector) detectFolders(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	labels, colours := x.cfgMap("slots.labels"), x.cfgMap("slots.colours")
+	labels, colours, modes := x.cfgMap("slots.labels"), x.cfgMap("slots.colours"), x.cfgMap("slots.modes")
 	for _, k := range sortedKeys(labels) {
 		l := labels[k]
 		// A hand-edited config.toml can hold anything; a label reaches launcher names and
@@ -321,6 +321,7 @@ func (x *detector) detectFolders(ctx context.Context) error {
 			Primary:   sameDir(s.Dir, prim),
 			Label:     labels[s.Name],
 			Colour:    colours[s.Name],
+			Mode:      modes[s.Name],
 		}
 		x.st.Folders = append(x.st.Folders, f)
 	}

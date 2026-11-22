@@ -495,6 +495,7 @@ last one it sent for that slot, and once a day per slot.
 | `sharing` | object | no | Which parts are symlinked to which target, for the Accounts screen: `{"settings.json": "~/.claude/settings.json", ...}`. |
 | `label` | string | no | Local label for this folder's login (`slots.labels`, set by `wy setup` / `wy account label`). The hub applies it to the seat only while the seat has no label set in the UI (setup.md 8.4). |
 | `colour` | string | no | `#rrggbb`, same rule as `label`. |
+| `mode` | string | no | `protected` or `aggressive`: how the picker should use this folder's login, as chosen in `wy setup` or `wy account add` on a machine with a hub (`slots.modes`, setup.md 8.5 *Kind*). The hub applies it only while nobody has chosen for the seat: no mode, and the owner has not set Not chosen (`seat.pick_mode` and `seat.pick_mode_src` NULL). The first machine's choice fills it, and after that only the owner changes it (board, phone, `PATCH /v1/accounts/{seat}`). Any other value is ignored. |
 
 ### 4.8 `machine_info`
 
@@ -597,6 +598,8 @@ the hub is skipped. A payload the hub cannot type is stored with `typed = 0` and
 | `accounts[].weekly_pct`, `accounts[].five_hour_pct` | number \| null | no | Its effective weekly and 5-hour levels (0–100). |
 | `accounts[].burst`, `accounts[].burst_cap` | integer | no | `lanes`: leases in the last 60 minutes, and the cap. |
 | `accounts[].stale` | boolean | no | `lanes`: its newest reading is stale. |
+| `accounts[].mode_from` | string | no | Where its kind came from (setup.md 8.5 *Kind*): `local` (this machine's `next.accounts.<key>.mode`), `hub` (the seat's hub setting), `proposed` (this machine's `slots.modes`, not on the hub yet) or `none` (not chosen: aggressive). |
+| `accounts[].weekly_cap`, `accounts[].five_hour_cap` | number | no | `lanes`: the weekly and 5-hour levels at which it takes no new session now (protected: the pace line `min(T, T × (1 − hours_to_reset / 168) + 10)` and the 5-hour floor; aggressive: the aggressive limits), after `reserve_pct`. |
 
 ## 5. Validation on the hub
 

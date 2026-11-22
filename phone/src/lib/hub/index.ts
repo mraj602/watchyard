@@ -20,6 +20,8 @@ import type {
   PushTarget,
   PushTestResult,
   RulesReply,
+  Seat,
+  SeatPatch,
   SessionDetail,
   SessionsPage,
   UsageRelation,
@@ -114,6 +116,8 @@ export interface HubClient {
   peerMessages(q?: { limit?: number }): Promise<{ messages: PeerMessage[] }>;
   /** GET /v1/analytics/{report} (analytics.md): tokens, API-equivalent cost, models, projects, heatmap, sessions, limit windows and hits. */
   analytics<R extends keyof AnalyticsReplies>(report: R, q?: AnalyticsQuery): Promise<AnalyticsReplies[R]>;
+  /** PATCH /v1/accounts/{seat}: label, colour, order, hidden or picker mode; owner only (403 for a phone without an owner session). */
+  patchSeat(seat: string, patch: SeatPatch): Promise<Seat>;
   /** GET /v1/accounts/{seat}/relation: the seat's daily 5 h per 7 d ratio, capacity index, calibration and the picker's newest verdict (api.yaml UsageRelation). */
   relation(seat: string): Promise<UsageRelation>;
 }
@@ -300,6 +304,7 @@ export function createHubClient(deps: HubClientDeps): HubClient {
       }
     },
     testTarget: (id) => call<PushTestResult>('POST', `/v1/push/targets/${seg(id)}/test`),
+    patchSeat: (seat, patch) => call<Seat>('PATCH', `/v1/accounts/${seg(seat)}`, patch),
     patchTarget: (id, patch) => call<PushTarget>('PATCH', `/v1/push/targets/${seg(id)}`, patch),
     matrix: () => call<MatrixInfo>('GET', '/v1/peers/matrix'),
     editMatrix: (edit) => call<MatrixInfo>('PUT', '/v1/peers/matrix', { edit }),

@@ -921,12 +921,17 @@ func (t *typer) slotInfo(c *ctx) error {
 	t.ch.Seats[seat] = true
 	// A slot_info label and colour apply only while no one set them in the UI (look_src
 	// NULL or 'slot'; desktop.md C10, record.md 4.7).
+	// A slot_info mode applies only while the seat has no mode at all (record.md 4.7).
 	var look struct {
 		Label  string `json:"label"`
 		Colour string `json:"colour"`
+		Mode   string `json:"mode"`
 	}
 	_ = json.Unmarshal(c.r.Payload, &look)
 	if _, err := t.tx.SeatSlotLook(seat, look.Label, look.Colour); err != nil {
+		return err
+	}
+	if _, err := t.tx.SeatSlotMode(seat, look.Mode); err != nil {
 		return err
 	}
 	if acct != "" {

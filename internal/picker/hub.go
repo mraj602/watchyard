@@ -37,6 +37,7 @@ type HubSeat struct {
 	Org     string      `json:"org"`
 	Email   *string     `json:"email"`
 	Label   *string     `json:"label"`
+	Mode    *string     `json:"mode"` // the seat's picker mode (setup.md 8.5, Kind); nil: none
 	Windows []HubWindow `json:"windows"`
 	Places  []struct {
 		Machine string  `json:"machine"`
@@ -160,6 +161,7 @@ func (h HubClient) FetchUsage(ctx context.Context, now time.Time) (HubData, erro
 			Account      string          `json:"account"`
 			Org          string          `json:"org"`
 			Label        *string         `json:"label"`
+			Mode         *string         `json:"mode"`
 			Windows      []HubWindow     `json:"windows"`
 			Samples      []HubSample     `json:"samples"`
 			Leases       []HubLease      `json:"leases"`
@@ -186,7 +188,7 @@ func (h HubClient) FetchUsage(ctx context.Context, now time.Time) (HubData, erro
 	d := HubData{Samples: map[string][]HubSample{}, Leases: map[string][]HubLease{}, OwnLeases: map[string][]HubLease{},
 		Calib: map[string]calib.Factors{}}
 	for _, x := range doc.Seats {
-		s := HubSeat{ID: x.ID, Account: x.Account, Org: x.Org, Label: x.Label, Windows: x.Windows, LiveSessions: x.LiveSessions}
+		s := HubSeat{ID: x.ID, Account: x.Account, Org: x.Org, Label: x.Label, Mode: x.Mode, Windows: x.Windows, LiveSessions: x.LiveSessions}
 		for _, p := range x.Places {
 			slot := p.Slot
 			s.Places = append(s.Places, struct {

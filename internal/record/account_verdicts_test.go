@@ -8,10 +8,11 @@ import (
 )
 
 func TestAccountVerdicts(t *testing.T) {
-	lvl, rank, w := 3, 1, 40.0
+	lvl, rank, w, wc, fc := 3, 1, 40.0, 52.0, 45.0
 	free := "2026-11-20T14:00:00Z"
 	ok := AccountVerdictsPayload{Strategy: "lanes", NextFree: &free, Accounts: []AccountVerdict{
-		{Account: "a", Org: "o", Kind: LeaseAggressive, Eligible: true, Rank: &rank, WeeklyPct: &w},
+		{Account: "a", Org: "o", Kind: LeaseAggressive, Eligible: true, Rank: &rank, WeeklyPct: &w,
+			ModeFrom: ModeFromHub, WeeklyCap: &wc, FiveHourCap: &fc},
 		{Account: "b", Org: "o", Eligible: false, Reason: "5h 99% >= 95", SkipLevel: &lvl, FreeAt: &free},
 	}}
 	m := Meta{Machine: "m_01JA2W5N0G8H3Q7S2V6X9Y1Z4K", Slot: "~/.claude", Now: time.Now(),
@@ -33,6 +34,8 @@ func TestAccountVerdicts(t *testing.T) {
 		"skip_level": func(p *AccountVerdictsPayload) { p.Accounts[1].SkipLevel = &four },
 		"rank":       func(p *AccountVerdictsPayload) { p.Accounts[0].Rank = &neg },
 		"level":      func(p *AccountVerdictsPayload) { p.Accounts[0].WeeklyPct = &nan },
+		"mode_from":  func(p *AccountVerdictsPayload) { p.Accounts[0].ModeFrom = "board" },
+		"cap":        func(p *AccountVerdictsPayload) { p.Accounts[0].FiveHourCap = &nan },
 		"many": func(p *AccountVerdictsPayload) {
 			for len(p.Accounts) <= VerdictMaxAccounts {
 				p.Accounts = append(p.Accounts, p.Accounts[0])

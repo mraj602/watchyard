@@ -51,6 +51,10 @@ func nextVerdicts(res picker.Result) record.AccountVerdictsPayload {
 		if r.Kind != record.LeaseAggressive && r.Kind != record.LeaseProtected {
 			v.Kind = ""
 		}
+		switch r.ModeFrom {
+		case record.ModeFromLocal, record.ModeFromHub, record.ModeFromProposed, record.ModeFromNone:
+			v.ModeFrom = r.ModeFrom
+		}
 		v.Reason = cutRunes(r.Reason, record.VerdictMaxReason)
 		if r.Eligible {
 			rank++
@@ -63,6 +67,7 @@ func nextVerdicts(res picker.Result) record.AccountVerdictsPayload {
 		if l := r.Lanes; l != nil {
 			w, f, b, c := l.WeeklyPct, l.FiveHourPct, l.Burst, l.BurstCap
 			v.WeeklyPct, v.FiveHourPct, v.Burst, v.BurstCap = level(w), level(f), &b, &c
+			v.WeeklyCap, v.FiveHourCap = level(l.WeeklyCap), level(l.FiveHourCap)
 			v.Expiring, v.Stale = l.Expiring, v.Stale || l.Stale
 			if !r.Eligible {
 				s := l.SkipLevel
@@ -124,6 +129,7 @@ func verdictDigest(p record.AccountVerdictsPayload) string {
 	q.Accounts = make([]record.AccountVerdict, len(p.Accounts))
 	for i, a := range p.Accounts {
 		a.FreeAt, a.WeeklyPct, a.FiveHourPct = minute(a.FreeAt), whole(a.WeeklyPct), whole(a.FiveHourPct)
+		a.WeeklyCap, a.FiveHourCap = whole(a.WeeklyCap), whole(a.FiveHourCap)
 		q.Accounts[i] = a
 	}
 	b, _ := json.Marshal(q)

@@ -11,6 +11,22 @@ All notable changes to Watchyard are recorded here. The format follows
 - `POST /v1/sessions/{id}/seen`: marks a session's current Needs-you episode seen even when it
   has no alert (a hub run with `--no-push`, or before the engine reached the episode); the
   board and the phone app use it for such rows.
+- Protected or aggressive is now a per-account hub setting (`Seat.mode`, `PATCH
+  /v1/accounts/{seat}` `mode`, `GET /v1/usage` `mode`; migration 0020), the same on every
+  machine. The board and the phone app have an owner control on each account ("How should the
+  picker use this account?") with a one-line definition under each choice; `wy setup` and `wy
+  account add` ask once per account. A machine's own `next.accounts.<key>.mode` still wins on
+  that machine and is shown as "set on this machine"; an account with no mode shows "Not
+  chosen yet; treated as aggressive." (unchanged behaviour).
+
+### Changed
+
+- **Usage and the picker** on the board and the phone, rewritten in plain words: the verdict
+  explains the account's place in line and each rule with its value against its limit, three
+  tiles show how the 5-hour limit relates to the week, one line says what a new session is
+  set aside, and the charts have titles, a y axis, "no data" gaps, model colours with full
+  names and a text alternative; empty charts are replaced by one line, and the details moved
+  to **How this works**.
 
 ### Fixed
 

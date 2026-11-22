@@ -357,6 +357,15 @@ func accountAdd(ctx context.Context, e *setupEnv, f accountFlags) error {
 		return errors.New("the planner made no new folder")
 	}
 	nt := e.tilde(newDir)
+	// The picker mode of the new folder (setup.md 8.5, Choosing in wy account add): it has no
+	// login yet, so with a hub the proposal waits in slots.modes for its first slot_info.
+	if interactive {
+		if c.Modes = e.askAddMode(ctx, st, nt, label); len(c.Modes) > 0 {
+			if full, err = plan.Plan(st, c); err != nil {
+				return exitWith(exitUsage, err)
+			}
+		}
+	}
 	usesMarket := false
 	p := subPlan(full, func(a model.Action) (model.Action, bool) {
 		switch a.Op {
@@ -386,7 +395,10 @@ func accountAdd(ctx context.Context, e *setupEnv, f accountFlags) error {
 		case model.OpWriteFile:
 			return a, strings.HasSuffix(a.Note, " for "+nt)
 		case model.OpConfigSet:
-			return onlyKeys(a, func(k string) bool { return strings.HasSuffix(k, "."+nt) })
+			return onlyKeys(a, func(k string) bool {
+				_, mode := c.Modes[k] // next.accounts.<label>.mode does not end in the folder
+				return strings.HasSuffix(k, "."+nt) || mode
+			})
 		case model.OpLogin:
 			return a, a.Folder == nt
 		}
@@ -496,23 +508,33 @@ func accountLabel(ctx context.Context, e *setupEnv, f accountFlags) error {
 	if err != nil || f.dryRun || res.Backup == "" {
 		return err
 	}
-	if err := sendSlotInfo(e, fo, label, colour); err != nil {
+	if err := sendSlotInfo(e, fo, label, colour, fo.Mode); err != nil {
 		fmt.Fprintf(e.stderr, "wy account label: slot_info not queued: %v\n", err)
 	}
 	return nil
 }
 
-// sendSlotInfo queues a slot_info record with the label and colour (setup.md 8.4).
-func sendSlotInfo(e *setupEnv, fo model.Folder, label, colour string) error {
+// sendSlotInfo queues a slot_info record with the label, colour and mode (setup.md 8.4,
+// 8.5 Kind; record.md 4.7). A logged-in folder names its login (as wy connect does), so the
+// hub finds the seat even before it has seen the folder.
+func sendSlotInfo(e *setupEnv, fo model.Folder, label, colour, mode string) error {
 	m, err := identity.LoadOrCreateMachine(e.dirs.State.Path, identity.MachineOptions{})
 	if err != nil {
 		return err
 	}
-	extra, err := account.SlotInfoExtra(label, colour)
+	extra, err := account.SlotInfoExtra(label, colour, mode)
 	if err != nil {
 		return err
 	}
-	r, err := record.NewSlotInfo(record.Meta{Machine: m.ID, Slot: fo.Folder, Client: "wy/" + version.Version},
+	meta := record.Meta{Machine: m.ID, Slot: fo.Folder, Client: "wy/" + version.Version}
+	if fo.LoggedIn && fo.Dir != "" && fo.StateFile != "" {
+		store := &identity.Store{StateDir: e.dirs.State.Path, FS: identity.OSFS{}}
+		slot := identity.Slot{Name: fo.Folder, Dir: fo.Dir, StateFile: fo.StateFile, Default: fo.Default}
+		if l, err := store.Login(slot); err == nil && l.HasSeat {
+			meta.Seat = &record.Seat{Account: l.Seat.Account, Org: l.Seat.Org, Email: l.Seat.Email, Src: l.Seat.Src}
+		}
+	}
+	r, err := record.NewSlotInfo(meta,
 		record.SlotInfoPayload{Folder: fo.Folder, Default: fo.Default, LoggedIn: fo.LoggedIn, Extra: extra})
 	if err != nil {
 		return err

@@ -118,6 +118,7 @@ type Seat struct {
 	Plan         *string           `json:"plan"`
 	Label        *string           `json:"label"`
 	Colour       *string           `json:"colour"`
+	Mode         *string           `json:"mode"`
 	Order        int64             `json:"order"`
 	Hidden       bool              `json:"hidden"`
 	Windows      []Window          `json:"windows"`
@@ -142,7 +143,7 @@ func (s *Server) seats(r *http.Request, includeHidden bool) ([]Seat, error) {
 			return nil, err
 		}
 		seat := Seat{ID: x.ID, Account: x.Account, Org: x.Org, Email: x.Email, OrgName: x.OrgName, Plan: x.Plan, Label: x.Label,
-			Colour: x.Colour, Order: x.Order, Hidden: x.Hidden, Windows: windowsOf(ws, now), ExtraUsage: x.ExtraUsage,
+			Colour: x.Colour, Mode: x.Mode, Order: x.Order, Hidden: x.Hidden, Windows: windowsOf(ws, now), ExtraUsage: x.ExtraUsage,
 			Spend: x.Spend, WebRawAt: store.Time(x.WebRawAt), Places: x.Places, SignedOut: x.SignedOut,
 			LiveSessions: x.LiveSessions}
 		if seat.ExtraUsage == nil {

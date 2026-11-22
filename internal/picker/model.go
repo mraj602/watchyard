@@ -54,9 +54,12 @@ type Candidate struct {
 	Org      string // org uuid
 	Email    string
 
-	SeatID    string // hub seat id; "" when no hub seat matched
-	HubLabel  string
-	MatchedBy string // how the hub seat was found: "account", "place", "email"
+	SeatID   string // hub seat id; "" when no hub seat matched
+	HubLabel string
+	HubMode  string // the seat's hub mode: protected, aggressive or "" (setup.md 8.5, Kind)
+	// HubModeCached: HubMode is the kept copy (<state>/next/modes.json), the hub was not read.
+	HubModeCached bool
+	MatchedBy     string // how the hub seat was found: "account", "place", "email"
 	// SignedOut is set when the hub lists this folder on this machine as signed out.
 	SignedOut    *time.Time
 	LiveSessions int

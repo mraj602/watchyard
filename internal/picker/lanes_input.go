@@ -52,6 +52,8 @@ type LaneView struct {
 	Stale            bool       `json:"stale"`
 	Unknown          []string   `json:"unknown"`
 	SkipLevel        int        `json:"skip_level"`
+	WeeklyCap        float64    `json:"weekly_cap"`    // the weekly level at which it takes no new session now
+	FiveHourCap      float64    `json:"five_hour_cap"` // the 5-hour level at which it takes no new session
 	Calibration      *CalibView `json:"calibration"`
 	// LeaseCharges are the account's recent leases and what each adds (setup.md 8.5).
 	LeaseCharges []LeaseChargeView `json:"lease_charges"`
@@ -373,7 +375,7 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		pol, warn := s.PolicyFor(c)
 		res.Warnings = append(res.Warnings, warn...)
 		r := Ranked{Label: c.Label, Folder: c.Folder, Dir: c.Dir, Default: c.Default, Seat: c.SeatID, Email: c.Email,
-			MatchedBy: c.MatchedBy, LoggedIn: c.LoggedIn, Mode: pol.Mode, Settings: pol.Key, Live: c.LiveSessions,
+			MatchedBy: c.MatchedBy, LoggedIn: c.LoggedIn, Mode: pol.Mode, ModeFrom: pol.ModeFrom, Settings: pol.Key, Live: c.LiveSessions,
 			Source: c.Source, key: c.Key(), policy: pol, cand: c, Windows: []Projection{}, Kind: laneKind(pol)}
 		if r.Source == "" {
 			r.Source = "none"
@@ -699,6 +701,7 @@ func laneView(row LaneRow, extra float64, now time.Time) LaneView {
 		Meter5hPct: pyRound(row.Meter5+row.Margin5, 1), Meter7dPct: pyRound(row.Meter7+row.Margin7, 2), Unexplained5hPct: pyRound(extra, 1),
 		Leases: row.Leases, Burst: row.Burst, BurstCap: row.BurstCap, Capped: row.Capped, Expiring: row.Expiring,
 		Stale: row.Stale, Unknown: append([]string{}, row.Unknown...), SkipLevel: row.SkipLevel,
+		WeeklyCap: pyRound(row.WeeklyCap, 1), FiveHourCap: pyRound(row.FiveHourCap, 1),
 		LeaseCharges: []LeaseChargeView{}}
 	for _, lc := range row.LeaseCharges {
 		x := LeaseChargeView{At: lc.T0.UTC(), Machine: "this", Copy: lc.Copy, Launched: lc.Launched, State: lc.State,
