@@ -418,10 +418,12 @@ func (tx *Tx) AlertMachines(ids []string, now int64) ([]AlertMachineRow, error) 
 	return out, rows.Err()
 }
 
-// AlertNeedsYou counts live sessions needing you (the badge count of push.md 6.5).
+// AlertNeedsYou counts live sessions needing you (the badge count of push.md 6.5), leaving
+// out those whose current alert is seen (push.md 4).
 func (tx *Tx) AlertNeedsYou() (int, error) {
 	var n int
-	err := tx.queryRow(`SELECT count(*) FROM session_state WHERE needs_you = 1 AND state NOT IN ('ended', 'gone')`).Scan(&n)
+	err := tx.queryRow(`SELECT count(*) FROM session_state st JOIN session s ON s.id = st.session_id
+		WHERE st.needs_you = 1 AND st.state NOT IN ('ended', 'gone') AND NOT ` + sessionSeenExpr).Scan(&n)
 	return n, err
 }
 
@@ -850,4 +852,31 @@ func strPtr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// AlertsByEpisode returns the alerts with these episodes.
+func (tx *Tx) AlertsByEpisode(episodes []string) ([]model.Alert, error) {
+	if len(episodes) == 0 {
+		return nil, nil
+	}
+	var args []any
+	q := `SELECT ` + alertCols + ` FROM alert WHERE ` + in("episode", episodes, &args)
+	return alertRows(tx.QueryContext(tx.ctx, q+` ORDER BY created_at, id`, args...))
+}
+
+// AlertsFiredOf returns the fired, snoozed and seen alerts of these triggers that first fired
+// at or before firedBy (the usage notices' life, push.md 3.9).
+func (tx *Tx) AlertsFiredOf(triggers []model.Trigger, firedBy int64) ([]model.Alert, error) {
+	if len(triggers) == 0 {
+		return nil, nil
+	}
+	ts := make([]string, len(triggers))
+	for i, t := range triggers {
+		ts[i] = string(t)
+	}
+	args := []any{firedBy}
+	// session_id IS NULL and the open statuses: the alert_open partial index.
+	q := `SELECT ` + alertCols + ` FROM alert WHERE session_id IS NULL AND status IN ('pending', 'fired', 'snoozed', 'seen')
+		AND status <> 'pending' AND fired_at IS NOT NULL AND fired_at <= ? AND ` + in("trigger", ts, &args)
+	return alertRows(tx.QueryContext(tx.ctx, q+` ORDER BY created_at, id`, args...))
 }

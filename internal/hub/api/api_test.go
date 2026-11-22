@@ -51,6 +51,17 @@ func startHub(t *testing.T, path string) *hub {
 // startHubPing is startHub with a chosen SSE ping interval.
 func startHubPing(t *testing.T, path string, ping time.Duration) *hub {
 	t.Helper()
+	return startHubOn(t, path, ping, nil)
+}
+
+// startHubClock is startHub on a chosen clock (the ingest clamp and every handler read it).
+func startHubClock(t *testing.T, now func() time.Time) *hub {
+	t.Helper()
+	return startHubOn(t, "", time.Hour, now)
+}
+
+func startHubOn(t *testing.T, path string, ping time.Duration, now func() time.Time) *hub {
+	t.Helper()
 	if path == "" {
 		path = filepath.Join(t.TempDir(), "hub.db")
 	}
@@ -59,7 +70,7 @@ func startHubPing(t *testing.T, path string, ping time.Duration) *hub {
 		t.Fatal(err)
 	}
 	srv := api.New(api.Config{Store: st, WebUI: fstest.MapFS{"index.html": {Data: []byte("<!doctype html>board")}},
-		PingEvery: ping})
+		PingEvery: ping, Now: now})
 	h := &hub{t: t, path: path, st: st, srv: srv, http: httptest.NewServer(srv.Handler()), tokens: map[string]string{}}
 	t.Cleanup(h.stop)
 	return h

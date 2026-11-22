@@ -103,7 +103,7 @@ request failed (network error, 5xx, 429).
 | --- | --- | --- | --- |
 | `v` | integer | yes | Record format version. `1`. A hub that sees a higher `v` stores the record raw and does not type it. The hub says which `v` it reads (`record_v_max`) and clients never send a higher one (machines.md 7.2). |
 | `id` | string | yes | Idempotency key. See 3.1. |
-| `kind` | string | yes | One of the kinds in section 4 (seven original kinds, plus `machine_info` and `direct_push`), or any future kind (`^[a-z][a-z0-9_]{0,39}$`). |
+| `kind` | string | yes | One of the kinds in section 4 (seven original kinds, plus `machine_info`, `direct_push`, `account_lease` and `account_verdicts`), or any future kind (`^[a-z][a-z0-9_]{0,39}$`). |
 | `ts` | string | yes | When the client observed the fact (RFC 3339 UTC, ms). |
 | `machine` | string | yes | The machine id from [identity.md](identity.md) (`m_` + ULID). |
 | `slot` | string | depends | The config folder the fact came from, written with `~` for the home folder and `/` as separator (`~/.claude`, `~/.claude-2`, `~/work/.claude-x`). Required for `hook_event`, `limit_sample`, `session_list`, `slot_info`; optional for `token_rows` and `history_import` (omitted when the transcripts folder is shared by several slots); absent for `web_usage`. |
@@ -167,6 +167,9 @@ events are installed).
 - `payload` is the JSON object Claude Code wrote to the hook's stdin, with every field
   kept, except the content fields in the table below.
 - `slot` and `seat` are required (seat when logged in).
+- On `SessionStart` and `SessionEnd`, `wy hook` also appends a `launched` or `ended` line to
+  the lease ledger when the session has a lease there (setup.md 8.5, "Leases and the
+  ledger"). Nothing about it goes into the record.
 
 Content fields (the closed list, checked against the captured payloads in `testdata/hooks/`).
 Each is removed on **every** event, whether or not it is listed against that event below
@@ -492,6 +495,7 @@ last one it sent for that slot, and once a day per slot.
 | `sharing` | object | no | Which parts are symlinked to which target, for the Accounts screen: `{"settings.json": "~/.claude/settings.json", ...}`. |
 | `label` | string | no | Local label for this folder's login (`slots.labels`, set by `wy setup` / `wy account label`). The hub applies it to the seat only while the seat has no label set in the UI (setup.md 8.4). |
 | `colour` | string | no | `#rrggbb`, same rule as `label`. |
+| `mode` | string | no | `protected` or `aggressive`: how the picker should use this folder's login, as chosen in `wy setup` or `wy account add` on a machine with a hub (`slots.modes`, setup.md 8.5 *Kind*). The hub applies it only while nobody has chosen for the seat: no mode, and the owner has not set Not chosen (`seat.pick_mode` and `seat.pick_mode_src` NULL). The first machine's choice fills it, and after that only the owner changes it (board, phone, `PATCH /v1/accounts/{seat}`). Any other value is ignored. |
 
 ### 4.8 `machine_info`
 
@@ -542,6 +546,60 @@ Written by `wy` right after it sent a session push itself (machines.md 5.4, 5.5)
 | `status` | integer | no | HTTP status when not ok. |
 | `error` | string | no | `timeout`, `connection failed`, … (push.md 7.3's reduced forms). |
 | `private` | boolean | no | Private text was used. |
+
+### 4.10 `account_lease`
+
+Written by `wy account next` for each pick it records on a folder whose login is known, right
+after the pick's line in its lease ledger (setup.md 8.5), and uploaded by the usual flush: the
+picker never waits for it. `seat` is the picked account (`src: "claude_json"`); no `slot` (the
+folder is in the payload, so a lease never moves a slot's login). `ts` is the pick time. The hub keeps it in
+`account_lease` (schema.sql) and returns other machines' leases in `GET /v1/usage`, without
+their session id or machine, so pickers on every machine count them. The hub reads no
+`account_lease` it cannot type (no seat, or fields of the wrong type): the record is stored
+with `typed = 0` and a `type_error`, as section 5 says.
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `lease_id` | string | yes | The ledger line's `id`, a ULID. The hub keeps one row per lease id. |
+| `session_id` | string | no | From `--session-id`: the session the lease is for (same pattern as `hook_event`'s). |
+| `kind` | string | yes | `aggressive` or `protected` (setup.md 8.5 `lanes`). |
+| `c5` | number | yes | Lane charge, 5-hour points. |
+| `cf` | number | yes | Expected full cost of the lane, 5-hour points. |
+| `strategy` | string | yes | The strategy that picked (`lanes`, `smart`, ...). |
+| `urgent` | boolean | yes | `--urgent` passed a burst cap for this pick. |
+| `model` | string | no | `--model`, when given. |
+| `folder` | string | no | The picked folder, with `~` (`~/.claude-3`). |
+| `batch` | string | no | The id shared by the picks of one call. |
+
+### 4.11 `account_verdicts`
+
+Written by `wy account next` once per run (not with `--no-reserve`, and skipped when it would
+repeat the last one within 15 minutes; setup.md 8.5, Verdicts to the hub) and uploaded by the
+usual flush. No `seat` and no `slot`: each account names its own login. `ts` is the run's time.
+The hub keeps, per seat, the newest verdict of any machine (`seat_verdict`, schema.sql; a
+verdict older than the stored one is ignored) and shows it in the account's Details
+(`GET /v1/accounts/{seat}/relation`). An account whose account and org uuids name no seat on
+the hub is skipped. A payload the hub cannot type is stored with `typed = 0` and a
+`type_error` (section 5).
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `strategy` | string | yes | The strategy that ranked (`lanes`, `smart`, ...). |
+| `next_free` | string \| null | no | When the earliest account frees up, RFC 3339 UTC (setup.md 8.5), when none is eligible. |
+| `accounts` | array | yes | 1 to 50 items, one per account (an account with two folders once): |
+| `accounts[].account`, `accounts[].org` | string | yes | The login's account and org uuids. |
+| `accounts[].kind` | string | no | `aggressive` or `protected` (`lanes` only). |
+| `accounts[].eligible` | boolean | yes | Whether the account could take the next session. |
+| `accounts[].reason` | string | no | Why not, as in `--json` `reason` (at most 300 characters); for an eligible `lanes` account ranked last, why. |
+| `accounts[].skip_level` | integer | no | `lanes`: 0 burst cap only, 1 stale, 2 a protected rule, 3 a hard limit. |
+| `accounts[].rank` | integer | no | Its place among the eligible accounts, 1 = next. |
+| `accounts[].expiring` | boolean | no | `lanes`: its weekly room is about to expire, so it goes first. |
+| `accounts[].free_at` | string \| null | no | When it frees up (RFC 3339 UTC), for an account that is not eligible. |
+| `accounts[].weekly_pct`, `accounts[].five_hour_pct` | number \| null | no | Its effective weekly and 5-hour levels (0–100). |
+| `accounts[].burst`, `accounts[].burst_cap` | integer | no | `lanes`: leases in the last 60 minutes, and the cap. |
+| `accounts[].stale` | boolean | no | `lanes`: its newest reading is stale. |
+| `accounts[].mode_from` | string | no | Where its kind came from (setup.md 8.5 *Kind*): `local` (this machine's `next.accounts.<key>.mode`), `hub` (the seat's hub setting), `proposed` (this machine's `slots.modes`, not on the hub yet) or `none` (not chosen: aggressive). |
+| `accounts[].weekly_cap`, `accounts[].five_hour_cap` | number | no | `lanes`: the weekly and 5-hour levels at which it takes no new session now (protected: the pace line `min(T, T × (1 − hours_to_reset / 168) + 10)` and the 5-hour floor; aggressive: the aggressive limits), after `reserve_pct`. |
 
 ## 5. Validation on the hub
 

@@ -17,7 +17,7 @@ func init() {
 	Register("PATCH", "/v1/accounts/{seat}", func(s *Server) http.Handler { return http.HandlerFunc(s.patchSeat) })
 }
 
-var seatPatchKeys = map[string]bool{"label": true, "colour": true, "order": true, "hidden": true}
+var seatPatchKeys = map[string]bool{"label": true, "colour": true, "order": true, "hidden": true, "mode": true}
 
 // decodeSeatPatch reads a SeatPatch, keeping which keys were present (null clears).
 func decodeSeatPatch(r *http.Request, w http.ResponseWriter) (store.SeatPatch, bool) {
@@ -43,6 +43,12 @@ func decodeSeatPatch(r *http.Request, w http.ResponseWriter) (store.SeatPatch, b
 			} else {
 				p.ColourSet, p.Colour = true, sp
 			}
+		case "mode":
+			var sp *string
+			if json.Unmarshal(v, &sp) != nil {
+				return p, false
+			}
+			p.ModeSet, p.Mode = true, sp
 		case "order":
 			var n int64
 			if isNull || json.Unmarshal(v, &n) != nil {
@@ -64,7 +70,7 @@ func (s *Server) patchSeat(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("seat")
 	p, ok := decodeSeatPatch(r, w)
 	if !ok {
-		auth.WriteError(w, http.StatusBadRequest, "bad_request", "the body must be a JSON object with label, colour, order or hidden")
+		auth.WriteError(w, http.StatusBadRequest, "bad_request", "the body must be a JSON object with label, colour, order, hidden or mode")
 		return
 	}
 	if err := p.Validate(); err != nil {

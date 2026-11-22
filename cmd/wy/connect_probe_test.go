@@ -81,7 +81,8 @@ func TestConnectProbeCarriesLabels(t *testing.T) {
 	if err := os.MkdirAll(deps.dirs.Config.Path, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cfg := "version = 1\n\n[slots]\n[slots.colours]\n'~/.claude' = '#14b8a6'\n\n[slots.labels]\n'~/.claude' = 'work'\n'~/.claude-2' = 'Bad Label'\n"
+	cfg := "version = 1\n\n[slots]\n[slots.colours]\n'~/.claude' = '#14b8a6'\n\n[slots.labels]\n'~/.claude' = 'work'\n'~/.claude-2' = 'Bad Label'\n" +
+		"\n[slots.modes]\n'~/.claude' = 'protected'\n'~/.claude-2' = 'normal'\n"
 	if err := os.WriteFile(filepath.Join(deps.dirs.Config.Path, "config.toml"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -100,10 +101,10 @@ func TestConnectProbeCarriesLabels(t *testing.T) {
 		}
 		got[r.Slot] = r.Payload
 	}
-	if p := got["~/.claude"]; p["label"] != "work" || p["colour"] != "#14b8a6" {
+	if p := got["~/.claude"]; p["label"] != "work" || p["colour"] != "#14b8a6" || p["mode"] != "protected" {
 		t.Errorf("~/.claude payload %v, want label work and colour #14b8a6", p)
 	}
-	if p := got["~/.claude-2"]; p["label"] != nil || p["colour"] != nil {
+	if p := got["~/.claude-2"]; p["label"] != nil || p["colour"] != nil || p["mode"] != nil {
 		t.Errorf("~/.claude-2: an invalid hand-edited label must be left out: %v", p)
 	}
 }

@@ -3,10 +3,17 @@
 import { h } from './dom.js';
 import { toast } from './ui.js';
 import { clock } from '../format.js';
-import { reasonText } from './alerts-fmt.js';
-import { store, markSeen, snooze, canPush, actionable } from '../store.js';
+import { reasonText, seenTarget, canSnoozeRow } from './alerts-fmt.js';
+import { store, markSeen, markSessionSeen, snooze, canPush } from '../store.js';
 
 export { reasonText };
+
+// Seen on a row: the alert's own Seen, or the session's for a Needs-you row with no alert.
+export function seenRow(s) {
+  const t = seenTarget(s);
+  if (!t) return Promise.resolve(null);
+  return t.alert ? markSeen(t.alert, s.id) : markSessionSeen(s.id);
+}
 
 // "notifies in 40 s" counts down; the app refreshes [data-due] every few seconds.
 export function untilShort(ts, now = Date.now()) {
@@ -46,13 +53,13 @@ export function alertLine(a, now) {
 
 const MIN = 15;
 
-// Seen and Snooze buttons. Hidden unless the caller may push and the alert can still be
-// acted on; disabled while offline.
+// Seen and Snooze buttons. Hidden unless the caller may push; Seen for every row seenTarget
+// allows (a skipped alert, or no alert, on a Needs-you row too), Snooze only for an alert that
+// can still push; disabled while offline.
 export function alertButtons(s, { size = '' } = {}) {
-  const a = s.alert;
-  if (!canPush() || !a) return null;
-  const canSeen = actionable(a) || (a.status === 'skipped' && s.needs_you);
-  const canSnooze = actionable(a);
+  if (!canPush()) return null;
+  const canSeen = !!seenTarget(s);
+  const canSnooze = canSnoozeRow(s);
   if (!canSeen && !canSnooze) return null;
   const off = !!store.offline;
   const run = (fn) => async (e) => {
@@ -61,11 +68,9 @@ export function alertButtons(s, { size = '' } = {}) {
     try { await fn(); } catch (ex) { toast(ex.status === 409 ? 'That alert already changed' : ex.message); b.disabled = false; }
   };
   return h('div', { class: 'alert-actions' },
-    canSeen ? h('button', { type: 'button', class: `btn ${size}`, 'data-key': `seen-${s.id}`, disabled: off, onclick: run(() => markSeen(a.id, s.id)) }, 'Seen') : null,
-    canSnooze ? h('button', { type: 'button', class: `btn ${size}`, 'data-key': `snooze-${s.id}`, disabled: off, onclick: run(() => snooze(a.id, s.id)) }, `Snooze ${MIN} min`) : null);
+    canSeen ? h('button', { type: 'button', class: `btn ${size}`, 'data-key': `seen-${s.id}`, disabled: off, onclick: run(() => seenRow(s)) }, 'Seen') : null,
+    canSnooze ? h('button', { type: 'button', class: `btn ${size}`, 'data-key': `snooze-${s.id}`, disabled: off, onclick: run(() => snooze(s.alert.id, s.id)) }, `Snooze ${MIN} min`) : null);
 }
 
-export const canAct = (s) => {
-  const a = s.alert;
-  return canPush() && !!a && (actionable(a) || (a.status === 'skipped' && s.needs_you)) && !store.offline;
-};
+// The row has Seen or Snooze now (the ⋯ menu and the swipe).
+export const canAct = (s) => canPush() && (!!seenTarget(s) || canSnoozeRow(s)) && !store.offline;

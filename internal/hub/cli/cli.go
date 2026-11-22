@@ -31,6 +31,7 @@ import (
 	"github.com/mraj602/watchyard/internal/hub/api"
 	"github.com/mraj602/watchyard/internal/hub/appmirror"
 	"github.com/mraj602/watchyard/internal/hub/auth"
+	"github.com/mraj602/watchyard/internal/hub/calibrate"
 	"github.com/mraj602/watchyard/internal/hub/hublock"
 	"github.com/mraj602/watchyard/internal/hub/ingest"
 	hubkeys "github.com/mraj602/watchyard/internal/hub/keys"
@@ -421,6 +422,12 @@ func serve(args []string, stdout, stderr io.Writer) error {
 		go appMirror.Run(mctx, appMirrorEvery)
 	}
 	go func() { defer close(mdone); maintain(mctx, st, clk, logger) }()
+	cdone := make(chan struct{})
+	var notify calibrate.Notifier
+	if eng != nil {
+		notify = eng.Notices // the usage notices (push.md 3.9)
+	}
+	go func() { defer close(cdone); calibrate.Loop(mctx, st, clk.Now, notify, logger.Printf) }()
 	errc := make(chan error, 1)
 	go func() { errc <- hs.Serve(ln) }()
 	var serveErr error
@@ -449,6 +456,7 @@ func serve(args []string, stdout, stderr io.Writer) error {
 	}
 	mcancel()
 	<-mdone
+	<-cdone
 	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		return serveErr
 	}
@@ -852,8 +860,8 @@ func prune(args []string, stdout, stderr io.Writer) error {
 	if *dry {
 		verb = "would remove"
 	}
-	fmt.Fprintf(stdout, "before %s: %s %d records (%d hook events), %d limit samples, %d web usage responses, %d token rows, %d limit hits\n",
-		localtime.Format(cut), verb, res.Records, res.HookEvents, res.LimitSamples, res.WebUsage, res.TokenRows, res.LimitHits)
+	fmt.Fprintf(stdout, "before %s: %s %d records (%d hook events), %d limit samples, %d web usage responses, %d token rows, %d limit hits, %d account leases\n",
+		localtime.Format(cut), verb, res.Records, res.HookEvents, res.LimitSamples, res.WebUsage, res.TokenRows, res.LimitHits, res.AccountLeases)
 	fmt.Fprintln(stdout, "kept: seats, machines, slots, sessions and their states, usage windows, history days, devices")
 	return nil
 }

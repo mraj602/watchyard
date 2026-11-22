@@ -173,9 +173,15 @@ func (tx *Tx) PutFold(id string, f FoldRow) error {
 		nullStr(f.Detector), f.UpdatedAt, nullStr(f.Peers)); err != nil {
 		return err
 	}
-	_, err := tx.exec(`UPDATE session SET last_event_at = ?, last_listed_at = ?, missed_lists = ?, ended_at = ?, end_reason = ? WHERE id = ?`,
-		nullInt(f.LastEventAt), nullInt(f.LastListedAt), f.MissedLists, nullInt(f.EndedAt), nullStr(f.EndReason), id)
-	return err
+	if _, err := tx.exec(`UPDATE session SET last_event_at = ?, last_listed_at = ?, missed_lists = ?, ended_at = ?, end_reason = ? WHERE id = ?`,
+		nullInt(f.LastEventAt), nullInt(f.LastListedAt), f.MissedLists, nullInt(f.EndedAt), nullStr(f.EndReason), id); err != nil {
+		return err
+	}
+	// A session that ended or went away holds no tags (peers.md 3.4).
+	if f.EndedAt != 0 || f.State == "ended" || f.State == "gone" {
+		return tx.ClearPeerTags(id)
+	}
+	return nil
 }
 
 // TransitionRow is one session_transition row.

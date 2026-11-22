@@ -49,7 +49,14 @@ type Current struct {
 	Session *SessionNow
 	Seat    *SeatNow
 	Machine *MachineNow
+	Notice  *model.Notice
 }
+
+// Usage notice timing (push.md 3.9).
+const (
+	NoticeMaxAgeMS = 6 * 3600_000  // an older since_at is history: skipped stale
+	NoticeLifeMS   = 24 * 3600_000 // closes this long after it fired
+)
 
 // Env is what every decision needs besides the subject.
 type Env struct {
@@ -92,8 +99,48 @@ func Decide(cur Current, alerts []model.Alert, env Env) []Op {
 		return decideSeat(*cur.Seat, alerts, env)
 	case cur.Machine != nil:
 		return decideMachine(*cur.Machine, alerts, env)
+	case cur.Notice != nil:
+		return decideNotice(*cur.Notice, alerts, env)
 	}
 	return nil
+}
+
+// decideNotice creates a usage notice's alert once (push.md 3.9): pending and due now, or
+// skipped when its rule is off or it is history.
+func decideNotice(n model.Notice, alerts []model.Alert, env Env) []Op {
+	if !n.Trigger.IsNotice() || n.Episode == "" || hasEpisode(alerts, n.Episode) {
+		return nil
+	}
+	rule, ok := Match(env.Rules, n.Trigger, Subject{Seat: n.Seat, Machine: n.Machine})
+	if !ok {
+		return nil
+	}
+	a := model.Alert{
+		AlertBrief: model.AlertBrief{Trigger: n.Trigger},
+		Rule:       strp(rule.ID), SinceAt: model.Time(n.SinceMS), CreatedAt: model.Time(env.NowMS),
+		Episode: n.Episode, Facts: n.Facts,
+	}
+	if n.Seat != "" {
+		a.Seat = strp(n.Seat)
+	}
+	if n.Machine != "" {
+		a.Machine = strp(n.Machine)
+	}
+	switch {
+	case !rule.Enabled:
+		a.Status, a.Reason, a.EndedAt = model.StatusSkipped, strp(model.ReasonRuleOff), model.Time(env.NowMS)
+	case n.SinceMS < env.NowMS-NoticeMaxAgeMS:
+		a.Status, a.Reason, a.EndedAt = model.StatusSkipped, strp(model.ReasonStale), model.Time(env.NowMS)
+	default:
+		a.Status, a.DueAt = model.StatusPending, model.Time(env.NowMS)
+	}
+	return []Op{{Kind: OpCreate, Alert: a}}
+}
+
+// NoticeExpired reports whether a usage notice that pushed is past its life (push.md 3.9).
+func NoticeExpired(a model.Alert, nowMS int64) bool {
+	return a.Trigger.IsNotice() && a.FiredAt != 0 && int64(a.FiredAt)+NoticeLifeMS <= nowMS &&
+		(a.Status == model.StatusFired || a.Status == model.StatusSnoozed || a.Status == model.StatusSeen)
 }
 
 // OpenStatus reports whether reconcile may still end an alert in status s.

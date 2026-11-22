@@ -51,7 +51,7 @@ func known(kind string) bool {
 	switch kind {
 	case record.KindHookEvent, record.KindLimitSample, record.KindWebUsage, record.KindTokenRows,
 		record.KindSessionList, record.KindHistoryImport, record.KindSlotInfo,
-		record.KindMachineInfo, record.KindDirectPush:
+		record.KindMachineInfo, record.KindDirectPush, record.KindAccountLease, record.KindAccountVerdicts:
 		return true
 	}
 	return false
@@ -120,6 +120,10 @@ func (t *typer) dispatch(r *record.Record, ts time.Time) error {
 		return t.machineInfo(c)
 	case record.KindDirectPush:
 		return t.directPush(c)
+	case record.KindAccountLease:
+		return t.accountLease(c)
+	case record.KindAccountVerdicts:
+		return t.accountVerdicts(c)
 	}
 	return nil
 }
@@ -917,12 +921,17 @@ func (t *typer) slotInfo(c *ctx) error {
 	t.ch.Seats[seat] = true
 	// A slot_info label and colour apply only while no one set them in the UI (look_src
 	// NULL or 'slot'; desktop.md C10, record.md 4.7).
+	// A slot_info mode applies only while the seat has no mode at all (record.md 4.7).
 	var look struct {
 		Label  string `json:"label"`
 		Colour string `json:"colour"`
+		Mode   string `json:"mode"`
 	}
 	_ = json.Unmarshal(c.r.Payload, &look)
 	if _, err := t.tx.SeatSlotLook(seat, look.Label, look.Colour); err != nil {
+		return err
+	}
+	if _, err := t.tx.SeatSlotMode(seat, look.Mode); err != nil {
 		return err
 	}
 	if acct != "" {

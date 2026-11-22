@@ -3,10 +3,11 @@
 
 import {
   AuthError, getMe, getOverview, getSessions, getSession, openStream, setCachedHandler,
-  snoozeAlert, seenAlert, putJSON, authReason,
+  snoozeAlert, seenAlert, seenSession, putJSON, authReason,
 } from './api.js';
 import { applyOrder } from './components/order.js';
 import { meInApp, markerInApp } from './components/notif-note.js';
+import { actionable } from './components/alerts-fmt.js';
 
 const listeners = new Set();
 
@@ -163,17 +164,31 @@ export async function refreshAll() {
 // Statuses where an episode still has an alert row worth showing on its session.
 const OPEN = new Set(['pending', 'fired', 'snoozed', 'seen', 'skipped']);
 
+// A seen alert hides its session from Needs you until its state changes (push.md 4). The hub
+// leaves such sessions out of the overview; between fetches the board remembers the state_since
+// of the episode that was seen, so a stream event for the same episode does not bring it back.
+const seenEpisode = new Map(); // session id -> state_since seen
+
+function hiddenSeen(s) { return seenEpisode.get(s.id) === s.state_since; }
+
 function patchSessionAlert(sessionId, brief) {
   const alert = brief && OPEN.has(brief.status) ? brief : null;
-  const set = (s) => { if (s && s.id === sessionId) s.alert = alert; };
+  let since = null;
+  const set = (s) => { if (s && s.id === sessionId) { s.alert = alert; since = s.state_since; } };
   const o = store.overview;
   if (o) o.needs_you.forEach(set);
   if (store.sessions) store.sessions.forEach(set);
   set(store.detail);
+  if (alert && alert.status === 'seen' && since) seenEpisode.set(sessionId, since);
+  else seenEpisode.delete(sessionId);
+  if (o && seenEpisode.has(sessionId)) {
+    o.needs_you = o.needs_you.filter((s) => !hiddenSeen(s));
+    o.counts = { ...o.counts, needs_you: o.needs_you.length };
+  }
 }
 
-// The brief of the alert on a session, only while it can still push or be acknowledged.
-export const actionable = (a) => !!a && (a.status === 'pending' || a.status === 'fired' || a.status === 'snoozed');
+// The brief of the alert on a session, only while it can still push (components/alerts-fmt.js).
+export { actionable };
 
 // Seen and Snooze come back as the whole Alert; keep its brief on the session.
 async function act(call, sessionId) {
@@ -182,6 +197,8 @@ async function act(call, sessionId) {
   return a;
 }
 export const markSeen = (alertId, sessionId) => act(() => seenAlert(alertId), sessionId);
+// A Needs-you row with no alert: the hub marks (or creates) the episode's alert seen (push.md 4).
+export const markSessionSeen = (sessionId) => act(() => seenSession(sessionId), sessionId);
 export const snooze = (alertId, sessionId, minutes) => act(() => snoozeAlert(alertId, minutes), sessionId);
 
 // ---- stream events -----------------------------------------------------------------------
@@ -217,7 +234,7 @@ function applySession({ session, change }) {
   const o = store.overview;
   if (o) {
     o.needs_you = o.needs_you.filter((s) => s.id !== session.id);
-    if (session.needs_you) {
+    if (session.needs_you && !hiddenSeen(session)) {
       o.needs_you.push(session);
       o.needs_you.sort((a, b) => Date.parse(a.state_since) - Date.parse(b.state_since));
     }

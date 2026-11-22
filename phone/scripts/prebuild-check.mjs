@@ -54,7 +54,8 @@ try {
     const manifest = read('android', 'app', 'src', 'main', 'AndroidManifest.xml');
     check(manifest.includes('android.permission.POST_NOTIFICATIONS'), 'POST_NOTIFICATIONS permission');
     check(manifest.includes('android.permission.CAMERA'), 'CAMERA permission');
-    for (const p of ['RECORD_AUDIO', 'SYSTEM_ALERT_WINDOW']) {
+    check(manifest.includes('android.permission.RECORD_AUDIO'), 'RECORD_AUDIO permission (claude.ai mic in a tab, P17.5)');
+    for (const p of ['SYSTEM_ALERT_WINDOW']) {
       const re = new RegExp(`<uses-permission[^>]*android\\.permission\\.${p}"(?![^>]*tools:node="remove")[^>]*>`);
       check(!re.test(manifest), `no ${p} (or removed with tools:node="remove")`);
     }

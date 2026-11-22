@@ -284,6 +284,29 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
 
+  /v1/sessions/{id}/seen:
+    post:
+      tags: [alerts]
+      operationId: seenSession
+      summary: Mark the session's current Needs-you episode seen
+      description: |
+        push.md 4 ("Seen on a session"). For a Needs-you row with no alert brief: Seen on the
+        episode's alert when it has one, else the hub creates that alert as `seen`. Works with
+        pushes off. 409 when the session does not need you now.
+      x-scopes: [push, owner]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: The episode's alert, now seen.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Alert"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+
   /v1/accounts:
     get:
       tags: [read]
@@ -316,11 +339,12 @@ paths:
     patch:
       tags: [read]
       operationId: patchSeat
-      summary: Set a seat's label, colour, order or hidden flag
+      summary: Set a seat's label, colour, order, hidden flag or picker mode
       description: |
         desktop.md C10. `null` clears `label` or `colour`; a missing key leaves it.
         Sets `seat.look_src = 'ui'`, so a later `slot_info` label or colour no longer applies
-        (record.md 4.7). Publishes a `usage` stream event.
+        (record.md 4.7). `mode` (setup.md 8.5, Kind) is `protected`, `aggressive` or `null`
+        (not chosen) and sets `seat.pick_mode_src = 'ui'`. Publishes a `usage` stream event.
       x-scopes: [owner]
       parameters:
         - {name: seat, in: path, required: true, schema: {type: string}}
@@ -427,6 +451,33 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
 
+  /v1/accounts/{seat}/relation:
+    get:
+      tags: [read]
+      operationId: seatRelation
+      summary: How one seat's 5-hour use, weekly use and API cost relate, its calibration and the picker's verdict
+      description: >-
+        For an account's Details (setup.md 8.5, Usage relation): the daily 5-hour to weekly
+        ratio with each day's most-used model, the 5-hour capacity index per model (API dollars
+        per 5-hour point, normalised to last week, with the weekly medians), whether the seat is
+        Claude-Code-heavy, its calibration factors and the newest verdict of `wy account next`
+        about it. Read from what the hub's calibration job stored; cheap.
+      x-scopes: [read]
+      parameters:
+        - name: seat
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: The seat's usage relation.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UsageRelation"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
   /v1/machines:
     get:
       tags: [read]
@@ -528,6 +579,44 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/DirectPolicy"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /v1/usage:
+    get:
+      tags: [read]
+      operationId: seatUsage
+      summary: Every seat's limit windows and recent samples (wy account next)
+      description: >-
+        setup.md 8.5, tokens.md 3. Readable with a machine token (scope write) as well as a read
+        token, so `wy account next` on any connected machine can rank its accounts. It is the
+        owner's own seat usage, percentages and times only: each seat has its id, account and
+        org uuids (to match local logins), label, current windows (as in /v1/accounts),
+        samples since `since`, live session count, and the folders of the calling machine
+        that are logged in to it (`places`) or signed out of it (`signed_out`), and the picks
+        other machines' `wy account next` recorded for it in the last 7 days (`leases`, from
+        `account_lease` records: times, charges, whether the session started or ended, a hash of
+        its session id and, for its first 5 hours, the weighted token units its session used
+        per minute, so pickers on every machine count each other's lanes once), the calling
+        machine's own picks of the last 5 hours measured the same way (`own_leases`), and
+        the seat's calibration factors (`calibration`: meter factor, ratio, lane price and how
+        far each is measured, computed by the hub's calibration job, never per request). It
+        never holds an email, an org name, another machine's places or name, a session id, or any
+        project or message data. Hidden seats are included. A token without a machine gets empty
+        `places`, `signed_out` and `own_leases`, and every seat's leases.
+      x-scopes: [read, write]
+      parameters:
+        - name: since
+          in: query
+          description: "Oldest sample to return. Default 26 hours ago; at most 8 days back (an older value is clamped)."
+          schema: {type: string, format: date-time}
+      responses:
+        "200":
+          description: The seats, in display order.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UsageDoc"}
+        "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
 
@@ -2125,7 +2214,7 @@ components:
         dormant: {type: boolean, description: "Open, not needing you, and done with no activity for 12 h or working and stale (states.md 5): not counted in counts.live."}
         activity_at: {type: [string, "null"], format: date-time, description: "Newest of last event, state_since, start and end (not the last listing): what `dormant`, `days` and the order use. Null when nothing is known."}
         alert:
-          description: "The open alert of this session's current episode, if any (push.md 4)."
+          description: "The alert of this session's current episode while it is open (pending, fired, snoozed, seen) or skipped, if any (push.md 4, 10.1). Seen is allowed on a skipped one; Snooze is not."
           oneOf:
             - {$ref: "#/components/schemas/AlertBrief"}
             - {type: "null"}
@@ -2185,6 +2274,13 @@ components:
         label: {type: [string, "null"]}
         colour: {type: [string, "null"]}
         order: {type: integer, description: "Display position: seats are listed by it (PUT /v1/seats/order sets it, 0..n-1)."}
+        mode:
+          type: [string, "null"]
+          enum: [protected, aggressive, null]
+          description: >-
+            How `wy account next` should use the account (setup.md 8.5, Kind), the same on every
+            machine; null: not chosen, treated as aggressive. A machine's own
+            `next.accounts.<key>.mode` wins on that machine.
         hidden: {type: boolean}
         windows:
           type: array
@@ -2328,6 +2424,7 @@ components:
         colour: {type: [string, "null"], pattern: "^#[0-9a-f]{6}$"}
         order: {type: integer}
         hidden: {type: boolean}
+        mode: {type: [string, "null"], enum: [protected, aggressive, null], description: "The picker's use of the account (Seat.mode); null: not chosen."}
       additionalProperties: false
 
     MachinePatch:
@@ -2372,6 +2469,266 @@ components:
           type: array
           items: {type: string}
 
+    UsageDoc:
+      type: object
+      description: "GET /v1/usage (setup.md 8.5)."
+      required: [v, time, machine, since, seats]
+      additionalProperties: false
+      properties:
+        v: {type: integer, const: 1}
+        time: {type: string, format: date-time}
+        machine: {type: [string, "null"], description: The calling device's machine id.}
+        since: {type: string, format: date-time}
+        seats:
+          type: array
+          items: {$ref: "#/components/schemas/UsageSeat"}
+
+    UsageSeat:
+      type: object
+      required: [id, account, org, label, mode, windows, samples, live_sessions, places, signed_out, leases, own_leases, calibration]
+      additionalProperties: false
+      properties:
+        id: {type: string}
+        account: {type: string, description: Account uuid.}
+        org: {type: string, description: Org uuid.}
+        label: {type: [string, "null"]}
+        mode: {type: [string, "null"], enum: [protected, aggressive, null], description: "The seat's hub setting for the picker (Seat.mode); null: not chosen."}
+        windows:
+          type: array
+          items: {$ref: "#/components/schemas/Window"}
+        samples:
+          type: array
+          description: Newest first, at most 5000.
+          items: {$ref: "#/components/schemas/LimitSample"}
+        live_sessions: {type: integer}
+        places:
+          type: array
+          description: Folders of the calling machine logged in to this seat.
+          items:
+            type: object
+            required: [slot]
+            additionalProperties: false
+            properties:
+              slot: {type: string}
+        signed_out:
+          type: array
+          description: Folders of the calling machine signed out of this seat (as Seat.signed_out).
+          items:
+            type: object
+            required: [slot, since]
+            additionalProperties: false
+            properties:
+              slot: {type: string}
+              since: {type: string, format: date-time}
+        leases:
+          type: array
+          description: >-
+            Leases other machines recorded for this seat in the last 7 days (record.md 4.10,
+            setup.md 8.5), oldest first, at most 500. The calling machine's own leases are left
+            out (its ledger has them).
+          items: {$ref: "#/components/schemas/UsageLease"}
+        own_leases:
+          type: array
+          description: >-
+            The calling machine's own leases of this seat from the last 5 hours, oldest first, at
+            most 500, so it can measure a lane it picked that runs elsewhere (setup.md 8.5). Empty
+            for a token without a machine.
+          items: {$ref: "#/components/schemas/UsageLease"}
+        calibration:
+          description: The seat's calibration (setup.md 8.5, Calibration); null before the hub's first run for it.
+          oneOf:
+            - {$ref: "#/components/schemas/Calibration"}
+            - {type: "null"}
+
+    Calibration:
+      type: object
+      description: >-
+        The lanes strategy's self-adjusting factors of one seat (setup.md 8.5, Calibration), as
+        the hub's calibration job last computed them.
+      required: [at, since, reset, f, ratio, lane_price, lane_charge, lane_units, unexplained_pct_per_hour, unexplained_hours]
+      additionalProperties: false
+      properties:
+        at: {type: string, format: date-time, description: When the job computed them (on data up to 30 minutes older).}
+        since: {type: [string, "null"], format: date-time, description: "First usable measurement since the last restart (null: none yet)."}
+        reset:
+          description: The last restart, null when there was none.
+          oneOf:
+            - type: object
+              required: [at, reason]
+              additionalProperties: false
+              properties:
+                at: {type: string, format: date-time}
+                reason: {type: string, enum: [seat_change, under_read, over_read]}
+            - {type: "null"}
+        f: {$ref: "#/components/schemas/CalibrationFactor"}
+        ratio: {$ref: "#/components/schemas/CalibrationFactor"}
+        lane_price: {$ref: "#/components/schemas/CalibrationFactor"}
+        lane_charge: {type: number, description: "Lane charge c = cf = 2 × lane_price.value, 5-hour points."}
+        lane_units: {type: [number, "null"], description: "Mean weighted units of a lane's first 5 hours, pooled over every seat (null: no lane yet)."}
+        unexplained_pct_per_hour: {type: [number, "null"], description: "5-hour points per hour of use the meter cannot see, from clean pairs of the last 7 days."}
+        unexplained_hours: {type: number, description: Hours of clean pairs behind it.}
+
+    UsageRelation:
+      type: object
+      description: One seat's usage relation (setup.md 8.5, Usage relation). Days are days of `tz`.
+      required: [seat, time, tz, today, days, heavy, models, calibration, verdict]
+      properties:
+        seat: {type: string}
+        time: {type: string, format: date-time}
+        tz: {type: string, description: "The hub's time zone (push.md 2)."}
+        today: {type: string, format: date}
+        days:
+          type: array
+          description: The 14 days ending today, oldest first, every day present.
+          items: {$ref: "#/components/schemas/RelationDay"}
+        heavy:
+          type: object
+          required: [this_week, last_week]
+          properties:
+            this_week: {$ref: "#/components/schemas/RelationHeavy"}
+            last_week: {$ref: "#/components/schemas/RelationHeavy"}
+        models:
+          type: array
+          description: Models with a capacity index on any of the 14 days, the most dollars first.
+          items: {$ref: "#/components/schemas/RelationModel"}
+        calibration:
+          description: The seat's calibration factors, null before the job's first run for it.
+          oneOf:
+            - {$ref: "#/components/schemas/Calibration"}
+            - {type: "null"}
+        verdict:
+          description: The newest verdict of `wy account next` about the seat, null when none has arrived.
+          oneOf:
+            - {$ref: "#/components/schemas/Verdict"}
+            - {type: "null"}
+
+    RelationDay:
+      type: object
+      required: [day, ratio, d5, d7, pairs, model, rise, rise_cc]
+      properties:
+        day: {type: string, format: date}
+        ratio: {type: [number, "null"], description: "Σ d5 / Σ d7 of the day's pairs with a weekly rise, when Σ d7 ≥ 2 points."}
+        d5: {type: number, description: 5-hour points of those pairs.}
+        d7: {type: number, description: Weekly points of those pairs.}
+        pairs: {type: integer}
+        model: {type: [string, "null"], description: "The day's most-used model (display label), by weighted units."}
+        rise: {type: number, description: 5-hour points the day's pairs rose in all.}
+        rise_cc: {type: number, description: Of which in pairs with token units (Claude Code sessions sent tokens).}
+
+    RelationHeavy:
+      type: object
+      required: [heavy, rise, cc_share]
+      properties:
+        heavy: {type: boolean, description: "Claude-Code-heavy: rise ≥ 20 points and cc_share ≥ 0.8."}
+        rise: {type: number}
+        cc_share: {type: [number, "null"]}
+
+    RelationModel:
+      type: object
+      required: [model, this_week, last_week, change, days]
+      properties:
+        model: {type: string, description: Display label (Opus 4.6).}
+        this_week: {type: [number, "null"], description: Median daily index of the last 7 days (at least 3 days), dollars per 5-hour point.}
+        last_week: {type: [number, "null"], description: The same for the 7 days before.}
+        change: {type: [number, "null"], description: this_week / last_week.}
+        days:
+          type: array
+          description: The 14 days, oldest first.
+          items:
+            type: object
+            required: [day, index, normalised, d5, usd]
+            properties:
+              day: {type: string, format: date}
+              index: {type: [number, "null"], description: "Dollars per 5-hour point (Σ d5 ≥ 5 points)."}
+              normalised: {type: [number, "null"], description: index / last_week.}
+              d5: {type: number}
+              usd: {type: number}
+
+    Verdict:
+      type: object
+      description: What one run of `wy account next` decided about the seat (record.md 4.11).
+      required: [at, machine, machine_name, strategy, eligible]
+      properties:
+        at: {type: string, format: date-time}
+        machine: {type: string}
+        machine_name: {type: [string, "null"]}
+        strategy: {type: string}
+        kind: {type: [string, "null"], enum: [aggressive, protected, null]}
+        eligible: {type: boolean}
+        reason: {type: [string, "null"]}
+        skip_level: {type: [integer, "null"]}
+        rank: {type: [integer, "null"]}
+        expiring: {type: boolean}
+        free_at: {type: [string, "null"], format: date-time}
+        next_free: {type: [string, "null"], format: date-time}
+        weekly_pct: {type: [number, "null"]}
+        five_hour_pct: {type: [number, "null"]}
+        burst: {type: [integer, "null"]}
+        burst_cap: {type: [integer, "null"]}
+        stale: {type: boolean}
+        mode_from: {type: [string, "null"], enum: [local, hub, proposed, none, null], description: "Where the kind came from on that machine (record.md 4.11); null from an older wy."}
+        weekly_cap: {type: [number, "null"], description: "The weekly level at which it takes no new session now (protected: the pace line); null from an older wy."}
+        five_hour_cap: {type: [number, "null"], description: "The 5-hour level at which it takes no new session; null from an older wy."}
+
+    CalibrationFactor:
+      type: object
+      description: "One calibrated factor: `f` in 5-hour points per million weighted units, `ratio` in 5-hour points per weekly point, `lane_price` in 5-hour points."
+      required: [value, fallback, measured, weight, n, days, implausible]
+      additionalProperties: false
+      properties:
+        value: {type: number, description: "The value to use: fallback + weight × (measured − fallback)."}
+        fallback: {type: number}
+        measured: {type: [number, "null"]}
+        weight: {type: number, minimum: 0, maximum: 1}
+        n: {type: integer, description: Usable measurements.}
+        days: {type: number, description: Days from the first usable measurement to now.}
+        implausible: {type: boolean, description: The measured value is outside its plausible range and is not used.}
+
+    UsageLease:
+      type: object
+      description: >-
+        One pick of `wy account next` (setup.md 8.5). A lease is recent when it is younger than 5
+        hours and names a session id (whether or not that session ended).
+      required: [id, at, kind, c5, cf, urgent, has_session, session_hash, launched, ended, burned_units, seen, burn]
+      additionalProperties: false
+      properties:
+        id: {type: string, description: "The lease id (record.md 4.10 `lease_id`), as in the picking machine's ledger."}
+        at: {type: string, format: date-time, description: Pick time.}
+        kind: {type: string, enum: [aggressive, protected]}
+        c5: {type: number, description: Lane charge, 5-hour points.}
+        cf: {type: number, description: Expected full cost of the lane, 5-hour points.}
+        urgent: {type: boolean, description: "`--urgent` passed a burst cap for this pick."}
+        has_session: {type: boolean, description: The lease names a session id.}
+        session_hash:
+          type: [string, "null"]
+          description: >-
+            SHA-256 of the lease's session id, lowercase hex; null without one. It lets a machine
+            find the lease's session among its own, and names nothing to one that does not have it.
+        launched: {type: boolean, description: The hub has a session with the lease's session id.}
+        ended: {type: boolean, description: "That session has ended (`SessionEnd`, or gone from the session list)."}
+        burned_units:
+          type: number
+          description: >-
+            The sum of `burn`: weighted token units (input + 5 × output + 1.25 × cache_5m + 2 ×
+            cache_1h + 0.1 × cache_read) of that session's token rows from the pick to 5 hours
+            after it. 0 when `burn` is null.
+        seen: {type: boolean, description: The session has token rows since the pick.}
+        burn:
+          description: >-
+            For a recent lease, that session's weighted token units per minute from the pick to 5
+            hours after it, oldest first, from the token rows of every machine: each item is
+            [seconds after the pick of the minute's newest row, rounded up; the minute's units],
+            only minutes with rows. Null for a lease that is not recent, and for recent leases
+            past the newest 200 of the seat.
+          oneOf:
+            - type: array
+              items:
+                type: array
+                prefixItems: [{type: integer, minimum: 0}, {type: number, minimum: 0}]
+                minItems: 2
+                maxItems: 2
+            - {type: "null"}
+
     DirectPolicy:
       type: object
       description: "GET /v1/push/direct-policy (machines.md 5.3)."
@@ -2402,7 +2759,7 @@ components:
           items: {$ref: "#/components/schemas/Seat"}
         needs_you:
           type: array
-          description: Sessions with needs_you, oldest first.
+          description: Sessions with needs_you, oldest first, except those whose current alert is seen (push.md 4), which are hidden until their state changes.
           items: {$ref: "#/components/schemas/Session"}
         machines:
           type: array
@@ -2985,7 +3342,7 @@ components:
     RuleInput:
       type: object
       properties:
-        trigger: {type: string, enum: [needs_permission, asked, failed, limit_80, limit_95, reset, machine_silent]}
+        trigger: {type: string, enum: [needs_permission, asked, failed, limit_80, limit_95, reset, machine_silent, limit_change, usage_reset, seat_change, weekly_drop]}
         enabled: {type: boolean}
         delay_s: {type: integer, minimum: 0, maximum: 86400}
         bypass_quiet: {type: boolean}
@@ -3223,6 +3580,10 @@ components:
         project: {type: [string, "null"]}
         state: {$ref: "#/components/schemas/SessionState"}
         agent: {type: boolean, description: The machine runs wy agent.}
+        tags:
+          type: array
+          description: The tags the session gave itself (peers.md 3.4), sorted; empty when none.
+          items: {type: string, pattern: "^[a-z0-9-]{1,40}$"}
 
     Matrix:
       type: object

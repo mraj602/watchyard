@@ -20,8 +20,11 @@ import type {
   PushTarget,
   PushTestResult,
   RulesReply,
+  Seat,
+  SeatPatch,
   SessionDetail,
   SessionsPage,
+  UsageRelation,
 } from '../../contract/api';
 import { HEALTH_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from '../../contract/constants';
 import type { Clock, FetchLike, RequestInitLike, ResponseLike } from '../../contract/platform';
@@ -92,6 +95,8 @@ export interface HubClient {
   alert(id: string): Promise<Alert>;
   rules(): Promise<RulesReply>;
   seen(alertId: string): Promise<AlertBrief>;
+  /** Seen on a Needs-you row with no alert (push.md 4); older hubs answer 404. */
+  seenSession(sessionId: string): Promise<AlertBrief>;
   snooze(alertId: string, minutes?: number): Promise<AlertBrief>;
   deviceSelf(): Promise<Device>;
   patchSelf(prefs: Partial<DevicePrefs>): Promise<Device>;
@@ -111,6 +116,10 @@ export interface HubClient {
   peerMessages(q?: { limit?: number }): Promise<{ messages: PeerMessage[] }>;
   /** GET /v1/analytics/{report} (analytics.md): tokens, API-equivalent cost, models, projects, heatmap, sessions, limit windows and hits. */
   analytics<R extends keyof AnalyticsReplies>(report: R, q?: AnalyticsQuery): Promise<AnalyticsReplies[R]>;
+  /** PATCH /v1/accounts/{seat}: label, colour, order, hidden or picker mode; owner only (403 for a phone without an owner session). */
+  patchSeat(seat: string, patch: SeatPatch): Promise<Seat>;
+  /** GET /v1/accounts/{seat}/relation: the seat's daily 5 h per 7 d ratio, capacity index, calibration and the picker's newest verdict (api.yaml UsageRelation). */
+  relation(seat: string): Promise<UsageRelation>;
 }
 
 interface Call {
@@ -283,6 +292,7 @@ export function createHubClient(deps: HubClientDeps): HubClient {
     alert: (id) => call<Alert>('GET', `/v1/alerts/${seg(id)}`),
     rules: () => call<RulesReply>('GET', '/v1/rules'),
     seen: (id) => call<AlertBrief>('POST', `/v1/alerts/${seg(id)}/seen`),
+    seenSession: (id) => call<AlertBrief>('POST', `/v1/sessions/${seg(id)}/seen`),
     snooze: (id, minutes) => call<AlertBrief>('POST', `/v1/alerts/${seg(id)}/snooze`, minutes === undefined ? {} : { minutes }),
     deviceSelf: () => call<Device>('GET', '/v1/devices/self'),
     patchSelf: (prefs) => call<Device>('PATCH', '/v1/devices/self', { prefs }),
@@ -294,12 +304,14 @@ export function createHubClient(deps: HubClientDeps): HubClient {
       }
     },
     testTarget: (id) => call<PushTestResult>('POST', `/v1/push/targets/${seg(id)}/test`),
+    patchSeat: (seat, patch) => call<Seat>('PATCH', `/v1/accounts/${seg(seat)}`, patch),
     patchTarget: (id, patch) => call<PushTarget>('PATCH', `/v1/push/targets/${seg(id)}`, patch),
     matrix: () => call<MatrixInfo>('GET', '/v1/peers/matrix'),
     editMatrix: (edit) => call<MatrixInfo>('PUT', '/v1/peers/matrix', { edit }),
     pausePeers: (paused) => call<MatrixInfo>('POST', '/v1/peers/pause', { paused }),
     peerAudit: (q = {}) => call<{ entries: PeerAuditEntry[] }>('GET', `/v1/peers/audit${query({ limit: q.limit })}`),
     peerMessages: (q = {}) => call<{ messages: PeerMessage[] }>('GET', `/v1/peers/messages${query({ limit: q.limit })}`),
+    relation: (seat) => call<UsageRelation>('GET', `/v1/accounts/${seg(seat)}/relation`),
     analytics: (report, q = {}) => call<AnalyticsReplies[typeof report]>('GET', `/v1/analytics/${seg(report)}${query({ days: q.days, seat: q.seat })}`),
   };
 }

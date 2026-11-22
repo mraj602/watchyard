@@ -22,6 +22,13 @@ const (
 	CodeFailed         = "failed"
 	CodeUnsupported    = "unsupported"
 	CodeHubUnreachable = "hub_unreachable"
+	// CodeNoHolder: a tag send found no holder it may deliver to (peers.md 3.4); exit 3 like
+	// unsupported, since both mean "fall back now".
+	CodeNoHolder = "no_holder"
+	// CodeUsage: a malformed argument (a tag that is not a slug); exit 2.
+	CodeUsage = "usage"
+	// CodeLimitTags: the session holds the most tags it may (peers.md 3.4); exit 6.
+	CodeLimitTags = "too_many_tags"
 )
 
 // Exit codes of `wy peers` (peers.md 7.2).
@@ -61,13 +68,13 @@ func ExitCode(code string) int {
 	switch code {
 	case CodeOff, CodePaused, CodeNotAllowed, CodeLoopGuard, CodeNoMatrix:
 		return ExitPolicy
-	case CodeTooBig, CodeNotText, CodeSecret, CodeRateLimited:
+	case CodeTooBig, CodeNotText, CodeSecret, CodeRateLimited, CodeLimitTags:
 		return ExitLimits
-	case CodeAmbiguous:
+	case CodeAmbiguous, CodeUsage:
 		return ExitUsage
 	case CodeNotASession:
 		return ExitGuard
-	case CodeUnsupported:
+	case CodeUnsupported, CodeNoHolder:
 		return ExitUnsupported
 	case CodeUnknownTarget, CodeTargetGone, CodeExpired, CodeRejected, CodeFailed, CodeHubUnreachable:
 		return ExitNotSent

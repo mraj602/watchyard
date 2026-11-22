@@ -188,6 +188,11 @@ func (r *Refresher) event(ev events.Event, ok bool) {
 	switch ev.Type {
 	case "session", "usage":
 		r.changed()
+	case "alert":
+		// Seen lowers the needs-you count (push.md 4).
+		if strings.Contains(string(ev.Data), `"change":"seen"`) {
+			r.changed()
+		}
 	}
 }
 

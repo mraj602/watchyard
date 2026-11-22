@@ -131,7 +131,18 @@ one folder.
   update/                      downloads and verified archives (machines.md 7.3); cache/ for other platforms
   hub.sock                     forward mode with --forward-socket only (machines.md 3.3)
   pull/                        hub host only: id_ed25519(.pub), generated ssh_config and known_hosts (machines.md 3.4)
-  board/token.json             read-only board token for wy board and the pane, mode 0600 (terminal.md T3)
+  board/token.json             read-only board token for wy board, the pane and wy account next (older hubs), mode 0600 (terminal.md T3)
+  next/leases/<YYYY-MM-DD>.jsonl  wy account next: the lease ledger, append-only day files (UTC),
+                               mode 0600, kept 8 days (setup.md 8.5); wy hook appends launched/ended
+  next/leases.lock             held while wy account next reads the ledger, ranks and appends
+  next/calibration.json        wy account next: the calibration factors last read from the hub, per seat,
+                               mode 0600, used for 7 days when the hub cannot be read (setup.md 8.5)
+  next/hub_leases.json         wy account next: other machines' leases last read from the hub, per seat,
+                               mode 0600, used for 7 days when the hub cannot be read (setup.md 8.5)
+  next/modes.json              wy account next: each seat's picker mode last read from the hub, mode 0600,
+                               used with no age limit when the hub cannot be read (setup.md 8.5, Kind)
+  next/verdict.json            wy account next: digest and time of the last account_verdicts record it
+                               wrote, mode 0600, to skip repeats within 15 minutes (setup.md 8.5)
   board/last-view.json         last board view shown, mode 0600 (terminal.md T3)
   term/title-<session>.json    last tab title per session, pruned after 7 days by wy tick (terminal.md T6)
   keys/                        mode 0700: device.json, owner.sealed (owner machine), owner.pub, hub.pub,
@@ -214,6 +225,7 @@ keep_days = 7
 extra = []                                   # extra config folders outside ~/.claude*
 labels = { "~/.claude-2" = "work" }          # local fallback; the hub's seat label wins
 colours = { "~/.claude-2" = "#f59e0b" }      # (setup.md 9.2)
+modes = { "~/.claude-2" = "protected" }      # proposed picker mode, sent to the hub (setup.md 8.5, Kind)
 
 [share]                                      # (setup.md 9.2)
 primary = "~/.claude"
@@ -223,6 +235,20 @@ mcp_exclude = []
 [peers]                                      # (peers.md 2.4, 8.5)
 enabled = false                              # wy hook writes the session files; wy peers works only when true
 delivery = "honest"                          # honest | accept | courier (peers.md 8.5)
+
+[next]                                       # wy account next (setup.md 8.5)
+strategy = "lanes"                           # lanes | smart | expiring | most-room | spread | fill | sticky
+model = ""                                   # default --model
+session_5h = 15                              # points of a 5-hour window one new session uses
+session_7d = 2                               # points of a weekly window one new session uses
+session_min = 120                            # how long a session burns, minutes
+stale_min = 30                               # readings older than this are uncertain
+reserve_min = 12                             # how long a lease counts as a pending session
+sticky_margin = 10                           # sticky: points under each cap that end it
+
+[next.accounts."me@example.com"]             # per account: email (recommended), seat id, folder or label
+mode = "aggressive"                          # protected | conservative | normal | aggressive
+# cap_5h, cap_7d, cap_model, reserve_pct, priority, weight, exclude, hours = "09:00-18:00", days = "mon-fri"
 
 [terminal]                                   # (terminal.md T12)
 titles = false                               # written only by wy term titles on|off (wy config set refuses it)

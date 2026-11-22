@@ -25,6 +25,15 @@ change to `session_transition` (schema v2).
 | `ended` | SessionEnd was received, or (`detail` = `history`) the session is known only from its transcript (section 5.1). | 0 |
 | `gone` | The session vanished without SessionEnd (crash, `kill`, machine reboot). | 0 |
 
+**Seen hides.** `needs_you` is the session's state; whether it is *listed* as needing you is
+also up to the owner. A session whose current episode's alert is `seen` (push.md 4: "Seen"
+from a push, the Now inbox or the session page) is **left out of the Needs-you list, of
+`counts.needs_you` and of the badge count** (push.md 6.5, 13.5) until its state next changes.
+A change of state or `since` starts a new episode with a new alert, so the session returns by
+itself (answered, then asking again; a new permission prompt). The session keeps its real
+state and still shows in the other lists and in the live count; only the needs-you list and
+counts drop it.
+
 `session_state.detail` holds a short machine-readable reason: the notification type, the
 StopFailure error, the SessionEnd reason, or one of `started`, `resumed`, `question`,
 `elicitation`, `tool` (AskUserQuestion / ExitPlanMode), `permission_request` (a

@@ -11,7 +11,10 @@ import { liveCounts } from '../components/state.js';
 import { agoLabel, pct, clock } from '../format.js';
 import { isOwner, ensureSessions, reorderSeats } from '../store.js';
 import { moveBy, dropTarget, dropOrder, moveSentence } from '../components/order.js';
-import { patchJSON } from '../api.js';
+import { patchJSON, getRelation } from '../api.js';
+import { verdictModel, verdictAge, tilesModel, sessionLine, ratioChart, capacityModel, howRows, CHART_HINT } from '../components/relation-fmt.js';
+import { MODE_WORDS, MODE_OPTIONS, MODE_QUESTION, modeKey, localOverrideLine } from '../components/pick-mode.js';
+import { relChart } from '../components/rel-chart.js';
 import { toast } from '../components/ui.js';
 
 // Owner edit of a seat's label and colour (desktop.md C10): PATCH /v1/accounts/{seat}. The
@@ -276,9 +279,159 @@ function accountDetail(seat, colour, now, live, name, detailId) {
         signedIn.map((m) => h('li', {}, h('b', {}, m), ' · Claude Code signed in')),
         signedOut.map((m) => h('li', { class: 'issue-signed_out' }, h('b', {}, m), ' · Claude Code signed out')))
         : h('p', { class: 'muted small' }, 'Claude Code is not signed in on any machine.')),
+    modeSection(seat),
     h('section', { class: 'acct-sec' }, h('h3', {}, 'Details'),
       h('dl', { class: 'kv' }, rows.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),
       extra ? h('details', { class: 'extra', open: true }, h('summary', {}, 'Extra usage'), extra) : null,
       spend ? h('details', { class: 'extra' }, h('summary', {}, 'Spend'), spend) : null,
-      seat.web_raw_at ? h('p', { class: 'muted small' }, `claude.ai usage read ${agoLabel(seat.web_raw_at, now)}`) : null));
+      seat.web_raw_at ? h('p', { class: 'muted small' }, `claude.ai usage read ${agoLabel(seat.web_raw_at, now)}`) : null,
+      relationBox(seat, now)));
+}
+
+// ---- usage and the picker (pwa.md 3.0a) -----------------------------------------------------
+// A closed disclosure inside Details: it reads GET /v1/accounts/{seat}/relation when first
+// opened, and again when opened more than 5 minutes later. A redraw re-opens it (app.js), which
+// fires `toggle` again: the age check keeps that from reading the hub every time.
+const REL_FRESH = 5 * 60 * 1000;
+const rel = new Map(); // seat id -> { at, data, error, busy, bar: { ratio, [model]: index } }
+
+function relState(id) {
+  if (!rel.has(id)) rel.set(id, { at: 0, data: null, error: '', busy: false, bar: {} });
+  return rel.get(id);
+}
+
+async function loadRelation(id) {
+  const st = relState(id);
+  if (st.busy) return;
+  st.busy = true; st.error = ''; again();
+  try {
+    st.data = await getRelation(id);
+    st.at = Date.now();
+  } catch (ex) {
+    st.error = ex.status === 404 ? 'This account is not on the hub any more.' : (ex.message || 'Could not load.');
+    if (ex.name === 'AuthError') toast(ex.message);
+  }
+  st.busy = false;
+  again();
+}
+
+function onRelToggle(e, id) {
+  if (!e.target.open) return;
+  const st = relState(id);
+  if (!st.busy && (!st.data || Date.now() - st.at > REL_FRESH) && !st.error) loadRelation(id);
+}
+
+const kindLine = (key) => {
+  const w = MODE_WORDS[key];
+  return key === 'none' ? h('p', { class: 'small rel-kind', 'data-key': 'rel-kind' }, w.definition)
+    : h('p', { class: 'small rel-kind', 'data-key': 'rel-kind', title: key === 'protected' ? w.definition : undefined }, h('b', {}, w.name), `: ${w.definition}`);
+};
+
+function verdictBlock(seat, v, nowMs) {
+  const m = verdictModel(v, nowMs);
+  if (m.empty) return h('p', { class: 'muted', 'data-key': `rel-verdict-${seat.id}` }, m.text);
+  return h('div', { class: `rel-verdict${m.eligible ? '' : ' is-blocked'}`, 'data-key': `rel-verdict-${seat.id}` },
+    h('p', { class: 'rel-headline' }, h('b', {}, m.headline), ' ', h('span', { class: 'muted small' }, verdictAge(v, nowMs))),
+    m.place ? h('p', { class: 'small' }, m.place) : null,
+    m.kindKey ? kindLine(m.kindKey) : null,
+    m.rules.length ? h('ul', { class: 'rel-rules small' }, m.rules.map((r) => h('li', { class: r.blocking ? 'is-blocking' : '' }, r.text,
+      r.blocking ? h('span', { class: 'rel-block' }, 'blocking') : null))) : null,
+    m.why ? h('p', { class: 'small' }, m.why) : null,
+    m.frees ? h('p', { class: 'small' }, m.frees) : null,
+    m.noneFree ? h('p', { class: 'small muted' }, m.noneFree) : null);
+}
+
+function relationBody(seat, st, now) {
+  const d = st.data;
+  const nowMs = now instanceof Date ? now.getTime() : Date.now();
+  const tiles = tilesModel(d.calibration);
+  const cap = capacityModel(d.models, d.heavy);
+  let hint = true; // the hint goes under the first chart drawn
+  const chart = (model, key) => {
+    const node = relChart(model, { key: `${seat.id}-${key}`, hint: hint ? CHART_HINT : '', picked: st.bar[key], onPick: (i) => { st.bar[key] = i; } });
+    hint = false;
+    return node;
+  };
+  const ratio = ratioChart(d.days);
+  return [
+    h('h4', {}, 'What the picker says'),
+    verdictBlock(seat, d.verdict, nowMs),
+    h('h4', {}, 'The 5-hour limit and the week'),
+    tiles ? [h('div', { class: 'rel-tiles', 'data-key': `rel-tiles-${seat.id}` }, tiles.tiles.map((t) => h('div', { class: 'rel-tile' },
+        t.lead ? h('span', { class: 'rel-tile-lead small' }, t.lead) : null, h('span', { class: 'rel-tile-v' }, t.value), t.rest ? h('span', { class: 'rel-tile-rest' }, t.rest) : null))),
+      h('p', { class: 'muted small', 'data-key': `rel-tiles-label-${seat.id}` }, tiles.label)]
+      : h('p', { class: 'muted small' }, 'Not measured yet: the hub has no calibration for this account.'),
+    h('p', { class: 'small', 'data-key': `rel-session-${seat.id}` }, sessionLine(d.calibration)),
+    h('h4', {}, 'Day by day'),
+    ratio.hidden ? h('p', { class: 'muted small' }, ratio.hiddenText) : chart(ratio, 'ratio'),
+    h('h4', {}, 'What the 5-hour limit buys'),
+    cap.note ? h('p', { class: 'muted small' }, cap.note) : null,
+    cap.items.length ? cap.items.map((i) => h('p', { class: 'small rel-sentence' }, i.sentence)) : null,
+    cap.alertLine ? h('p', { class: 'muted small' }, cap.alertLine) : null,
+    cap.items.map((i) => (i.chart ? chart({ ...i.chart, muted: cap.muted }, `cap-${i.model}`) : null)),
+    cap.unused.map((t) => h('p', { class: 'muted small' }, t)),
+    !cap.items.length && !cap.unused.length ? h('p', { class: 'muted small' }, 'No capacity figures yet: they need Claude Code use with token counts.') : null,
+    h('details', { class: 'extra rel-how', 'data-key': `rel-how-${seat.id}` }, h('summary', {}, 'How this works'),
+      h('dl', { class: 'kv rel-how-rows' }, howRows(d.calibration, nowMs).flatMap((r) => [h('dt', {}, r.name), h('dd', {}, r.text)]))),
+  ];
+}
+
+// ---- how the picker uses this account (pwa.md 3.0a) -------------------------------------------
+// The seat's hub setting (Seat.mode): the owner picks with radio buttons, which save at once
+// with PATCH /v1/accounts/{seat} {"mode": ...}; a refusal puts the old choice back.
+const modeState = { busy: '', error: '', errorId: '' };
+
+async function saveMode(seat, value) {
+  if ((seat.mode || null) === value) return;
+  const prev = seat.mode || null;
+  seat.mode = value;
+  Object.assign(modeState, { busy: seat.id, error: '', errorId: seat.id });
+  again();
+  try {
+    Object.assign(seat, await patchJSON(`/v1/accounts/${encodeURIComponent(seat.id)}`, { mode: value }));
+  } catch (ex) {
+    seat.mode = prev;
+    modeState.error = ex.status === 403 ? 'Sign in as owner to change this.' : ex.message || 'Could not save.';
+    if (ex.name === 'AuthError') toast(ex.message);
+  }
+  modeState.busy = '';
+  again();
+}
+
+function modeSection(seat) {
+  const key = modeKey(seat.mode);
+  const st = rel.get(seat.id);
+  const override = localOverrideLine(st && st.data ? st.data.verdict : null, seat.mode);
+  const busy = modeState.busy === seat.id;
+  return h('section', { class: 'acct-sec', 'data-key': `mode-${seat.id}` }, h('h3', {}, 'How the picker uses this account'),
+    key === 'none' ? h('p', { class: 'mode-unset', 'data-key': `mode-unset-${seat.id}` }, MODE_WORDS.none.definition) : null,
+    isOwner() ? h('fieldset', { class: 'mode-pick', 'data-key': `mode-pick-${seat.id}`, disabled: busy ? true : undefined },
+      h('legend', {}, MODE_QUESTION),
+      MODE_OPTIONS.map((o) => {
+        const w = MODE_WORDS[o.key];
+        const id = `mode-${seat.id}-${o.key}`;
+        return h('div', { class: `mode-opt${key === o.key ? ' is-on' : ''}` },
+          h('input', { type: 'radio', name: `mode-${seat.id}`, id, value: o.key, checked: key === o.key ? true : undefined, 'data-key': `mode-opt-${seat.id}-${o.key}`,
+            'aria-describedby': `${id}-def`, onchange: () => saveMode(seat, o.value) }),
+          h('label', { for: id }, h('b', {}, w.name)),
+          h('p', { class: 'small muted mode-def', id: `${id}-def` }, w.definition));
+      }))
+      : h('p', { class: 'small', 'data-key': `mode-read-${seat.id}` }, h('b', {}, MODE_WORDS[key].name), key === 'none' ? null : `: ${MODE_WORDS[key].definition}`),
+    modeState.error && modeState.errorId === seat.id ? h('p', { class: 'form-error', role: 'alert', 'data-key': `mode-error-${seat.id}` }, modeState.error) : null,
+    override ? h('p', { class: 'small muted', 'data-key': `mode-override-${seat.id}` }, override) : null);
+}
+
+function relationBox(seat, now) {
+  const st = relState(seat.id);
+  let body;
+  if (st.error) {
+    body = [h('p', { class: 'form-error', role: 'alert' }, st.error),
+      h('button', { type: 'button', class: 'btn btn-sm', 'data-key': `rel-retry-${seat.id}`, onclick: () => loadRelation(seat.id) }, 'Try again')];
+  } else if (!st.data) {
+    body = h('p', { class: 'muted small' }, 'Loading…');
+  } else {
+    body = relationBody(seat, st, now);
+  }
+  return h('details', { class: 'extra rel', 'data-key': `rel-${seat.id}`, ontoggle: (e) => onRelToggle(e, seat.id) },
+    h('summary', {}, 'Usage and the picker'), h('div', { class: 'rel-body' }, body));
 }

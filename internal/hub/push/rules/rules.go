@@ -71,6 +71,35 @@ func SilentEpisode(machine string, lastSeenMS int64) string {
 	return "m:" + machine + ":" + strconv.FormatInt(lastSeenMS, 10)
 }
 
+// LimitChangeEpisode is x:<model label>:<up|down>:<hub day YYYY-MM-DD> (push.md 3.2).
+func LimitChangeEpisode(model string, up bool, day string) string {
+	return LimitChangePrefix(model, up) + day
+}
+
+// LimitChangePrefix is the episode up to the day: the limit_change dedupe looks for it.
+func LimitChangePrefix(model string, up bool) string {
+	dir := "down"
+	if up {
+		dir = "up"
+	}
+	return "x:" + model + ":" + dir + ":"
+}
+
+// UsageResetEpisode is z:<seat>:<ms of the first low reading>.
+func UsageResetEpisode(seat string, tMS int64) string {
+	return "z:" + seat + ":" + strconv.FormatInt(tMS, 10)
+}
+
+// SeatChangeEpisode is c:<slot id>:<since_at ms of the new login>.
+func SeatChangeEpisode(slot, sinceMS int64) string {
+	return fmt.Sprintf("c:%d:%d", slot, sinceMS)
+}
+
+// WeeklyDropEpisode is w:<seat>:<weekly resets_at ms>:<ms of the first low reading>.
+func WeeklyDropEpisode(seat string, resetsMS, tMS int64) string {
+	return fmt.Sprintf("w:%s:%d:%d", seat, resetsMS, tMS)
+}
+
 // Due is clamp(since + delay, now, now + delay) (push.md 3.3), all in ms.
 func Due(sinceMS, delayMS, nowMS int64) int64 {
 	return min(max(sinceMS+delayMS, nowMS), nowMS+delayMS)

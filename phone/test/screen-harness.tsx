@@ -5,7 +5,7 @@ import { useReducer, type ReactNode } from 'react';
 import type { Alert, AlertBrief, Device, Me, Overview, Seat, Session } from '../src/contract/api';
 import type { AppInfo } from '../src/contract/platform';
 import { HubApiProvider, type HubApi } from '../src/components/hub-api';
-import type { DataAction, HubData } from '../src/lib/data';
+import { reduce, type DataAction, type HubData } from '../src/lib/data';
 import type { HubClient } from '../src/lib/hub';
 import accounts from './fixtures/hub/accounts.json';
 import alert from './fixtures/hub/alert.json';
@@ -40,7 +40,7 @@ export function freshData(patch: Partial<HubData> = {}): HubData {
 const mark = (a: AlertBrief | null | undefined, id: string, patch: Partial<AlertBrief>): AlertBrief | null | undefined =>
   a && a.id === id ? { ...a, ...patch } : a;
 
-/** What the screens dispatch: Seen and Snooze land on every copy of the alert. */
+/** What the screens dispatch: Seen and Snooze land on every copy of the alert; `loaded` is a poll. */
 export function testReduce(state: HubData, action: DataAction): HubData {
   const patchAlert = (id: string, patch: Partial<AlertBrief>): HubData => ({
     ...state,
@@ -52,8 +52,19 @@ export function testReduce(state: HubData, action: DataAction): HubData {
       return patchAlert(action.alert, { status: 'seen' });
     case 'snoozed':
       return patchAlert(action.alert, { status: 'snoozed', snoozed_until: action.until });
+    case 'seenSession':
+      return reduce(state, action);
     case 'offline':
       return { ...state, offline: true };
+    case 'loaded':
+      // A poll's reply (only what it carries), as the provider's reducer takes it.
+      return {
+        ...state,
+        ...(action.overview ? { overview: action.overview } : {}),
+        ...(action.sessions ? { sessions: action.sessions } : {}),
+        fetchedAt: action.at,
+        offline: false,
+      };
     default:
       return state;
   }
@@ -77,11 +88,13 @@ export function fakeClient(over: Partial<Record<keyof HubClient, unknown>> = {})
     alert: jest.fn(async () => structuredClone(alert)),
     rules: jest.fn(async () => structuredClone(rules)),
     seen: jest.fn(async (id: string) => ({ id, status: 'seen' })),
+    seenSession: jest.fn(async () => ({ id: 'al_new', status: 'seen' })),
     snooze: jest.fn(async (id: string) => ({ id, status: 'snoozed' })),
     deviceSelf: jest.fn(async () => structuredClone(device)),
     patchSelf: jest.fn(async (prefs: object) => ({ ...device, prefs })),
     unpairSelf: jest.fn(async () => undefined),
     testTarget: jest.fn(async () => ({ outcome: 'sent' })),
+    patchSeat: jest.fn(async (seat: string, patch: object) => ({ id: seat, account: 'a', org: 'o', ...patch })),
     patchTarget: jest.fn(async (id: string, patch: object) => ({ id, kind: 'link', status: 'ok', enabled: true, ...patch })),
     matrix: jest.fn(async () => structuredClone(peersMatrix)),
     editMatrix: jest.fn(async () => structuredClone(peersMatrix)),

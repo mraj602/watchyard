@@ -84,11 +84,17 @@ const (
 	CASE WHEN st.state IN ('needs_permission', 'asked') THEN
 	(SELECT r.body ->> '$.payload.message' FROM hook_event h JOIN record r ON r.id = h.record_id
 	   WHERE h.session_id = s.id AND h.event = 'Notification' AND h.ts >= coalesce(st.since_at, 0) ORDER BY h.ts DESC LIMIT 1) END`
-	// sessionAlertExpr is the open alert of the current episode (push.md 4), as JSON or NULL.
+	// sessionAlertExpr is the alert of the current episode while it is open or skipped (push.md
+	// 4, 10.1), as JSON or NULL. A skipped one (stale, rule_off, peers, …) is listed too: its
+	// episode is the current one, so it is still open, and Seen on it is what quiets the row.
 	sessionAlertExpr = `(SELECT json_object('id', a.id, 'trigger', a.trigger, 'status', a.status, 'reason', a.reason,
 	'due_at', a.due_at, 'fired_at', a.fired_at, 'fire_count', a.fire_count, 'snoozed_until', a.snoozed_until, 'seen_at', a.seen_at)
-	FROM alert a WHERE a.session_id = s.id AND a.status IN ('pending', 'fired', 'snoozed', 'seen')
+	FROM alert a WHERE a.session_id = s.id AND a.status IN ('pending', 'fired', 'snoozed', 'seen', 'skipped')
 	AND a.episode = 's:' || s.id || ':' || st.state || ':' || st.since_at LIMIT 1)`
+	// sessionSeenExpr is 1 when the current episode's alert is seen (push.md 4): the session
+	// is hidden from the needs-you list and counts until its state changes (a new episode).
+	sessionSeenExpr = `EXISTS (SELECT 1 FROM alert a WHERE a.session_id = s.id AND a.status = 'seen'
+	AND a.episode = 's:' || s.id || ':' || st.state || ':' || st.since_at)`
 	sessionFrom = ` FROM session s LEFT JOIN session_state st ON st.session_id = s.id LEFT JOIN seat se ON se.id = s.seat_id
 	LEFT JOIN machine m ON m.id = s.machine_id LEFT JOIN slot sl ON sl.id = s.slot_id`
 )
@@ -457,7 +463,7 @@ func liveArgs(now time.Time) []any {
 // Counts counts live sessions: open and not dormant (states.md 5).
 func (s *Store) Counts(ctx context.Context, now time.Time) (SessionCounts, error) {
 	var c SessionCounts
-	err := s.r.QueryRowContext(ctx, `SELECT coalesce(sum(`+sessionStateExpr+` = 'working'), 0), coalesce(sum(`+sessionNeedsExpr+` = 1), 0),
+	err := s.r.QueryRowContext(ctx, `SELECT coalesce(sum(`+sessionStateExpr+` = 'working'), 0), coalesce(sum(`+sessionNeedsExpr+` = 1 AND NOT `+sessionSeenExpr+`), 0),
 		coalesce(sum(`+sessionStateExpr+` = 'done'), 0), count(*)`+sessionFrom+` WHERE `+liveNowCondition,
 		liveArgs(now)...).Scan(&c.Working, &c.NeedsYou, &c.Done, &c.Live)
 	return c, err

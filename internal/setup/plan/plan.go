@@ -44,6 +44,32 @@ func Plan(st model.State, c model.Choices) (model.Plan, error) {
 	return PlanWith(st, c, Options{Version: version.Version})
 }
 
+// Account is one folder the plan keeps or creates, with its final label (setup.md 8.5,
+// Choosing in wy setup and wy account add).
+type Account struct {
+	Folder   string // "~/.claude-3"
+	Label    string
+	Email    string // the login's email ("" when not logged in or new)
+	LoggedIn bool
+	New      bool // created by this plan
+}
+
+// Accounts runs only the folder and label part of the planner on st and c.
+func Accounts(st model.State, c model.Choices) ([]Account, error) {
+	p := &planner{st: st, c: c, opt: Options{Version: version.Version}, home: cleanPath(st.Home),
+		steps: map[model.Step][]model.Action{}, warned: map[string]bool{}}
+	p.win = st.OS == "windows"
+	p.symlinks = st.SymlinkOK == nil || *st.SymlinkOK
+	if err := p.buildFolders(); err != nil {
+		return nil, err
+	}
+	out := make([]Account, 0, len(p.nodes))
+	for _, n := range p.nodes {
+		out = append(out, Account{Folder: n.f.Folder, Label: n.label, Email: n.f.Email, LoggedIn: n.f.LoggedIn, New: n.isNew})
+	}
+	return out, nil
+}
+
 // fnode is one folder in the plan: a detected one or one created in this run.
 type fnode struct {
 	f       model.Folder

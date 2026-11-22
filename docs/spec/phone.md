@@ -225,12 +225,12 @@ Accounts, More**:
 
 | App route (expo-router) | Hash route it mirrors | Screen |
 | --- | --- | --- |
-| `/` (tab Now) | `#/` | Needs-you inbox with swipe Seen / Snooze (`POST /v1/alerts/{id}/seen`, `/snooze`), alert status words, rings per account, running count per machine |
-| `/sessions?filter=&by=` | `#/sessions` | Grouped list with filter chips |
+| `/` (tab Now) | `#/` | Needs-you inbox with swipe Seen / Snooze (`POST /v1/alerts/{id}/seen`, `/snooze`; Seen on every row, also a skipped alert, and `POST /v1/sessions/{id}/seen` for a row with no alert; Snooze only while the alert can push, push.md 4), alert status words, rings per account, running count per machine |
+| `/sessions?filter=&by=` | `#/sessions` | Grouped list with a search box (pwa.md 3.0b) and filter chips |
 | `/sessions/[id]?alert=` | `#/sessions/<id>` | State history, last message, **Open in Claude** (`remote_url` in the seat's claude.ai tab on Android, P17; elsewhere with the wrong-account note), **Copy resume command**, Snooze |
 | `/accounts?seat=` | `#/accounts` | One compact row per account that opens in place (P17.8), "most room", **Count down on Lock Screen** (iOS, P12) |
 | `/more` | `#/more` | Alerts, Machines, Peers, Settings |
-| `/more/alerts` | `#/more/alerts` | Rule switches as `prefs.mute` (`PATCH /v1/devices/self`), recent pushes (`GET /v1/alerts`) |
+| `/more/alerts` | `#/more/alerts` | Rule switches as `prefs.mute` (`PATCH /v1/devices/self`), recent pushes (`GET /v1/alerts?limit=50`, filtered on the phone to open alerts (`pending`, `fired`, `snoozed`) plus anything fired or created in the last 48 hours) |
 | `/more/machines?machine=` | `#/machines` | Machines list |
 | `/more/settings` | `#/more/settings` | Hub and status, notifications state, private pushes, tap behaviour, own quiet hours, widgets refresh switch (`prefs.widgets`), app version and **Check for update** (P16), **Unpair** |
 | `/more/settings/notifications` | — | P6.7 |
@@ -256,6 +256,13 @@ every pair in `deny` and `same_account: false` (`blockAllEdit`); Allow all is no
 (owner-only; the screen says "Allow pairs from a computer (board, Peers)"). The turn limit
 (`max_turns`) is shown read-only as "Replies between two sessions without you: N" ("No limit" for 0)
 with the loop-guard explanation and the no-limit line (peers.md 6.3, 5.4).
+
+**Session search** (`SessionsScreen`) is the board's (pwa.md 3.0b): a `TextInput` above the
+chips (`testID` `session-search`, clear button `session-search-clear`), matched on the device
+over `data.sessions` with `src/lib/format/search.ts`, the port of
+`webui/static/components/search-fmt.js`. The query is the screen's state, so the 15 s polls
+keep it. Found terms are tinted spans inside the row's `Text`; a term found only in a field the
+row does not show adds the "Name: …" / "Message: …" line.
 
 Owner-only PWA screens (Devices, Add phone, rule editing) are not in the app. Analytics (More, Analytics; `GET /v1/analytics/{report}`, analytics.md) is: a range (7, 30, 90 days), a seat filter, totals, daily cost bars, a compact weekday by hour heatmap, models, projects, the five dearest sessions, limit windows (peak and final percent as bars) and limit hits.
 Wording, ages and state words come from `src/lib/format` and match `webui/static/format.js`
@@ -284,6 +291,8 @@ on a shared table.
 
 ## P6. Notifications
 
+Android alert notifications also carry `setTimeoutAfter(24 h)`, so one lingers at most a day if the hub's `dismiss` frame (24 h TTL) never arrives.
+
 **P6.1 Android channels** (created before any permission or token call; Android 13+ shows
 the permission prompt only once a channel exists):
 
@@ -292,6 +301,7 @@ the permission prompt only once a channel exists):
 | `wy_needs_you` | Needs you | HIGH | `needs_permission`, `asked`, `failed`, summaries |
 | `wy_limits` | Limits | DEFAULT | `limit_80`, `limit_95`, `reset` |
 | `wy_machines` | Machines | LOW | `machine_silent` |
+| `wy_usage` | Usage changes | LOW | `limit_change`, `usage_reset`, `seat_change`, `weekly_drop` (push.md 3.9) |
 | `wy_test` | Test | DEFAULT | test pushes |
 | `wy_connection` | Connection (always on) | MIN | The link service's persistent notification (push.md 14.4) |
 
@@ -313,7 +323,7 @@ alert colour behind it is the brand gold `#E8B04B`; the always-on connection not
 | `connection` | hairline mark, no badge | none | the persistent note (14.4) and the "stopped" note |
 | `needs_you` | dot | gold | `needs_permission`, `asked` |
 | `failed` | exclamation | red `#E5534B` | `failed` |
-| `limit` | gauge | orange `#F0883E` | `limit_80`, `limit_95` |
+| `limit` | gauge | orange `#F0883E` | `limit_80`, `limit_95`, the usage notices |
 | `reset` | return arrow | green `#3FB68B` | `reset` |
 | `machine` | crescent | grey `#9AA4AE` | `machine_silent` |
 | `summary` | stacked ticks | gold | summaries |
@@ -625,9 +635,10 @@ then gets the 401 that shows Pair, P3).
   `expo-build-properties` iOS option is deprecated since SDK 56, and `expo-widgets` reads
   the same field for its extension), Android `minSdkVersion` 24 (through
   `expo-build-properties`; 31 in the Android build below).
-- Android `permissions: [POST_NOTIFICATIONS, CAMERA]` and `blockedPermissions:
-  [RECORD_AUDIO, SYSTEM_ALERT_WINDOW, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE]`.
-  Both are listed so the prebuilt manifest shows them (`wy-notify` and `wy-scan` also declare
+- Android `permissions: [POST_NOTIFICATIONS, CAMERA, RECORD_AUDIO]` and `blockedPermissions:
+  [SYSTEM_ALERT_WINDOW, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE]`.
+  `RECORD_AUDIO` is for claude.ai's microphone in a tab (P17.5); it is asked at run time, only
+  when the page asks. Both lists are shown so the prebuilt manifest shows them (`wy-notify` and `wy-scan` also declare
   them, merged only at Gradle time).
 - Plugins: `expo-router`; `expo-secure-store`; `expo-widgets` (`groupIdentifier: group.<WY_APP_ID>`, `bundleIdentifier:
   <WY_APP_ID>.widgets` for the extension, the two widgets, `enablePushNotifications: false`,
@@ -643,7 +654,7 @@ then gets the 401 that shows Pair, P3).
     launcher activity by component name, for `watchyard://` links only (the library's own
     tap is an implicit `ACTION_VIEW` any app with that scheme could answer). This plugin is
     listed before the widget plugin in `app.config.ts` so it runs last on those files;
-  - removes `RECORD_AUDIO` and `SYSTEM_ALERT_WINDOW` if a library adds them;
+  - removes `SYSTEM_ALERT_WINDOW` if a library adds it;
   - `usesCleartextTraffic` only in development builds;
   - Android Gradle: every `androidx.work` artifact is forced to 2.8.1 in `app/build.gradle`
     (`resolutionStrategy.eachDependency`). `react-native-android-widget` declares
@@ -741,6 +752,10 @@ profiles, no `extra.eas.projectId`, no `googleServicesFile` and no push credenti
   `validatePayload(…, exact)` (Go key order, no unknown keys), and every fixture with its
   validator. `placeholder-alert.json` and `placeholder-refresh.json` stand in until the `message-*.json`
   goldens replace them.
+- `test/search.test.ts` runs `src/lib/format/search.ts` and `webui/static/components/search-fmt.js`
+  on one case table (same terms, matches, ranges and excerpts); `test/sessions-search.test.tsx`
+  renders the Sessions screen, types a query, refreshes the data and checks the query, the
+  rows, the counts and the extra match line.
 - `test/imports.test.ts` walks the import graph from `src/lib` and `src/contract` and fails on
   any package import or a relative import that leaves them (P1). `eslint.config.js` also
   forbids `react`, `react-native*`, `expo*`, `@expo/*` and `@react-native*` in `src/lib/**`
@@ -939,15 +954,32 @@ claude.ai URL through `Linking.openURL`). It does not switch on its own, so a sl
   other `https:` or `mailto:` link → the browser (`ACTION_VIEW`, `external` event). Anything
   else (`http:`, `intent:`, `javascript:`, `file:`, `data:`, custom schemes) is dropped.
   Subframes are not filtered (sign-in and payment widgets live there).
-- Downloads are refused (`setDownloadListener` reports `download`, saves nothing). File
-  choosers, camera, microphone, geolocation and other permission requests are denied.
+- Downloads are refused (`setDownloadListener` reports `download`, saves nothing).
+  Geolocation and every permission request other than the two below are denied.
+- **Microphone and camera** (`onPermissionRequest`, `TabMedia`): only `AUDIO_CAPTURE` and
+  `VIDEO_CAPTURE`, and only when the requesting origin is `https://claude.ai` or a subdomain
+  (default port; `TabPolicy.grantable`). The Android runtime permission (`RECORD_AUDIO`,
+  and `CAMERA` for video) is asked first; the page's request is granted only if it is granted
+  and denied otherwise.
+- **File chooser** (`onShowFileChooser`): launches `FileChooserParams.createIntent()` (so the
+  page's accept types and multiple-selection apply). When the accept types include images
+  (`image/*`, `*/*` or an image extension), a camera option (`ACTION_IMAGE_CAPTURE`, written
+  to a `FileProvider` URI in the app's private cache `wy-tabs-camera/`, declared in the
+  module's manifest, authority `<WY_APP_ID>.wytabs.files`, per-URI grants only) is offered in the
+  chooser, after asking for `CAMERA` (without it only files are offered). The result is
+  `FileChooserParams.parseResult` or the photo URI; the page's callback is answered exactly
+  once (null on Cancel, a new chooser or a closed tab). Earlier photos are deleted at the
+  next chooser. The module reads nothing of what the page shows or what is chosen.
+- Pasting a screenshot from the clipboard into the page is not handled by the app (handing it
+  over would need script in the page, which P17.5 forbids); attach a photo or file through the
+  chooser.
 - Certificate errors are never overridden. WebView debugging stays off.
 
 ### P17.6 Limits
 
 - Needs WebView 110+ with `MULTI_PROFILE`; older phones open links in the browser.
 - Sign-in is email and code only; Google sign-in is blocked in WebViews by Google.
-- Attachments and file uploads do not work in a tab (no file chooser); use the browser.
+- Attachments go through the system file chooser (and the camera, P17.5); pasting an image from the clipboard is not supported.
 - A refusal that claude.ai serves as a normal page with content cannot be told apart without
   reading the page, which the module never does; **Open in browser** is always in the header.
 - The phone tab line of P17.7 is what the tab showed when it was last open; a sign-out made
@@ -1039,7 +1071,28 @@ Calm and compact: seven accounts fit on one screen.
   when you next use this account", peak, pace); **Signed in** (the Claude Code
   line per machine, the phone tab line with "as of the tab's last visit", and its action: **Open
   claude.ai**, **Sign in on this phone** or **Fix this tab**, which opens the sheet of
-  P17.7); then the plan and organisation, email, live sessions and when claude.ai usage was
-  read; and **Count down on Lock Screen** where the Live Activity qualifies (iOS, P12).
+  P17.7); then the details: the plan and organisation, email, live sessions and when claude.ai
+  usage was read, and under them **Usage and the picker**, a closed disclosure (the only place
+  these show; no screen or tab of its own) that loads `GET /v1/accounts/{seat}/relation` when
+  first opened (again when opened more than 5 minutes later) and shows what the board shows,
+  in the same words and order (pwa.md 3.0a): the verdict in words (its place in line
+  explained, the kind with its definition, each rule with its value against its threshold,
+  when it frees up), the three tiles of the 5-hour limit and the week (stacked), the session
+  cost line, the charts (a title saying what a higher bar means, a y axis with values, "no
+  data" gaps, model colours with a legend of full names, a tapped day's value under the chart,
+  one "Tap a day to see its value." hint under the first chart only, an `accessibilityLabel`
+  summing each chart up; a chart with no data is replaced by one line), the capacity sentence
+  per model (a chart only once both weeks have a value) and **How this works** at the end. Its
+  pure logic
+  is in `lib/format/relation.ts` (jest), the same functions and strings as the board's
+  `relation-fmt.js`. Above the details, **How should the picker use this account?** (pwa.md
+  3.0a; setup.md 8.5 *Kind*): for the owner three options (Protected, Aggressive, Not chosen)
+  with their one-line definitions under each, saved at once with `PATCH /v1/accounts/{seat}`
+  `{"mode": …}` (a refusal puts the old choice back and says why); for anyone else the
+  current choice with its definition. "Not chosen yet; treated as aggressive." is highlighted
+  when no mode is set, and a local override on the verdict's machine is named as on the board.
+  The wording comes from one place, `lib/format/pickMode.ts` (`MODE_WORDS`), also used by the
+  verdict; and **Count down on Lock Screen** where the Live
+  Activity qualifies (iOS, P12).
 - **Under the list**, one muted line: "The bar shows the tighter of the 5 h and 7 d limits. Tap
   an account for everything else."

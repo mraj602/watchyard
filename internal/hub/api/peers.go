@@ -88,13 +88,21 @@ func (s *Server) peersList(w http.ResponseWriter, r *http.Request) {
 	for _, d := range dir {
 		e := map[string]any{"session": d.Session, "handle": d.Handle, "name": d.Name, "account": d.Account,
 			"account_label": nullable(d.AccountLabel), "machine": d.MachineID, "machine_name": d.Machine,
-			"project": nullable(d.Project), "state": d.State, "agent": d.Device != nil}
+			"project": nullable(d.Project), "state": d.State, "agent": d.Device != nil, "tags": tagList(d.Tags)}
 		if d.State == "" {
 			e["state"] = "working" // no fold yet: it has only just started
 		}
 		out = append(out, e)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
+}
+
+// tagList is a session's tags for JSON: an empty array rather than null.
+func tagList(t []string) []string {
+	if t == nil {
+		return []string{}
+	}
+	return t
 }
 
 func nullable(s string) any {

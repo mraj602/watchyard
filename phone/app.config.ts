@@ -164,10 +164,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       // backup and device transfer.
       allowBackup: false,
       // Listed explicitly so the prebuilt manifest shows them (modules/wy-notify and wy-scan also
-      // merge them at Gradle time); nothing else is needed (P13).
-      permissions: ['android.permission.POST_NOTIFICATIONS', 'android.permission.CAMERA'],
+      // merge them at Gradle time); RECORD_AUDIO is for claude.ai's mic in a tab (wy-tabs, P17.5).
+      permissions: ['android.permission.POST_NOTIFICATIONS', 'android.permission.CAMERA', 'android.permission.RECORD_AUDIO'],
       blockedPermissions: [
-        'android.permission.RECORD_AUDIO',
         'android.permission.SYSTEM_ALERT_WINDOW',
         'android.permission.READ_EXTERNAL_STORAGE',
         'android.permission.WRITE_EXTERNAL_STORAGE',

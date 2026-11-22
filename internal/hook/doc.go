@@ -5,5 +5,5 @@
 //
 // Contract: docs/spec/record.md 4.1, docs/spec/states.md section 2.
 //
-// Depends on: record, outbox, identity, config, paths.
+// Depends on: record, outbox, identity, config, paths, leases.
 package hook

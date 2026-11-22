@@ -85,6 +85,7 @@ const enc = encodeURIComponent;
 export const getOverview = () => getJSON('/v1/overview');
 export const getSessions = () => getJSON('/v1/sessions', { include_ended: 'true', days: '2', limit: '500' });
 export const getSession = (id) => getJSON(`/v1/sessions/${enc(id)}`);
+export const getRelation = (seat) => getJSON(`/v1/accounts/${enc(seat)}/relation`);
 
 export const login = (token) => postJSON('/v1/session/login', { token }, { anon: true });
 
@@ -138,6 +139,7 @@ export const getAlerts = (params) => getJSON('/v1/alerts', params);
 export const getAlert = (id) => getJSON(`/v1/alerts/${enc(id)}`);
 export const snoozeAlert = (id, minutes) => postJSON(`/v1/alerts/${enc(id)}/snooze`, minutes ? { minutes } : {});
 export const seenAlert = (id) => postJSON(`/v1/alerts/${enc(id)}/seen`);
+export const seenSession = (id) => postJSON(`/v1/sessions/${enc(id)}/seen`);
 
 // /health is outside the API and public; used to compare the running build with the hub's.
 export async function getHealth() {

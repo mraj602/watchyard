@@ -44,7 +44,11 @@ export type Trigger =
   | 'limit_80'
   | 'limit_95'
   | 'reset'
-  | 'machine_silent';
+  | 'machine_silent'
+  | 'limit_change'
+  | 'usage_reset'
+  | 'seat_change'
+  | 'weekly_drop';
 
 /** api.yaml AlertBrief. */
 export interface AlertBrief {
@@ -155,6 +159,18 @@ export interface Window {
   state?: 'current' | 'reset' | 'idle';
 }
 
+/** api.yaml Seat.mode: the picker's use of an account. */
+export type PickMode = 'protected' | 'aggressive';
+
+/** api.yaml SeatPatch: what PATCH /v1/accounts/{seat} takes (owner only). A missing key leaves the field; `mode: null` is not chosen. */
+export interface SeatPatch {
+  label?: string | null;
+  colour?: string | null;
+  order?: number;
+  hidden?: boolean;
+  mode?: PickMode | null;
+}
+
 /** api.yaml Seat (an account card). */
 export interface Seat {
   id: string;
@@ -166,6 +182,8 @@ export interface Seat {
   label?: string | null;
   colour?: string | null;
   order?: number;
+  /** How `wy account next` uses the account, the same on every machine (setup.md 8.5 Kind); null or missing: not chosen, treated as aggressive. */
+  mode?: PickMode | null;
   hidden?: boolean;
   windows?: Window[];
   live_sessions?: number;
@@ -522,4 +540,97 @@ export interface AnalyticsQuery {
   days?: number;
   /** One seat id, or "unattributed". */
   seat?: string;
+}
+
+/** api.yaml CalibrationFactor: `f` in 5-hour points per million weighted units, `ratio` in 5-hour points per weekly point, `lane_price` in 5-hour points. */
+export interface CalibrationFactor {
+  value: number;
+  fallback: number;
+  measured: number | null;
+  weight: number;
+  n: number;
+  days: number;
+  implausible: boolean;
+}
+
+/** api.yaml Calibration (setup.md 8.5). */
+export interface Calibration {
+  at: Iso;
+  since: Iso | null;
+  reset: { at: Iso; reason: 'seat_change' | 'under_read' | 'over_read' } | null;
+  f: CalibrationFactor;
+  ratio: CalibrationFactor;
+  lane_price: CalibrationFactor;
+  lane_charge: number;
+  lane_units: number | null;
+  unexplained_pct_per_hour: number | null;
+  unexplained_hours: number;
+}
+
+/** api.yaml RelationDay: one hub day's 5-hour per weekly point. */
+export interface RelationDay {
+  day: string;
+  ratio: number | null;
+  d5: number;
+  d7: number;
+  pairs: number;
+  model: string | null;
+  rise: number;
+  rise_cc: number;
+}
+
+/** api.yaml RelationHeavy: whether a week's 5-hour rise was Claude Code tokens. */
+export interface RelationHeavy {
+  heavy: boolean;
+  rise: number;
+  cc_share: number | null;
+}
+
+/** api.yaml RelationModel: a model's 5-hour capacity index (API dollars per 5-hour point). */
+export interface RelationModel {
+  model: string;
+  this_week: number | null;
+  last_week: number | null;
+  change: number | null;
+  days: { day: string; index: number | null; normalised: number | null; d5: number; usd: number }[];
+}
+
+/** api.yaml Verdict: what one run of `wy account next` decided about the seat (record.md 4.11). */
+export interface Verdict {
+  at: Iso;
+  machine: string;
+  machine_name: string | null;
+  strategy: string;
+  kind?: 'aggressive' | 'protected' | null;
+  eligible: boolean;
+  reason?: string | null;
+  skip_level?: number | null;
+  rank?: number | null;
+  expiring?: boolean;
+  free_at?: Iso | null;
+  next_free?: Iso | null;
+  weekly_pct?: number | null;
+  five_hour_pct?: number | null;
+  burst?: number | null;
+  burst_cap?: number | null;
+  stale?: boolean;
+  /** Where the kind came from on that machine (record.md 4.11); missing or null from an older wy. */
+  mode_from?: 'local' | 'hub' | 'proposed' | 'none' | null;
+  /** The weekly level at which it takes no new session now (protected: the pace line); null from an older wy. */
+  weekly_cap?: number | null;
+  /** The 5-hour level at which it takes no new session; null from an older wy. */
+  five_hour_cap?: number | null;
+}
+
+/** GET /v1/accounts/{seat}/relation (api.yaml UsageRelation). */
+export interface UsageRelation {
+  seat: string;
+  time: Iso;
+  tz: string;
+  today: string;
+  days: RelationDay[];
+  heavy: { this_week: RelationHeavy; last_week: RelationHeavy };
+  models: RelationModel[];
+  calibration: Calibration | null;
+  verdict: Verdict | null;
 }

@@ -6,6 +6,97 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-23
+
+1.1.0 was never tagged; its changes ship here.
+
+### Added
+
+- `wy account next`: recommends the account (config folder) to start the next Claude Code
+  session on, from each folder's login on this machine and the limits of its seat (hub, or
+  this machine's status line), with strategies (`smart`, `expiring`, `most-room`, `spread`,
+  `fill`, `sticky`), per-account modes, caps, hours and priorities under `[next]` in
+  `config.toml`, a lease per pick so bursts of launches spread out, and `--env`, `--json`,
+  `--explain` and `--exec` output. It only recommends.
+- `wy account next` strategy `lanes`, the new default: protected and aggressive accounts
+  (`next.accounts.<key>.mode protected`), the state from the newest readings plus this
+  machine's token use since them, burst caps of 6 (aggressive) and 2 (protected) new sessions
+  an hour, turns with expiring weekly room first, `--n` for several sessions in one call,
+  `--session-id` to tie each pick to its session, and `--urgent`. Exit 3 for a session id
+  already used; exit 4 also when only some of the sessions asked for were placed.
+- A lease ledger for `wy account next` (`<state>/next/leases/`, append-only, one file per
+  day): every pick is a lease, which `wy hook` marks launched and ended on `SessionStart` and
+  `SessionEnd`, and which goes to the hub as an `account_lease` record.
+- Hub: `GET /v1/usage`, readable with a machine token: each seat's limit percentages, reset
+  times and recent samples, other machines' recent leases (no session ids), plus the calling
+  machine's own folders, and nothing else. `wy account next` reads it, so upgrade the hub
+  before the machines. Schema version 17 adds `account_lease`.
+- `wy account next` (`lanes`) calibrates each account: its meter factor (5-hour points per
+  million token units), its 5-hour-to-weekly ratio and its lane price adjust themselves to
+  its measured use after about 3 days and 20 measurements, restart after a run of one-sided
+  misses or a change of login, and a margin covers the meter's recent under-reading. The
+  hub does the work every 15 minutes and returns the factors in `GET /v1/usage`; without a
+  hub the account is fitted from this machine's data. `--json` and `--explain` show the
+  factors. Schema version 18 adds `seat_calibration`.
+- `wy account next` (`lanes`) counts each lane once, whichever machine picked or runs it:
+  `GET /v1/usage` returns each lease's session use per minute for its first 5 hours (with a
+  hash of the session id, never the id) and the calling machine's own recent leases, and a
+  lease charges only what its session has not burned yet, while that session's tokens after
+  the reading go into the meter from the same source. With the hub down, other machines'
+  leases come from a copy kept at the last hub read (`<state>/next/hub_leases.json`) and stop
+  charging at the first reading 10 minutes after their pick. `--json` (`lease_charges`) and
+  `--explain` show each lease's state, where its burned units came from and its charge.
+- Usage and the picker, per account, in the Details section of an open account on the board
+  and in the phone app: the newest verdict of `wy account next` (eligible or not, why, when it
+  frees up), the calibration factors (measured, blending or fallback, with `n`), 14 days of
+  the 5-hour-to-weekly ratio labelled with each day's most-used model, and the 5-hour
+  capacity index per model (API dollars per 1 % of the 5-hour window, normalised to last
+  week). The hub keeps it up to date in its 15-minute calibration job (`GET
+  /v1/accounts/{seat}/relation`), and `wy account next` sends its verdicts as an
+  `account_verdicts` record (at most every 15 minutes unless they change).
+- Four low-urgency usage notices, on by default: `limit_change` (a model's 5-hour capacity
+  moved more than 1.2× or under 0.83× on most Claude-Code-heavy accounts), `usage_reset` (a
+  server or owner reset put both windows back to about 0 %; the reset is kept out of
+  calibration), `seat_change` (a folder logged in to another account or org) and
+  `weekly_drop` (the 7-day window fell more than 10 points without a reset: something
+  changed, check). Each expires 24 hours after it fires. Schema version 19 adds `seat_watch`,
+  `seat_verdict` and their rules.
+- A search box on the Sessions screen of the board (and so of the desktop app's Hub view) and
+  of the Android app: it matches folders, titles, names and the last message, ignores case and
+  accents, marks what it found, adds a line when the match is in a field the row does not show,
+  and keeps the query while the list refreshes. It runs on the device over the list it already
+  has: no new API and no message text beyond the existing last-message tail.
+
+- `POST /v1/sessions/{id}/seen`: marks a session's current Needs-you episode seen even when it
+  has no alert (a hub run with `--no-push`, or before the engine reached the episode); the
+  board and the phone app use it for such rows.
+- Protected or aggressive is now a per-account hub setting (`Seat.mode`, `PATCH
+  /v1/accounts/{seat}` `mode`, `GET /v1/usage` `mode`; migration 0020), the same on every
+  machine. The board and the phone app have an owner control on each account ("How should the
+  picker use this account?") with a one-line definition under each choice; `wy setup` and `wy
+  account add` ask once per account. A machine's own `next.accounts.<key>.mode` still wins on
+  that machine and is shown as "set on this machine"; an account with no mode shows "Not
+  chosen yet; treated as aggressive." (unchanged behaviour).
+
+### Changed
+
+- `wy doctor` treats a folder as logged out when `claude auth status` last said so, even if
+  its `.claude.json` still holds the old `oauthAccount`.
+
+- **Usage and the picker** on the board and the phone, rewritten in plain words: the verdict
+  explains the account's place in line and each rule with its value against its limit, three
+  tiles show how the 5-hour limit relates to the week, one line says what a new session is
+  set aside, and the charts have titles, a y axis, "no data" gaps, model colours with full
+  names and a text alternative; empty charts are replaced by one line, and the details moved
+  to **How this works**.
+
+### Fixed
+
+- Needs-you rows whose alert was not pushed (`stale`, `rule_off`, `peers`, `remote_control`,
+  `baseline`) had neither Seen nor the ⋯ menu on the board, in the desktop app and on the
+  phone, so they could never be dismissed. The read API now carries their skipped alert as the
+  session's `alert`, and Seen on them works; Snooze stays for alerts that can still push.
+
 ## [1.0.0] - 2026-10-24
 
 The first public version. Everything below is new.
@@ -74,5 +165,6 @@ The first public version. Everything below is new.
   itself does, instead of the full build number. claude.ai's Claude Code section kept asking to
   verify the device again, because the string was unusual and changed with every Electron update.
 
-[Unreleased]: https://github.com/mraj602/watchyard/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/mraj602/watchyard/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/mraj602/watchyard/compare/v1.0.0...v1.2.0
 [1.0.0]: https://github.com/mraj602/watchyard/releases/tag/v1.0.0

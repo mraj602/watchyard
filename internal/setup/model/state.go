@@ -56,13 +56,15 @@ type ClaudeInfo struct {
 
 // Folder is one Claude Code config folder (a slot) and its items.
 type Folder struct {
-	Folder   string          `json:"folder"` // "~/.claude-2"
-	LoggedIn bool            `json:"logged_in"`
-	Email    string          `json:"email,omitempty"`
-	Org      string          `json:"org,omitempty"`
-	Plan     string          `json:"plan,omitempty"`
-	Label    string          `json:"label,omitempty"`
-	Colour   string          `json:"colour,omitempty"`
+	Folder   string `json:"folder"` // "~/.claude-2"
+	LoggedIn bool   `json:"logged_in"`
+	Email    string `json:"email,omitempty"`
+	Org      string `json:"org,omitempty"`
+	Plan     string `json:"plan,omitempty"`
+	Label    string `json:"label,omitempty"`
+	Colour   string `json:"colour,omitempty"`
+	// Mode is config slots.modes for the folder (setup.md 8.5, Kind); not in --detect output.
+	Mode     string          `json:"-"`
 	Launcher *FolderLauncher `json:"launcher,omitempty"`
 	// Items is keyed by item name (ShareItems[i].Name).
 	Items map[string]ItemState `json:"items,omitempty"`

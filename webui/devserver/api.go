@@ -362,6 +362,7 @@ func (s *Server) deviceRoutes() {
 	m("GET /v1/alerts/{id}", g(s.getAlert, "read", "push", "owner"))
 	m("POST /v1/alerts/{id}/snooze", g(s.snooze, "push", "owner"))
 	m("POST /v1/alerts/{id}/seen", g(s.seen, "push", "owner"))
+	m("POST /v1/sessions/{id}/seen", g(s.seenSession, "push", "owner"))
 	m("POST /v1/actions/{token}", s.action)
 }
 
@@ -1354,6 +1355,41 @@ func (s *Server) seen(w http.ResponseWriter, r *http.Request, c *caller) {
 		writeErr(w, 409, "conflict", "an alert that is "+a["status"].(string)+" cannot be marked seen")
 		return
 	}
+	writeJSON(w, 200, a)
+}
+
+// seenSession is POST /v1/sessions/{id}/seen (push.md 4): Seen on the session's alert, or a
+// new seen alert when a Needs-you row has none.
+func (s *Server) seenSession(w http.ResponseWriter, r *http.Request, c *caller) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.data.Session(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, "not_found", "no such session")
+		return
+	}
+	if sess["needs_you"] != true {
+		writeErr(w, 409, "conflict", "this session does not need you now")
+		return
+	}
+	if b, _ := sess["alert"].(M); b != nil {
+		a, _ := s.data.Alert(b["id"].(string))
+		if a != nil && (a["status"] == "seen" || s.seenAlert(a)) {
+			writeJSON(w, 200, a)
+			return
+		}
+	}
+	now := s.opts.Now()
+	a := newPromotedAlert(s.data, sess, now, len(s.data.Alerts)+1)
+	trig := "asked"
+	if sess["state"] == "needs_permission" || sess["state"] == "failed" {
+		trig = sess["state"].(string)
+	}
+	a["id"], a["trigger"], a["rule"], a["status"], a["due_at"], a["seen_at"] = fmt.Sprintf("al_sessionseen%d", len(s.data.Alerts)+1), trig, nil, "seen", nil, ts(now)
+	a["url"] = "/#/sessions/" + sess["id"].(string) + "?alert=" + a["id"].(string)
+	s.data.Alerts = append(s.data.Alerts, a)
+	s.data.SyncAlerts()
+	s.emitAlert("seen", a)
 	writeJSON(w, 200, a)
 }
 

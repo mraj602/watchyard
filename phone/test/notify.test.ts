@@ -79,13 +79,13 @@ function fakeFetch(status = 200, body: unknown = { applied: true }): { fetch: Fe
 }
 
 describe('channels and categories', () => {
-  it('creates the four Android channels with the mapped importance, and no channels on iOS', async () => {
+  it('creates the five Android channels with the mapped importance, and no channels on iOS', async () => {
     await setupChannelsAndCategories(N, 'android', 15);
     const ch = callsOf('notifications.setNotificationChannelAsync');
-    expect(ch.map((c) => c.args[0])).toEqual(['wy_needs_you', 'wy_limits', 'wy_machines', 'wy_test']);
+    expect(ch.map((c) => c.args[0])).toEqual(['wy_needs_you', 'wy_limits', 'wy_machines', 'wy_usage', 'wy_test']);
     const imp = ExpoNotifications.AndroidImportance;
-    expect(ch.map((c) => (c.args[1] as { importance: number }).importance)).toEqual([imp.HIGH, imp.DEFAULT, imp.LOW, imp.DEFAULT]);
-    expect(ch.map((c) => (c.args[1] as { name: string }).name)).toEqual(['Needs you', 'Limits', 'Machines', 'Test']);
+    expect(ch.map((c) => (c.args[1] as { importance: number }).importance)).toEqual([imp.HIGH, imp.DEFAULT, imp.LOW, imp.LOW, imp.DEFAULT]);
+    expect(ch.map((c) => (c.args[1] as { name: string }).name)).toEqual(['Needs you', 'Limits', 'Machines', 'Usage changes', 'Test']);
 
     calls.length = 0;
     await setupChannelsAndCategories(N, 'ios', 15);

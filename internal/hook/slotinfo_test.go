@@ -94,6 +94,13 @@ func TestSessionStartSendsSlotInfoOnLoginChange(t *testing.T) {
 	if got = slotInfos(t, sb); len(got) != 3 || string(got[2].Extra["label"]) != `"client"` {
 		t.Fatalf("after relabel: %+v", got)
 	}
+
+	// A proposed mode (slots.modes, setup.md 8.5 Kind) is a change and is sent with it.
+	writeConfig(t, sb, "[slots.labels]\n\"~/.claude-3\" = \"client\"\n[slots.modes]\n\"~/.claude-3\" = \"protected\"\n")
+	sb.run("SessionStart", start)
+	if got = slotInfos(t, sb); len(got) != 4 || string(got[3].Extra["mode"]) != `"protected"` {
+		t.Fatalf("after mode: %+v", got)
+	}
 }
 
 // Once a day the same login is sent again (record.md 4.7).

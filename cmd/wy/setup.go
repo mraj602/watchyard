@@ -350,6 +350,9 @@ func setupMain(ctx context.Context, e *setupEnv, args []string) error {
 		if err != nil {
 			return err
 		}
+		// After the labels: the picker mode of each account with none yet (setup.md 8.5,
+		// Choosing in wy setup). A non-interactive run asks nothing.
+		c.Modes = e.askSetupModes(ctx, st, c)
 	}
 	p, err := plan.Plan(st, c)
 	if err != nil {
@@ -465,6 +468,9 @@ func setupMain(ctx context.Context, e *setupEnv, args []string) error {
 		e.termAfterApply(p, false)
 	}
 
+	if aerr == nil && len(c.Modes) > 0 {
+		e.queueModes(st, c.Modes)
+	}
 	// Logins (6.2 step 6): interactive only, one folder at a time.
 	if aerr == nil && interactive && len(res.Logins) > 0 {
 		e.runLogins(ctx, st, res.Logins)

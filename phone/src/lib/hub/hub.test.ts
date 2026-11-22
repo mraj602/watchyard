@@ -30,6 +30,8 @@ const ENDPOINTS: [string, (c: HubClient) => Promise<unknown>][] = [
   ['pausePeers', (c) => c.pausePeers(true)],
   ['peerAudit', (c) => c.peerAudit({ limit: 20 })],
   ['peerMessages', (c) => c.peerMessages()],
+  ['patchSeat', (c) => c.patchSeat('seat-1', { mode: 'protected' })],
+  ['relation', (c) => c.relation('seat-1')],
 ];
 
 describe('HubClient requests', () => {
@@ -46,6 +48,7 @@ describe('HubClient requests', () => {
     ['alert', (c) => c.alert('al_1'), 'GET', '/v1/alerts/al_1'],
     ['rules', (c) => c.rules(), 'GET', '/v1/rules'],
     ['seen', (c) => c.seen('al_1'), 'POST', '/v1/alerts/al_1/seen'],
+    ['seenSession', (c) => c.seenSession('c41e/0'), 'POST', '/v1/sessions/c41e%2F0/seen'],
     ['snooze default', (c) => c.snooze('al_1'), 'POST', '/v1/alerts/al_1/snooze'],
     ['deviceSelf', (c) => c.deviceSelf(), 'GET', '/v1/devices/self'],
     ['patchSelf', (c) => c.patchSelf({ tap: 'claude' }), 'PATCH', '/v1/devices/self'],
@@ -56,6 +59,8 @@ describe('HubClient requests', () => {
     ['pausePeers', (c) => c.pausePeers(true), 'POST', '/v1/peers/pause'],
     ['peerAudit', (c) => c.peerAudit({ limit: 20 }), 'GET', '/v1/peers/audit?limit=20'],
     ['peerAudit bare', (c) => c.peerAudit(), 'GET', '/v1/peers/audit'],
+    ['patchSeat', (c) => c.patchSeat('a/b', { mode: null }), 'PATCH', '/v1/accounts/a%2Fb'],
+    ['relation', (c) => c.relation('a/b'), 'GET', '/v1/accounts/a%2Fb/relation'],
     ['peerMessages', (c) => c.peerMessages({ limit: 5 }), 'GET', '/v1/peers/messages?limit=5'],
   ])('%s sends the bearer to the right path', async (_n, run, method, path) => {
     const f = fakeFetch(() => response(200, {}));

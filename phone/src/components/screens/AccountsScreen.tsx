@@ -4,14 +4,22 @@
 // Tapping a row opens it in place: every window with its reset, pace and peak, where the login
 // is signed in (Claude Code on each machine, from the hub, and this phone's claude.ai tab, P17.7)
 // with the matching action (Open claude.ai, Sign in on this phone, Fix this tab: its
-// sheet), the details, and "Count down on Lock Screen" where the Live Activity qualifies (iOS).
+// sheet), "How should the picker use this account?" (the owner picks protected, aggressive or not
+// chosen; anyone else reads it), the details with "Usage and the picker" (a closed disclosure that
+// loads the seat's usage relation: the verdict in words, tiles, charts, how this works), and
+// "Count down on Lock Screen" where the Live Activity qualifies (iOS).
 // "+ Add account" is in the header (a tab for a hub account this phone has none for).
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { LayoutAnimation, Modal, Pressable, Text, View } from 'react-native';
-import type { Seat } from '../../contract/api';
+import type { PickMode, Seat, UsageRelation } from '../../contract/api';
 import {
   agoLabel, mostRoom, paceInfo, pct, planLabel, plural, resetWords, seatIndex, seatName, shownUse, sortWindows, tighterWindow, windowLabel, windowPhase, worstPace,
 } from '../../lib/format';
+import { localOverrideLine, MODE_OPTIONS, MODE_WORDS, modeChoice, modeOption, type ModeChoice } from '../../lib/format/pickMode';
+import {
+  MODEL_COLOURS, NO_VERDICT, relationStale, GAP_MARK, TAP_HINT, usageModel, type Chart, type UsageModel,
+} from '../../lib/format/relation';
+import { errorText } from '../../lib/hub';
 import {
   attention, codeLine, fixChoices, phoneTab, phoneTabLine, TAB_LOGIN, TAB_PRIVACY_NOTE, tabAction, type Line, type PhoneTab,
 } from '../../lib/tabs';
@@ -224,6 +232,7 @@ function AccountRow({ seat, colour, now, highlight, expanded, onToggle, canCount
   const action = tabAction(tab);
   const seen = tabSeen(tab, now);
   const hot = !!tight && tight.used >= 90;
+  const relation = useRelation(seat.id);
   return (
     <View
       testID={`seat-${seat.id}`}
@@ -304,15 +313,369 @@ function AccountRow({ seat, colour, now, highlight, expanded, onToggle, canCount
             {action === 'sign_in' ? <Btn kind="primary" label="Sign in on this phone" testID={`tab-${seat.id}`} onPress={onTab} /> : null}
             {action === 'fix' ? <Btn kind="danger" label="Fix this tab" testID={`fix-${seat.id}`} onPress={onFix} /> : null}
           </View>
+          <ModeSection seat={seat} verdict={relation.state.rel?.verdict} />
           <View style={{ gap: 2 }}>
             <Muted>{[planLabel(seat.plan), seat.org_name].filter(Boolean).join(' · ')}</Muted>
             {seat.email ? <Muted>{seat.email}</Muted> : null}
             <Muted>{seat.live_sessions ? plural(seat.live_sessions, 'live session') : 'No live sessions'}</Muted>
             <Muted>{webAt ? `claude.ai usage read ${agoLabel(webAt, now)}` : 'No claude.ai web usage: figures come from the status line only.'}</Muted>
           </View>
+          <UsageDisclosure seat={seat.id} now={now} relation={relation} />
           {canCountdown ? <Btn label="Count down on Lock Screen" testID={`countdown-${seat.id}`} onPress={onCountdown} /> : null}
         </View>
       ) : null}
+    </View>
+  );
+}
+
+/**
+ * How should the picker use this account? (pwa.md 3.0a, setup.md 8.5 Kind.) The owner picks
+ * protected, aggressive or not chosen, each with its definition, and it saves at once
+ * (PATCH /v1/accounts/{seat}); a refusal puts the old choice back and says why. Anyone else
+ * reads the current choice. Not chosen is highlighted. `verdict` is the loaded relation's, for
+ * the line about a setting on the picker's machine.
+ */
+function ModeSection({ seat, verdict }: { seat: Seat; verdict: UsageRelation['verdict'] | undefined }) {
+  const t = useTheme();
+  const api = useHubApi();
+  const owner = api.me?.owner === true;
+  const [pending, setPending] = useState<{ value: ModeChoice } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const shown = pending ? pending.value : modeChoice(seat.mode);
+  const current = modeOption(shown);
+  const override = localOverrideLine(verdict, seat.mode);
+  const choose = (value: ModeChoice) => {
+    if (!api.client || pending || value === shown) return;
+    setError(null);
+    setPending({ value });
+    api.client.patchSeat(seat.id, { mode: value satisfies PickMode | null }).then(
+      () => api.kick().finally(() => setPending(null)),
+      (e: unknown) => {
+        setPending(null);
+        setError(errorText(e, 'Could not save the choice'));
+      },
+    );
+  };
+  return (
+    <View testID={`mode-${seat.id}`} style={{ gap: 6 }}>
+      <Text accessibilityRole="header" style={{ color: t.text, fontWeight: '700' }}>{MODE_WORDS.question}</Text>
+      {shown == null ? (
+        <Text testID={`mode-none-${seat.id}`} style={{ color: t.text, fontSize: 14, backgroundColor: t.mark, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 5 }}>
+          {MODE_WORDS.notChosen}
+        </Text>
+      ) : null}
+      {owner ? (
+        <View accessibilityRole="radiogroup" style={{ gap: 4 }}>
+          {MODE_OPTIONS.map((o) => {
+            const on = o.value === shown;
+            return (
+              <Pressable
+                key={o.name}
+                testID={`mode-${seat.id}-${o.value ?? 'none'}`}
+                accessibilityRole="radio"
+                accessibilityLabel={`${o.name}. ${o.words}`}
+                accessibilityState={{ checked: on, busy: !!pending }}
+                onPress={() => choose(o.value)}
+                style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingVertical: 5 }}
+              >
+                <View style={{ width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: on ? t.accent : t.muted, alignItems: 'center', justifyContent: 'center', marginTop: 1 }}>
+                  {on ? <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: t.accent }} /> : null}
+                </View>
+                <View style={{ flex: 1, gap: 1 }}>
+                  <Text style={{ color: t.text, fontWeight: '600', fontSize: 14 }}>{o.name}</Text>
+                  <Muted>{o.words}</Muted>
+                </View>
+              </Pressable>
+            );
+          })}
+        </View>
+      ) : shown != null ? (
+        <Text testID={`mode-current-${seat.id}`} style={{ color: t.text, fontSize: 14 }}>
+          <Text style={{ fontWeight: '700' }}>{`${current.name}. `}</Text>
+          {current.words}
+        </Text>
+      ) : null}
+      {error ? <Text testID={`mode-error-${seat.id}`} style={{ color: t.bad, fontSize: 13 }}>{error}</Text> : null}
+      {override ? <Text testID={`mode-override-${seat.id}`} style={{ color: t.needs, fontSize: 13 }}>{override}</Text> : null}
+    </View>
+  );
+}
+
+type RelationState = { status: 'idle' | 'loading' | 'ok' | 'error'; rel: UsageRelation | null; error?: string };
+
+interface RelationLoad {
+  state: RelationState;
+  /** Load now. */
+  load: () => void;
+  /** Load when never loaded, or loaded more than 5 minutes ago. */
+  loadIfStale: () => void;
+}
+
+/**
+ * GET /v1/accounts/{seat}/relation, kept by the row so the mode section can use the verdict too.
+ * Loaded when "Usage and the picker" first opens, and again when it opens more than 5 minutes after the last load.
+ */
+function useRelation(seat: string): RelationLoad {
+  const client = useHubApi().client;
+  const [state, setSt] = useState<RelationState>({ status: 'idle', rel: null });
+  const loadedAt = useRef<number | null>(null);
+  const seq = useRef(0);
+  const busy = useRef(false);
+  const load = () => {
+    if (!client || busy.current) return;
+    busy.current = true;
+    const n = ++seq.current;
+    setSt((p) => ({ status: 'loading', rel: p.rel }));
+    client.relation(seat).then(
+      (rel) => {
+        busy.current = false;
+        if (n !== seq.current) return;
+        loadedAt.current = Date.now();
+        setSt({ status: 'ok', rel });
+      },
+      (e: unknown) => {
+        busy.current = false;
+        if (n !== seq.current) return;
+        setSt((p) => ({ status: 'error', rel: p.rel, error: errorText(e, 'Could not load the usage figures') }));
+      },
+    );
+  };
+  return { state, load, loadIfStale: () => (relationStale(loadedAt.current, Date.now()) ? load() : undefined) };
+}
+
+/**
+ * "Usage and the picker" (phone.md P4, pwa.md 3.0a): a closed disclosure inside an open row.
+ * The words, tiles and chart models are lib/format/relation.ts.
+ */
+function UsageDisclosure({ seat, now, relation }: { seat: string; now: number; relation: RelationLoad }) {
+  const t = useTheme();
+  const [open, setOpen] = useState(false);
+  const st = relation.state;
+  const toggle = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    const next = !open;
+    setOpen(next);
+    if (next) relation.loadIfStale();
+  };
+
+  return (
+    <View testID={`usage-${seat}`} style={{ gap: 8 }}>
+      <Pressable
+        testID={`usage-toggle-${seat}`}
+        accessibilityRole="button"
+        accessibilityLabel="Usage and the picker"
+        accessibilityState={{ expanded: open }}
+        onPress={toggle}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 }}
+      >
+        <Text accessibilityElementsHidden style={{ color: t.muted, fontSize: 16, width: 12 }}>{open ? '⌄' : '›'}</Text>
+        <Text style={{ color: t.text, fontWeight: '700' }}>Usage and the picker</Text>
+      </Pressable>
+      {open ? (
+        st.rel ? (
+          <UsageBody rel={st.rel} now={now} />
+        ) : st.status === 'error' ? (
+          <View style={{ gap: 6 }}>
+            <Text testID={`usage-error-${seat}`} style={{ color: t.bad, fontSize: 14 }}>{st.error}</Text>
+            <Btn label="Try again" testID={`usage-retry-${seat}`} onPress={relation.load} />
+          </View>
+        ) : (
+          <Muted>Loading…</Muted>
+        )
+      ) : null}
+      {open && st.rel && st.status === 'error' ? (
+        <View style={{ gap: 6 }}>
+          <Text style={{ color: t.bad, fontSize: 14 }}>{st.error}</Text>
+          <Btn label="Try again" testID={`usage-retry-${seat}`} onPress={relation.load} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** In order: verdict, tiles, session line, charts, capacity, and a closed "How this works". */
+function UsageBody({ rel, now }: { rel: UsageRelation; now: number }) {
+  const t = useTheme();
+  const u = usageModel(rel, now);
+  const sub = { color: t.text, fontWeight: '600', fontSize: 14 } as const;
+  return (
+    <View testID="usage-body" style={{ gap: 14 }}>
+      <VerdictBlock v={u.verdict} />
+      {u.tiles ? (
+        <View style={{ gap: 6 }}>
+          <Text accessibilityRole="header" style={sub}>The 5-hour limit and the week</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {u.tiles.tiles.map((text, i) => (
+              <View key={i} testID={`usage-tile-${i}`} style={{ flexGrow: 1, flexBasis: 130, backgroundColor: t.card, borderWidth: 1, borderColor: t.line, borderRadius: 10, padding: 10 }}>
+                <Text style={{ color: t.text, fontSize: 14, fontWeight: '600' }}>{text}</Text>
+              </View>
+            ))}
+          </View>
+          <Muted>{u.tiles.label}</Muted>
+        </View>
+      ) : null}
+      <Text testID="usage-session" style={{ color: t.text, fontSize: 14 }}>{u.session}</Text>
+      {u.ratio ? <ChartView chart={u.ratio} testID="usage-ratio" /> : <Muted>{u.noRatio}</Muted>}
+      <CapacityBlock u={u} />
+      <HowBlock rows={u.how} />
+    </View>
+  );
+}
+
+function VerdictBlock({ v }: { v: UsageModel['verdict'] }) {
+  const t = useTheme();
+  if (!v) return <Text testID="usage-verdict" style={{ color: t.text, fontSize: 14 }}>{NO_VERDICT}</Text>;
+  return (
+    <View testID="usage-verdict" style={{ gap: 4 }}>
+      <Text accessibilityRole="header" testID="usage-headline" style={{ color: v.eligible ? t.ok : t.needs, fontWeight: '700', fontSize: 15 }}>{v.headline}</Text>
+      {v.place ? <Text style={{ color: t.text, fontSize: 14 }}>{v.place}</Text> : null}
+      <Text testID="usage-kind" style={[{ color: t.text, fontSize: 14 }, v.notChosen ? { backgroundColor: t.mark } : null]}>
+        <Text style={{ fontWeight: '700' }}>{`${v.kindName}. `}</Text>
+        {v.kindWords}
+      </Text>
+      {v.rules.map((r) => (
+        <Text key={r.text} testID="usage-rule" style={{ color: r.blocking ? t.bad : t.text, fontSize: 14 }}>
+          {`• ${r.text}`}
+          {r.blocking ? <Text style={{ fontWeight: '700' }}>{' (blocking)'}</Text> : null}
+        </Text>
+      ))}
+      {v.why ? <Text style={{ color: t.text, fontSize: 14 }}>{`Not taking sessions because ${v.why}.`}</Text> : null}
+      {v.frees ? <Text style={{ color: t.text, fontSize: 14 }}>{v.frees}</Text> : null}
+      {v.noneFree ? <Text style={{ color: t.text, fontSize: 14 }}>{v.noneFree}</Text> : null}
+      {v.age ? <Muted>{v.age}</Muted> : null}
+    </View>
+  );
+}
+
+function CapacityBlock({ u }: { u: UsageModel }) {
+  const t = useTheme();
+  const cap = u.capacity;
+  if (!cap.models.length) return null;
+  return (
+    <View style={{ gap: 8 }}>
+      {cap.models.map((m) => (
+        <View key={m.model} style={{ gap: 6 }}>
+          <Text testID="usage-capacity" style={{ color: t.text, fontSize: 14 }}>{m.text}</Text>
+          {m.chart ? <ChartView chart={m.chart} testID={`usage-capacity-${m.model}`} /> : null}
+        </View>
+      ))}
+      {cap.alertNote ? <Muted>{cap.alertNote}</Muted> : null}
+      {cap.note ? <Muted>{cap.note}</Muted> : null}
+    </View>
+  );
+}
+
+function HowBlock({ rows }: { rows: UsageModel['how'] }) {
+  const t = useTheme();
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={{ gap: 6 }}>
+      <Pressable
+        testID="usage-how-toggle"
+        accessibilityRole="button"
+        accessibilityLabel="How this works"
+        accessibilityState={{ expanded: open }}
+        onPress={() => {
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          setOpen(!open);
+        }}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 }}
+      >
+        <Text accessibilityElementsHidden style={{ color: t.muted, fontSize: 16, width: 12 }}>{open ? '⌄' : '›'}</Text>
+        <Text style={{ color: t.text, fontWeight: '600', fontSize: 14 }}>How this works</Text>
+      </Pressable>
+      {open ? (
+        <View testID="usage-how" style={{ gap: 6 }}>
+          {rows.map((r) => (
+            <Text key={r.title} style={{ color: t.text, fontSize: 14 }}>
+              <Text style={{ fontWeight: '700' }}>{`${r.title}. `}</Text>
+              {r.text}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+const PLOT_H = 96;
+const AXIS_W = 44;
+
+/**
+ * One chart: a title saying what is plotted and what higher means, y values, tappable days (the
+ * value shows under the chart), "no data" gaps, a legend of model names. Drawn with Views, like the
+ * Analytics bars; the app has no SVG library.
+ */
+function ChartView({ chart, testID }: { chart: Chart; testID: string }) {
+  const t = useTheme();
+  const [sel, setSel] = useState<string | null>(null);
+  const picked = chart.bars.find((b) => b.day === sel);
+  return (
+    <View testID={testID} accessibilityLabel={chart.summary} style={{ gap: 4 }}>
+      <Text accessibilityLabel={chart.summary} style={{ color: t.text, fontSize: 14, fontWeight: '600' }}>{chart.title}</Text>
+      <Muted>{chart.higher}</Muted>
+      <View style={{ flexDirection: 'row' }}>
+        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ width: AXIS_W, height: PLOT_H }}>
+          {chart.ticks.map((k) => (
+            <Text key={k.value} style={{ position: 'absolute', right: 6, bottom: `${k.pct}%`, marginBottom: -7, color: t.muted, fontSize: 11 }}>{k.label}</Text>
+          ))}
+        </View>
+        <View style={{ flex: 1, height: PLOT_H }}>
+          {chart.ticks.map((k) => (
+            <View key={k.value} pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, bottom: `${k.pct}%`, borderTopWidth: 1, borderTopColor: k.value === 0 ? t.muted : t.line }} />
+          ))}
+          <View style={{ flex: 1, flexDirection: 'row', alignItems: 'flex-end', gap: 2 }}>
+            {chart.bars.map((b) => (
+              <Pressable
+                key={b.day}
+                testID={`${testID}-${b.day}`}
+                accessibilityRole="button"
+                accessibilityLabel={b.label}
+                onPress={() => setSel(sel === b.day ? null : b.day)}
+                style={{ flex: 1, height: '100%', justifyContent: 'flex-end' }}
+              >
+                {b.gap ? (
+                  <View style={{ height: 3, marginBottom: 1, backgroundColor: t.muted, opacity: 0.5, borderRadius: 1 }} />
+                ) : (
+                  <View
+                    style={{
+                      height: `${b.pct}%`,
+                      backgroundColor: chart.muted ? t.muted : b.colour >= 0 ? MODEL_COLOURS[b.colour] : t.accent,
+                      opacity: chart.muted ? 0.45 : sel && sel !== b.day ? 0.55 : 1,
+                      borderTopLeftRadius: 2,
+                      borderTopRightRadius: 2,
+                    }}
+                  />
+                )}
+              </Pressable>
+            ))}
+          </View>
+          {chart.ref ? (
+            <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, bottom: `${chart.ref.pct}%` }}>
+              <View style={{ borderTopWidth: 1, borderTopColor: t.text, borderStyle: 'dashed' }} />
+              <Text style={{ position: 'absolute', right: 0, bottom: 2, color: t.text, fontSize: 11, backgroundColor: t.bg }}>{chart.ref.label}</Text>
+            </View>
+          ) : null}
+        </View>
+      </View>
+      <View accessibilityElementsHidden style={{ flexDirection: 'row', justifyContent: 'space-between', marginLeft: AXIS_W }}>
+        {chart.axis.map((a, i) => (
+          <Text key={i} style={{ color: t.muted, fontSize: 11 }}>{a}</Text>
+        ))}
+      </View>
+      {chart.hasGaps ? <Muted>{`– ${GAP_MARK}`}</Muted> : null}
+      {chart.legend.length ? (
+        <View testID={`${testID}-legend`} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+          {chart.legend.map((l) => (
+            <View key={l.model} style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <View accessibilityElementsHidden style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: MODEL_COLOURS[l.colour] }} />
+              <Text style={{ color: t.text, fontSize: 12 }}>{l.model}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      <Text testID={`${testID}-label`} style={{ color: t.text, fontSize: 12, minHeight: 16 }}>{picked ? picked.label : ' '}</Text>
+      {chart.hint ? <Muted>{TAP_HINT}</Muted> : null}
     </View>
   );
 }

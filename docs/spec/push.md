@@ -13,7 +13,7 @@ do anything: snooze and seen change only the hub's own alert rows.
 
 | Word | Meaning |
 | --- | --- |
-| **Trigger** | A kind of condition: `needs_permission`, `asked`, `failed`, `limit_80`, `limit_95`, `reset`, `machine_silent`. |
+| **Trigger** | A kind of condition: `needs_permission`, `asked`, `failed`, `limit_80`, `limit_95`, `reset`, `machine_silent`, and the usage notices `limit_change`, `usage_reset`, `seat_change`, `weekly_drop` (3.9). |
 | **Rule** | Whether, and after how long, a trigger notifies, for which seats/projects/machines/windows. Global, owned by the owner (section 3). |
 | **Episode** | One continuous occurrence of a condition: one session sitting in one needs-you state, one window instance crossing 80%, one silence of one machine. Identified by its **episode key** (3.2). |
 | **Alert** | The hub's row for one episode (`alert` table): due time, status, snooze, seen. At most one per episode (unique key): this is the dedupe. |
@@ -68,6 +68,10 @@ it.
 | `limit_95` | seat × window | as above with `>= 95` | on, delay 0 | as above |
 | `reset` | seat × window | a watched window whose `peak_pct >= 80` reaches its `resets_at` | **off**, fires at `resets_at` | — |
 | `machine_silent` | machine | no record received from the machine for `delay_s` (default **3600**), measured from `max(machine.last_seen, awake_at)` (3.3), while it has at least one session in `working`, `needs_permission` or `asked` that is not `stale` (states.md 5). A pull `hello` counts as hearing from it (machines.md 3.5), and removed machines (`removed_at`) never alert | on | a record or a pull `hello` arrives from it (`recovered`) |
+| `limit_change` | model | most reference accounts' 5-hour capacity for one model moved more than 1.2× or under 0.83× week on week (3.9) | on, delay 0 | 24 h after it fired (`expired`) |
+| `usage_reset` | seat | the seat's 5-hour and weekly use dropped to about 0 % with the weekly reset time unchanged, confirmed by several fresh sources (3.9) | on, delay 0 | as above |
+| `seat_change` | seat × machine | a folder signed in to another account, or to the same account in another org (3.9) | on, delay 0 | as above |
+| `weekly_drop` | seat | the weekly use dropped more than 10 points without a reset, and it is not a `usage_reset` (3.9) | on, delay 0 | as above |
 
 Not triggers (by design): "turn finished" (board only) and "context 90%"
 (reserved).
@@ -85,6 +89,10 @@ sends exactly one push" also holds for a window that jumps straight past 95%.
 | `limit_80`, `limit_95` | `l:<seat id>:<window key>:<resets_at ms>:80` / `:95` |
 | `reset` | `r:<seat id>:<window key>:<resets_at ms>` |
 | `machine_silent` | `m:<machine id>:<last_seen ms at the moment it fired>` |
+| `limit_change` | `x:<model label>:<up\|down>:<hub day YYYY-MM-DD>` |
+| `usage_reset` | `z:<seat id>:<ms of the first low reading>` |
+| `seat_change` | `c:<slot id>:<since_at ms of the new login>` |
+| `weekly_drop` | `w:<seat id>:<weekly resets_at ms>:<ms of the first low reading>` |
 
 - `since_at` moves only when the *state* changes (states.md 3), so a second
   `permission_prompt`, a `PermissionRequest` for the same prompt, or a second StopFailure
@@ -114,7 +122,8 @@ record that entered the state (states.md: the fold uses record times, not the hu
   about `delay` after the event; a machine whose clock runs ahead can never postpone a push
   by more than `delay`.
 - Limit and failure alerts: `due = now`. `reset`: `due = resets_at`. `machine_silent`: the
-  sweep (3.6) creates it already due.
+  sweep (3.6) creates it already due. Usage notices (3.9): `due = now`, with their own stale
+  rule (a `since_at` more than 6 hours before `now`).
 - **Stale guard.** If at creation `now > since_at + delay + max_age_s`, the alert is created
   `skipped` with reason `stale` (records flushed from an outbox after hours away are history,
   not news; the board still shows the session as needing you). The same holds when the
@@ -288,6 +297,83 @@ waiting, windows over 80%, silent machines) is recorded as `skipped` with reason
 `baseline`, then `push.baseline_done = true`. Later starts reconcile normally. The Alerts log
 hides `baseline` rows.
 
+### 3.9 Usage notices
+
+Four triggers are not about a session, a limit crossing or a machine, but about the limits
+themselves changing under the owner's feet. They are found by the hub's calibration job (every
+15 minutes, setup.md 8.5, "On the hub"), which hands each one to the engine as a **notice**: its
+trigger, episode key, subject (seat, machine), `since_at` and facts. They are low-urgency
+(6.4, 7.2) and never batched with session alerts. The board shows the numbers behind them in
+an account's Details (setup.md 8.5, Usage relation; pwa.md 3.0a; phone.md P4).
+
+**Watching a seat's readings** (`usage_reset`, `weekly_drop`). The job reads each seat's
+`five_hour` and `seven_day` samples after its watch cursor, up to now (not only settled data),
+by the `limit_sample` key. Samples of one time, source and session form one reading; its
+*source* is `web` for claude.ai, else the status-line session id. A reading whose `five_hour`
+`resets_at` is more than 5 minutes older than the newest one seen is left out whole (a session
+that sat idle through a 5-hour reset: nothing in it is fresh). Per seat it keeps:
+
+- the **weekly level**: the highest weekly reading of the current weekly window (a reading whose
+  `resets_at` is within 5 minutes of the newest weekly `resets_at` seen). A reading with an
+  older `resets_at` is a session that sat idle through a reset and is ignored; a newer one starts
+  a new window (the level is that reading, any open candidate is dropped). A reading 1 to 10
+  points under the level is ignored (a session that reported an old value);
+- a **candidate drop**: opened by a reading of the current window more than 10 points under the
+  level. It records the first low reading's time `t`, the old level, whether it was a drop **to
+  about 0** (that reading's weekly and 5-hour values are both 2 % or less), the newest
+  `five_hour` `resets_at` seen before it, and the sources that agree. A reading *agrees* when
+  its weekly value is more than 10 points under the old level and its `resets_at` is that of
+  the current window, or it has no weekly `resets_at` and a weekly value of 2 % or less before
+  the window's reset (claude.ai shows an emptied window that way). A reading at the old level
+  (within 1 point) after `t` names a **stale source**: a session still showing the old value
+(claude.ai is never a stale source).
+- the **masks** of the last 8 days (below), and the stale sources of the current weekly window.
+
+A candidate is decided, at a reading or when the job runs at `now`, as follows:
+
+| Candidate | When | Outcome |
+| --- | --- | --- |
+| to about 0 | 3 or more distinct sources agree within 3 hours of `t` | **`usage_reset`** (since `t`); the level becomes the highest agreeing reading; mask |
+| to about 0 | 3 hours after `t` with 2 agreeing readings or more but fewer than 3 sources | **`weekly_drop`** (since `t`) |
+| not to about 0 | the second agreeing reading (any source, the first included) within 3 hours of `t` | **`weekly_drop`** (since `t`); the level becomes the highest agreeing reading |
+| either | 3 hours after `t` with one agreeing reading only | dropped: no notice, the level is unchanged |
+
+After a decided drop, readings from its stale sources are ignored for the rest of the weekly
+window, and readings of any source at the old level or above (within 1 point) until the end of
+the 5-hour window it happened in (as for the mask, below), so sessions that had not reported
+yet cannot raise the level back. A weekly reset (a reading of a newer window)
+never makes a candidate: that is not a drop.
+
+**The mask.** A confirmed `usage_reset` masks the seat's readings from `t` to the end of the
+5-hour window it happened in (the recorded `five_hour` `resets_at`, at least `t` + 1 hour, at
+most `t` + 5 hours) from calibration (setup.md 8.5): stale sessions keep sending the old values
+with the same reset times there, so pairs across it would be wrong. While a candidate to about
+0 waits for its decision, the seat's calibration folds only readings before `t`. Masks are kept
+8 days, longer than any pair.
+
+**`seat_change`.** From `slot_login` (schema.sql): a folder's login period with a seat whose
+folder's previous period with a seat (logged-out periods skipped) had another seat. The account uuid differs: *account changed*; the same
+account in another org: *org changed*. Subject: the new seat and the folder's machine. Only
+periods of the last 8 days are read, at every run: the episode key makes each period alert
+once, and a period a machine reported late is still found.
+
+**`limit_change`.** After the seats' usage relation is folded (setup.md 8.5), per model label
+(`Opus 4.6`): the **reference accounts** are the seats that are Claude-Code-heavy in both this
+week and last week and have a weekly median capacity index for that model in both weeks. With
+at least 2 reference accounts, when more than half of them have `change` (this week's median /
+last week's) over 1.2, the notice says the limits look **higher** (`up`, more API dollars per
+5-hour point); more than half under 0.83, **lower** (`down`). It is not created when an alert
+of the same model and direction was created in the last 14 days (a step change stays in the
+week-on-week ratio for up to 13 days). Its `since_at` is the run's time; it has no seat.
+
+**Timing and life.** A notice becomes an alert like any other (3.4, 3.5: rule match on the
+trigger with its seat and machine as the subject; skipped `rule_off` when the rule is off; one
+alert per episode). It is `pending` with `due = now`, or `skipped` with reason `stale` when its
+`since_at` is more than 6 hours before `now` (history the job read late, for example at the first
+run after an upgrade: the engine never floods). A fired, snoozed or seen notice closes 24 hours
+after it fired, reason `expired` (the scheduler's silence sweep, 3.6 step 2, closes them). There
+is no other end: nothing about the episode changes later.
+
 ## 4. Alert lifecycle
 
 | Status | Meaning | `due_at` |
@@ -297,7 +383,7 @@ hides `baseline` rows.
 | `snoozed` | Pushed, then snoozed; will push again if still open. | re-push time |
 | `seen` | Acknowledged ("Seen" from a push, the Now inbox or the session page). No more pushes for this episode. | — |
 | `cancelled` | The episode ended before any push (`answered`, `ended`, `superseded`, `rule_off`), or it turned out peers-only before it was due (`peers`, 3.5). | — |
-| `closed` | The episode ended after a push or a seen (same reasons, plus `recovered`, `reset_passed`). | — |
+| `closed` | The episode ended after a push or a seen (same reasons, plus `recovered`, `reset_passed`, `expired` for usage notices, 3.9). | — |
 | `skipped` | Never pushes by design (`stale`, `rule_off`, `remote_control`, `peers`, `superseded`, `baseline`). | — |
 
 ```
@@ -326,11 +412,29 @@ hides `baseline` rows.
   earlier notification (same tag). Snoozing a `pending` alert simply moves its first push.
 - **Seen** (`POST /v1/alerts/{id}/seen` or action token): allowed in `pending`, `fired`,
   `snoozed`; sets `seen_at`, `seen_by` (device id), status `seen`, drops `due_at`, and marks
-  its not-yet-sent deliveries `skipped` (`seen`). It does not change the session. The Now
-  inbox still lists the session (it still needs you), dimmed, with "seen".
+  its not-yet-sent deliveries `skipped` (`seen`). It does not change the session's state, but
+  the session leaves the Needs-you list, `counts.needs_you` and the badge count (6.5, 13.5)
+  until its state next changes (a new episode, so a new alert; states.md 1). Other session
+  lists still show it, with its real state and the alert brief. The hub's own count (the
+  `needs_you` of a payload, a widget refresh and `GET /v1/overview`) omits such sessions.
 - Snooze and seen on `cancelled`, `closed` or `skipped` alerts: 409 `conflict`, except seen on
   a `skipped` alert whose episode is still open, which is allowed (so the inbox can quiet a
-  `rule_off` or `stale` row).
+  `rule_off`, `stale`, `peers`, `remote_control` or `baseline` row). Such an alert is the
+  session's `alert` brief in the read API (10.1), so every Needs-you row carries the alert its
+  Seen acts on. Snooze stays for `pending`, `fired` and `snoozed` only: a skipped alert never
+  pushes, so there is nothing to put off.
+- **Seen on a session** (`POST /v1/sessions/{id}/seen`, scopes `push` or owner): marks the
+  session's current Needs-you episode seen, for a row that has no alert at all (the hub runs
+  with `--no-push`, so no alert is ever made; or the engine has not reached a fresh episode
+  yet). The session must need you now (`needs_you` 1 and not ended or gone), else 409
+  `conflict`; an unknown session is 404. When the episode has an alert, this is Seen on that
+  alert (the rules above; already seen is a no-op). When it has none, the hub creates the
+  episode's alert directly as `seen` (the trigger of 3.1, `seen_at`, `seen_by`, no rule, no
+  `due_at`, nothing delivered) and publishes an `alert` event with change `seen`; the
+  episode's unique key (3.2) then stops reconcile from making a second alert for it, so it
+  never pushes. It works with or without the engine (pushes off). The answer is the alert,
+  as for `POST /v1/alerts/{id}/seen`. Clients call it only for a Needs-you row with no
+  `alert` brief; a row with one uses the alert's own Seen (older hubs have no such path).
 - Cross-device: a push already on a lock screen cannot be withdrawn (Web Push has no silent
   "dismiss" message on iOS, and Chrome shows a generic notice for pushes that show nothing).
   Seen on one device stops future pushes everywhere.
@@ -371,7 +475,7 @@ expired. For each target, with its effective prefs (5.4):
 - **Batch.** Session alerts (`needs_permission`, `asked`, `failed`) due within `batch_s` of
   each other and going to the same target are sent as one push: title "3 sessions need you",
   body up to four lines `work · api — asked`, tag `wy-summary`, deep link `/#/`. Their
-  deliveries share one `batch` id. Limit, reset and silence alerts are never merged.
+  deliveries share one `batch` id. Limit, reset, silence and usage alerts are never merged.
 - **Flood cap.** At most `flood.max` pushes per target per `flood.per_s`. Further deliveries
   are `held` (`flood`) and go out as one summary when the window frees. This protects a phone
   from a burst (a replay, many sessions hitting a limit at once) and keeps within ntfy.sh
@@ -424,6 +528,10 @@ to fit (title 80, body 180 characters, with `…`).
 | `limit_80` / `limit_95` | `client · 5-hour at 82%` (at ≥ 100: `client · 5-hour limit reached`) | "Resets 17:00 · work has 59% left" |
 | `reset` | `client · 5-hour reset` | "Back to 0% · peaked at 97%" |
 | `machine_silent` | `old-vps silent for 1 h` | "3 live sessions · last record 13:02" |
+| `limit_change` | `Opus 4.6 limits look higher` (`lower`) | "5-hour capacity 1.3× last week on 3 of 4 accounts · check" |
+| `usage_reset` | `work · usage reset` | "5-hour and 7-day back to 0% · 7-day still resets Thu 09:00 · 3 sessions agree" (claude.ai counts as one) |
+| `seat_change` | `work · ~/.claude-2 on gpu-box changed account` (`changed org`) | "Was personal; now this account" (org: "Same account, now in Acme") |
+| `weekly_drop` | `work · 7-day dropped 64% → 31%` | "Something changed, check · no reset (resets Thu 09:00)" |
 | snooze re-push | as the trigger, title prefixed `Still waiting · 19 min · ` | as the trigger |
 | summary | `3 sessions need you` | up to four `work · api — asked` lines, then `+2 more` |
 
@@ -432,7 +540,8 @@ allowed; otherwise the generic body is used.
 
 **Private pushes** (`prefs.private` or hub default) replace title and body with:
 "Watchyard" / "1 session needs you" (session triggers), "N sessions need you" (summary),
-"An account is near its limit" (limits), "A limit has reset", "A machine went quiet". The
+"An account is near its limit" (limits), "A limit has reset", "A machine went quiet",
+"Account usage changed" (usage notices). The
 deep link becomes `/#/alerts/<alert id>`, which the web app resolves after it has loaded
 (pwa.md 3), so neither the text nor the link names a project, account or session.
 
@@ -502,6 +611,7 @@ the 5 h and 7 d use, lowest first, under 80%. Seats that are idle are the ones w
   | --- | --- |
   | session alert | `/#/sessions/<session id>?alert=<alert id>` |
   | limit, reset | `/#/accounts?seat=<seat id>` |
+  | usage notice | `/#/accounts?seat=<seat id>`; `limit_change`: `/#/accounts` |
   | machine silent | `/#/machines?machine=<machine id>` |
   | summary | `/#/` (Now) |
   | private (any) | `/#/alerts/<alert id>` (the app looks the alert up and redirects) |
@@ -593,6 +703,7 @@ Topic: <first 22 chars of base64url(SHA-256(tag))>
 | `limit_95` | until the window resets, at most 86 400 | high |
 | `limit_80`, `machine_silent` | 21 600 | normal |
 | `reset` | 3 600 | low |
+| usage notices (3.9) | 86 400 | low |
 | test | 60 | high |
 
 `Topic` (RFC 8030 5.4) makes the push service replace an undelivered message with the same
@@ -629,7 +740,7 @@ holds the Go type.
 | --- | --- |
 | `type` | `alert`, `summary` or `test`; `refresh` only in a link `refresh` frame (13.5: never shown, not this object's other fields). |
 | `alert` / `alerts` | The alert (for `summary`: the first) and the alerts in the push, at most 20 ids: a larger summary lists the first ones (and fewer if the payload would not fit 3 000 bytes); the app refetches the list. |
-| `tag` | Notification tag: `wy-s-<session>`, `wy-l-<seat>-<window>`, `wy-r-<seat>-<window>`, `wy-m-<machine>`, `wy-summary`, `wy-test`. The same tag replaces the earlier notification. |
+| `tag` | Notification tag: `wy-s-<session>`, `wy-l-<seat>-<window>`, `wy-r-<seat>-<window>`, `wy-m-<machine>`, `wy-u-<trigger>-<seat or model>`, `wy-summary`, `wy-test`. The same tag replaces the earlier notification. |
 | `url` | Deep link, relative to the hub origin. Private: `/#/alerts/<alert>`. Summary: `/#/`. |
 | `remote_url` | The session's Remote Control link, when known (5.8), also in private mode (the payload is encrypted; it is never displayed). |
 | `tap` | The device's `prefs.tap`. |
@@ -711,8 +822,9 @@ UTF-8 titles intact:
 - `http` actions are run by the ntfy app on the phone, so they need the phone to reach the
   hub (the tailnet), like opening the app does. When they fail, the ntfy app shows the error.
 - Priority: 4 for session triggers, `limit_95` and summaries; 3 for `limit_80` and
-  `machine_silent`; 2 for `reset`. Tags (ntfy emoji): `lock` (permission), `question`
-  (asked), `rotating_light` (failed), `warning` (limits), `zzz` (silent), `bell` (summary).
+  `machine_silent`; 2 for `reset` and the usage notices. Tags (ntfy emoji): `lock`
+  (permission), `question` (asked), `rotating_light` (failed), `warning` (limits), `zzz`
+  (silent), `bar_chart` (usage notices), `bell` (summary).
 - Private: title and body as 5.5, `click` = `/#/alerts/<id>` deep link, no Remote Control
   action (ntfy sees the text, unlike Web Push), Snooze and Seen kept. Their URLs reveal the hub's host name and a
   24-hour action token to the ntfy server (a leaked token can only snooze or mark that one alert seen, 24 hours); that is the price of
@@ -993,7 +1105,11 @@ Where the sections above left a case open, the engine does this:
 - **ntfy private flag**: a target's own `prefs.private` wins over its device's prefs, then the
   ntfy.sh default (5.5), then the hub default.
 - **`Session.alert`** is the alert of the session's current episode while it is open
-  (`pending`, `fired`, `snoozed`, `seen`); otherwise null.
+  (`pending`, `fired`, `snoozed`, `seen`) or `skipped` (any reason: `stale`, `rule_off`,
+  `peers`, `remote_control`, `baseline`); otherwise null. A skipped alert of the current
+  episode belongs to an open episode by definition (a new state or `since` is a new episode),
+  so it is the row Seen acts on (4). Hubs up to 1.1.0 left a skipped alert out, so its
+  Needs-you row had no brief and could not be marked seen.
 - **`PUT /v1/push/settings`** stores the object as sent over the defaults; a missing
   `quiet_hours.tz` is not frozen to the current hub zone (the response shows the effective one).
 - **`POST /v1/rules`**: `delay_s` and `bypass_quiet` default to the base rule of the same
@@ -1055,6 +1171,19 @@ moves; "expect" lists sends and final alert status.
 | 43 | A person's turn after a peer turn | peer turn ends on a question; a person types; that turn ends on a question | Pushed 60 s after the second question |
 | 44 | `skip_peers` off | as 39 with `skip_peers: false` | Pushed at 60 s |
 | 45 | Wait during the delay | a person's turn ends on a question (pending); a Stop with `peer_wait` in the same episode | `cancelled` / `peers` at fire time; nothing sent |
+| 46 | Usage notice | the job hands a `weekly_drop` notice (since 1 min ago) | One low-urgency push in the next pass; `closed` / `expired` 24 h after it fired |
+| 47 | Old usage notice | a notice whose `since_at` is 7 h old | `skipped` / `stale`, nothing sent |
+| 48 | Notice twice | the same notice handed in two runs | One alert |
+| 49 | Notice rule off | `weekly_drop` rule disabled | `skipped` / `rule_off` |
+| 50 | Seen on a skipped row | a session asked for 7 days (`skipped` / `stale`); another asked in a peer turn (`skipped` / `peers`) | Both overviews carry the skipped brief; Seen on each → `seen`, both leave `needs_you` and `counts.needs_you`; Snooze → 409 |
+| 51 | Seen with no alert | hub without the engine; a session asks | `POST /v1/sessions/{id}/seen` makes a `seen` alert for the episode; the session leaves Needs you; a later engine pass makes no second alert; a session that does not need you → 409 |
+
+The detectors of 3.9 are pure (`internal/calib`, `watch.go`) and get table tests on synthetic
+series: a server or owner reset (5-hour and weekly to 0 with the same weekly `resets_at`, three
+sessions agreeing, stale sessions still at the old level, the 2026-10-17 pattern); the same with
+only two sources (a `weekly_drop`); a single glitch reading (nothing); a weekly drop of 11 and of 9
+points; a normal weekly reset (nothing); claude.ai's empty window without `resets_at`; the mask's
+bounds; and `limit_change` with 2, 3 and 4 reference accounts.
 
 `rules` (pure) gets its own table tests for episode keys, due/stale arithmetic, rule
 matching, quiet-hour windows across midnight and DST (Europe/London 2026-03-29 and
@@ -1154,7 +1283,8 @@ with `delivered_at IS NULL` and `last_error` not `collapsed`, is a miss.
 ### 13.5 Widget refresh
 
 The widgets redraw from `refresh` frames over the link. `refresh.Refresher` (`internal/hub/push/refresh`)
-subscribes to the `events.Broker`, with session and usage changes debounced 10 s. For each
+subscribes to the `events.Broker`, with session and usage changes and `alert` events
+with `change = seen` (which lower the needs-you count) debounced 10 s. For each
 enabled link target whose device has `prefs.widgets = true` and is not revoked, it computes a
 digest: the needs-you count, the `used_pct` of each seat x watched window bucketed to 5 points,
 and the next `resets_at`. When the digest differs from the last one sent to that target, and

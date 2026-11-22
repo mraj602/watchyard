@@ -8,6 +8,17 @@ const TITLE_MAX = 80;
 const BODY_MAX = 180;
 const SEP = ' · ';
 
+// push.md 3.9's usage notices: low urgency, no session.
+const USAGE_NOTICES = {
+  usage_reset: 'usage reset',
+  seat_change: 'changed account',
+  weekly_drop: 'weekly use dropped: something changed, check',
+  limit_change: 'limits changed',
+};
+
+/** Whether the trigger is one of the usage notices (push.md 3.9). */
+export const isUsageNotice = (trigger) => Object.hasOwn(USAGE_NOTICES, String(trigger ?? ''));
+
 const WINDOW_NAMES = { five_hour: '5-hour', seven_day: '7-day', seven_day_opus: '7-day Opus', seven_day_sonnet: '7-day Sonnet' };
 
 /** Collapse whitespace, then cut to `max` characters with an ellipsis. */
@@ -69,6 +80,14 @@ export function triggerText(alert, session) {
       return `${windowName(alert.window_key)} reset`;
     case 'machine_silent':
       return 'went quiet';
+    case 'usage_reset':
+    case 'seat_change':
+    case 'weekly_drop':
+    case 'limit_change': {
+      // The hub's own push title ("7-day dropped 64% → 31%") says more than the trigger.
+      const title = String(alert?.title ?? '').trim();
+      return title || USAGE_NOTICES[trigger];
+    }
     default:
       return 'needs you';
   }
@@ -77,7 +96,7 @@ export function triggerText(alert, session) {
 /** The hub route a click opens (push.md 5.8: the path after the origin, from `#/`). */
 export function routeFor(alert, session) {
   const trigger = alert?.trigger ?? '';
-  if (trigger === 'limit_80' || trigger === 'limit_95' || trigger === 'reset') {
+  if (trigger === 'limit_80' || trigger === 'limit_95' || trigger === 'reset' || isUsageNotice(trigger)) {
     return alert.seat ? `#/accounts?seat=${encodeURIComponent(alert.seat)}` : '#/accounts';
   }
   if (trigger === 'machine_silent') {
@@ -99,6 +118,9 @@ export function notifyText({ alert, session = null, seat = null, machine_name = 
   if (alert?.trigger === 'machine_silent') {
     const name = machine_name ?? session?.machine_name ?? alert?.machine ?? 'A machine';
     title = `${name}${SEP}silent`;
+  } else if (isUsageNotice(alert?.trigger)) {
+    // limit_change has no seat: it is about a model across the accounts.
+    title = seat ? seatName(seat) : 'Usage and limit changes';
   } else if (session) {
     const who = seatName({ label: session.seat_label ?? seat?.label, email: seat?.email });
     title = [who, session.project].filter(Boolean).join(SEP);
@@ -106,6 +128,8 @@ export function notifyText({ alert, session = null, seat = null, machine_name = 
     title = seatName(seat);
   }
   let body = what;
+  // The hub's title of a seat's notice starts with the seat ("work · usage reset"): said once.
+  if (isUsageNotice(alert?.trigger) && body.startsWith(`${title}${SEP}`)) body = body.slice(title.length + SEP.length);
   const question = session?.question ? cut(session.question, NOTIFY_QUESTION_MAX) : '';
   if (question) body = `${what}\n${question}`;
   return { title: cut(title, TITLE_MAX), body: body.length > BODY_MAX ? `${body.slice(0, BODY_MAX - 1)}…` : body, route };

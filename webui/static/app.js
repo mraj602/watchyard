@@ -8,6 +8,7 @@ import { store, subscribe, start, stop, setAuthLostHandler, refreshAll, canPush,
 import { logout, getJSON } from './api.js';
 import { renderNav } from './components/nav.js';
 import { h } from './components/dom.js';
+import { keepLive } from './components/keep.js';
 import { pendingText } from './components/alerts.js';
 import { parseRoute, PUBLIC_VIEWS } from './route.js';
 import { isMobile } from './platform.js';
@@ -139,7 +140,8 @@ async function render() {
     const opened = changed ? [] : [...mainEl.querySelectorAll('details[data-key][open]')].map((d) => d.dataset.key);
     const { title, node } = view.render(ctx);
     for (const k of opened) { const d = node.querySelector(`details[data-key="${CSS.escape(k)}"]`); if (d) d.open = true; }
-    mainEl.replaceChildren(node);
+    // A kept element (the sessions search box) stays in place through a redraw of its page.
+    if (changed || !keepLive(mainEl.firstElementChild, node)) mainEl.replaceChildren(node);
     document.title = title;
     appEl.dataset.page = route.page;
     if (changed) { window.scrollTo(0, 0); if (!PUBLIC_VIEWS.has(route.view)) mainEl.focus({ preventScroll: true }); }

@@ -6,10 +6,11 @@ import { statusOf, backlogText, reachChip } from './machines-fmt.js';
 import { sessionSeat, seatName } from './seat.js';
 import { stateInfo } from './state.js';
 import { windowRow, sortWindows, worstPace, paceChip, windowLabel } from './windows.js';
-import { alertLine, alertButtons, canAct } from './alerts.js';
+import { alertLine, alertButtons, canAct, seenRow } from './alerts.js';
+import { canSnoozeRow } from './alerts-fmt.js';
 import { swipeable } from './swipe.js';
 import { toast } from './ui.js';
-import { markSeen, snooze } from '../store.js';
+import { snooze } from '../store.js';
 
 export const dot = (colour) => h('span', { class: 'dot', 'aria-hidden': 'true', style: { background: colour } });
 
@@ -84,14 +85,16 @@ export function needsCard(s, seatIdx, now) {
       h('a', { class: httpsUrl(s.remote_url) || s.resume ? 'btn' : 'btn btn-primary', href, 'data-key': `view-${s.id}` }, 'View session')));
   if (!acts) return card;
   // Swipe right = Seen, left = Snooze, on touch screens; the buttons above do the same.
+  // A row whose alert cannot push (skipped, or none) swipes to Seen only.
+  const snoozable = canSnoozeRow(s);
   const wrap = h('div', { class: 'swipe' },
     h('span', { class: 'swipe-hint swipe-hint-l', 'aria-hidden': 'true' }, 'Seen'),
-    h('span', { class: 'swipe-hint swipe-hint-r', 'aria-hidden': 'true' }, 'Snooze 15 min'),
+    snoozable ? h('span', { class: 'swipe-hint swipe-hint-r', 'aria-hidden': 'true' }, 'Snooze 15 min') : null,
     card);
   const guard = (fn) => () => fn().catch((ex) => toast(ex.status === 409 ? 'That alert already changed' : ex.message));
   swipeable(card, {
-    onRight: guard(() => markSeen(a.id, s.id)),
-    onLeft: guard(() => snooze(a.id, s.id)),
+    onRight: guard(() => seenRow(s)),
+    onLeft: snoozable ? guard(() => snooze(a.id, s.id)) : null,
   });
   return wrap;
 }

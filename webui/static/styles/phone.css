@@ -219,6 +219,9 @@ dialog.dialog[open] { display: flex; flex-direction: column; gap: 14px; }
   .chips { flex-wrap: wrap; gap: 6px; }
   .chip-btn { padding: 5px 11px; min-height: 34px; }
   .chip-btn { white-space: nowrap; }
+  .search-field { flex: 1 1 100%; }
+  /* 16 px: phones zoom into a smaller input on focus. */
+  .search-field input[type="search"] { font-size: 16px; min-height: 40px; }
 
   .session-actions { flex-direction: column; }
   .session-actions .btn { width: 100%; }

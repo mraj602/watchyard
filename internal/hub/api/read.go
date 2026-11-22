@@ -118,6 +118,7 @@ type Seat struct {
 	Plan         *string           `json:"plan"`
 	Label        *string           `json:"label"`
 	Colour       *string           `json:"colour"`
+	Mode         *string           `json:"mode"`
 	Order        int64             `json:"order"`
 	Hidden       bool              `json:"hidden"`
 	Windows      []Window          `json:"windows"`
@@ -142,7 +143,7 @@ func (s *Server) seats(r *http.Request, includeHidden bool) ([]Seat, error) {
 			return nil, err
 		}
 		seat := Seat{ID: x.ID, Account: x.Account, Org: x.Org, Email: x.Email, OrgName: x.OrgName, Plan: x.Plan, Label: x.Label,
-			Colour: x.Colour, Order: x.Order, Hidden: x.Hidden, Windows: windowsOf(ws, now), ExtraUsage: x.ExtraUsage,
+			Colour: x.Colour, Mode: x.Mode, Order: x.Order, Hidden: x.Hidden, Windows: windowsOf(ws, now), ExtraUsage: x.ExtraUsage,
 			Spend: x.Spend, WebRawAt: store.Time(x.WebRawAt), Places: x.Places, SignedOut: x.SignedOut,
 			LiveSessions: x.LiveSessions}
 		if seat.ExtraUsage == nil {
@@ -214,9 +215,15 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	for i := range needs {
-		needs[i] = withFocus(needs[i], dev)
+	// A session whose current alert is seen is hidden until its state changes (push.md 4).
+	shown := needs[:0]
+	for _, n := range needs {
+		if n.Alert != nil && string(n.Alert.Status) == "seen" {
+			continue
+		}
+		shown = append(shown, withFocus(n, dev))
 	}
+	needs = shown
 	machines, err := s.store.Machines(r.Context(), nil, now)
 	if err != nil {
 		s.fail(w, err)

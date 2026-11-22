@@ -29,6 +29,7 @@ type sentSlot struct {
 	LoggedIn bool      `json:"logged_in"`
 	Label    string    `json:"label,omitempty"`
 	Colour   string    `json:"colour,omitempty"`
+	Mode     string    `json:"mode,omitempty"` // slots.modes (setup.md 8.5, Kind)
 	At       time.Time `json:"at"`
 }
 
@@ -38,7 +39,7 @@ func (s sentSlot) same(o sentSlot) bool {
 	return s == o
 }
 
-// maybeSlotInfo queues a slot_info on SessionStart when the slot's login, label or colour
+// maybeSlotInfo queues a slot_info on SessionStart when the slot's login, label, colour or mode
 // differs from the last one sent for it, or that one is a day old (record.md 4.7). That is
 // how a folder that was logged in again, logged out, or labelled after `wy connect` reaches
 // the hub, and the label follows the login to its new seat. It reads only the login the
@@ -48,7 +49,7 @@ func maybeSlotInfo(env *clientenv.Env, getenv func(string) string, event string,
 		return
 	}
 	cur := sentSlot{LoggedIn: env.Login.HasSeat, Label: env.Config.Slots.Labels[env.Slot.Name],
-		Colour: env.Config.Slots.Colours[env.Slot.Name], At: now.UTC()}
+		Colour: env.Config.Slots.Colours[env.Slot.Name], Mode: env.Config.Slots.Modes[env.Slot.Name], At: now.UTC()}
 	if env.Login.HasSeat {
 		cur.Account, cur.Org, cur.Email = env.Login.Seat.Account, env.Login.Seat.Org, env.Login.Seat.Email
 	}
@@ -68,7 +69,7 @@ func maybeSlotInfo(env *clientenv.Env, getenv func(string) string, event string,
 		p.AuthStatus, _ = json.Marshal(env.Login.Auth)
 	}
 	// An invalid hand-edited label or colour is left out rather than failing the report.
-	if x, err := account.SlotInfoExtra(cur.Label, cur.Colour); err == nil && len(x) > 0 {
+	if x, err := account.SlotInfoExtra(cur.Label, cur.Colour, cur.Mode); err == nil && len(x) > 0 {
 		p.Extra = x
 	}
 	rec, err := record.NewSlotInfo(env.Meta(nil), p)

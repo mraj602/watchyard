@@ -111,6 +111,9 @@ func (e *Engine) pass() {
 			if err := w.sweepMachines(); err != nil {
 				return err
 			}
+			if err := w.expireNotices(); err != nil {
+				return err
+			}
 			_, seats, _, err := tx.AlertSubjects(w.nowMS)
 			if err != nil {
 				return err

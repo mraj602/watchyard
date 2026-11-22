@@ -33,6 +33,14 @@
   --seat-2: #9A7400;
   --seat-3: #2F6FDE;
 
+  /* One colour per model in the usage charts (components/rel-chart.js). */
+  --rel-m1: #3B6FD4;
+  --rel-m2: #0E8A80;
+  --rel-m3: #B07F00;
+  --rel-m4: #7A5AD8;
+  --rel-m5: #C0467F;
+  --rel-m6: #6B7178;
+
   --sans: 'IBM Plex Sans', 'Watchyard Symbols', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: 'IBM Plex Mono', 'Watchyard Symbols', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   --radius: 12px;
@@ -65,6 +73,12 @@
     --warn-ink: #E8B04B;
     --warn-bg: #33290F;
     --ended-ink: #8F969D;
+    --rel-m1: #6C97F0;
+    --rel-m2: #3FB3AB;
+    --rel-m3: #D9A93C;
+    --rel-m4: #9B86F0;
+    --rel-m5: #E07BAA;
+    --rel-m6: #9AA1A8;
     color-scheme: dark;
   }
 }

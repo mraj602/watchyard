@@ -203,7 +203,9 @@ address.
 (iOS 16.4+ for notifications) or use ntfy.
 
 **Does it switch accounts when one hits a limit?** No, never. It shows which account has room;
-you choose.
+you choose. `wy account next` recommends the folder to start your *next* session in, from each
+account's login on this machine and its limits (`--env` prints `CLAUDE_CONFIG_DIR=…` for
+scripts and agents that start sessions); it never moves a running session or changes a login.
 
 More: [docs/guide/faq.md](docs/guide/faq.md).
 

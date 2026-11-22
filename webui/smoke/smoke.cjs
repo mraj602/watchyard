@@ -6,7 +6,7 @@
 //      OUT_DIR (screenshots).
 //
 // Per size (1440 and 390 px wide):
-//   board login, every screen, live updates, keyboard   
+//   board login, every screen, live updates, keyboard, the sessions search
 //   a phone claim by QR secret, the phone screens, Seen from the row menu, swipe Snooze
 //   an owner sign-in, Alerts/Settings/Devices and the Add phone dialog
 //   Settings → Peers as the owner (grid, pause/resume, widen, audit) and as a paired phone (narrow only)
@@ -147,6 +147,60 @@ async function auditChecks(page, sizeName) {
   await page.waitForFunction(() => !document.querySelector('[data-key=history]'), { timeout: 6000 }).catch(() => {});
 }
 
+// ---- sessions search (pwa.md 3.0b) -----------------------------------------------------------
+
+async function searchChecks(page, sizeName) {
+  const t = (m) => page.tag(`search: ${m}`);
+  const text = (sel) => page.$eval(sel, (e) => e.textContent).catch(() => '');
+  const box = '[data-key=session-search]';
+  const rows = () => page.$$eval('.sessions-table tbody tr.srow .c-session b', (e) => e.map((x) => x.textContent));
+  const setQ = async (q) => {
+    await page.$eval(box, (e) => { e.value = ''; e.dispatchEvent(new Event('input', { bubbles: true })); });
+    await page.focus(box);
+    await page.keyboard.type(q);
+  };
+  await page.evaluate(() => { location.hash = '#/sessions'; });
+  await page.waitForSelector(`${box}`);
+  // Case and accents are ignored; the match is marked; the count says how many.
+  await setQ('CAFE lumiere');
+  await page.waitForFunction(() => document.querySelectorAll('.sessions-table tr.srow').length === 1, { timeout: 4000 }).catch(() => {});
+  const one = await rows();
+  if (one.length !== 1 || one[0] !== 'finance') fail(t(`"CAFE lumiere" shows ${JSON.stringify(one)}`));
+  const marks = await page.$$eval('.sessions-table mark', (e) => e.map((x) => x.textContent));
+  if (!marks.includes('Café') || !marks.includes('Lumière')) fail(t(`marks: ${JSON.stringify(marks)}`));
+  if (!/^1 of \d+ sessions? matches$/.test(await text('[data-key=search-count]'))) fail(t(`count: ${await text('[data-key=search-count]')}`));
+  if (!/Open 1\b/.test(await text('[data-key=f-open]'))) fail(t(`Open chip: ${await text('[data-key=f-open]')}`));
+  // A redraw and a live update keep the very same box, its text, focus and caret.
+  await page.$eval(box, (e) => { e.wyMark = 1; e.setSelectionRange(2, 4); });
+  await page.evaluate(() => window.dispatchEvent(new Event('wy-rerender')));
+  await page.evaluate(() => fetch('/_dev/promote', { method: 'POST' }));
+  await sleep(1200);
+  const kept = await page.$eval(box, (e) => ({ same: e.wyMark === 1, value: e.value, focused: document.activeElement === e, sel: [e.selectionStart, e.selectionEnd] }));
+  if (!kept.same || kept.value !== 'CAFE lumiere' || !kept.focused || kept.sel.join() !== '2,4') fail(t(`a redraw did not keep the box: ${JSON.stringify(kept)}`));
+  if ((await rows()).join() !== 'finance') fail(t('a redraw dropped the search'));
+  // A term found only in a field the row does not show adds that field's line.
+  await setQ('rapport');
+  await page.waitForSelector('.search-extra', { timeout: 4000 }).catch(() => {});
+  if (!/^Name: rapport-financier$/.test(await text('.search-extra'))) fail(t(`extra line: ${await text('.search-extra')}`));
+  // Matches under another chip: one button searches them all, the query kept.
+  await setQ('seo-audit');
+  await page.waitForSelector('[data-key=search-all]', { timeout: 4000 }).catch(() => fail(t('no Search all sessions button')));
+  if (!/No sessions here match “seo-audit”/.test(await text('[data-key=sessions-empty]'))) fail(t(`empty: ${await text('[data-key=sessions-empty]')}`));
+  await shot(page, `${sizeName}-sessions-search-empty`);
+  await page.click('[data-key=search-all]');
+  await page.waitForFunction(() => /filter=all/.test(location.hash), { timeout: 4000 }).catch(() => {});
+  await page.waitForFunction(() => document.querySelectorAll('.sessions-table tr.srow').length === 1, { timeout: 4000 }).catch(() => {});
+  if ((await rows()).join() !== 'storefront' || (await page.$eval(box, (e) => e.value)) !== 'seo-audit') fail(t('Search all sessions lost the query or the row'));
+  await setQ('lumi');
+  await shot(page, `${sizeName}-sessions-search`);
+  // Escape clears it; every session is back.
+  await page.focus(box);
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('[data-key=search-count]'), { timeout: 4000 }).catch(() => {});
+  if ((await page.$eval(box, (e) => e.value)) !== '' || (await rows()).length < 5) fail(t('Escape did not clear the search'));
+  await resetHub();
+}
+
 // ---- the board login flow  -------------------------------------------------
 
 async function boardFlow(sizeName, w, hgt) {
@@ -181,6 +235,7 @@ async function boardFlow(sizeName, w, hgt) {
   await Promise.all([page.waitForSelector('#nav a[aria-current=page]'), page.click('.login-token button[type=submit]')]);
   for (const [name, hash, sel] of BOARD_PAGES) await visit(page, sizeName, name, hash, sel);
   await auditChecks(page, sizeName);
+  await searchChecks(page, sizeName);
   for (const [name, hash, sel] of [['more', '#/more', '.more-list'], ['alerts-readonly', '#/more/alerts', '.log'], ['settings-readonly', '#/more/settings', '[data-key=build]'], ['devices-readonly', '#/more/devices', '.calm']]) {
     await visit(page, sizeName, name, hash, sel);
   }
@@ -264,7 +319,8 @@ async function phoneFlow(sizeName, w, hgt) {
   await page.waitForSelector('.needs-card');
   if (w < 600) await page.click(`[data-key="menu-${PERM}"]`);
   await page.click(`[data-key="seen-${PERM}"]`);
-  try { await page.waitForSelector(`[data-session="${PERM}"].is-seen`, { timeout: 4000 }); } catch (e) { fail(page.tag('Seen did not dim the row')); }
+  // A seen session leaves Needs you until its state changes (push.md 4, states.md 1).
+  try { await page.waitForSelector(`.needs-card[data-session="${PERM}"]`, { hidden: true, timeout: 4000 }); } catch (e) { fail(page.tag('Seen did not take the row out of Needs you')); }
   await shot(page, `${sizeName}-p-now-seen`);
 
   // Snooze by swiping left (touch) or the button.
@@ -457,6 +513,114 @@ async function accountsFlow(page, sizeName) {
   await shot(page, `${sizeName}-o-accounts-expanded`);
   await page.click('[data-key=accounts-expand-all]');
   await page.waitForFunction(() => document.querySelectorAll('.acct-detail').length === 0, { timeout: 3000 }).catch(() => fail(t('Collapse all did not close every row')));
+  await usageFlow(page, sizeName);
+}
+
+// "Usage and the picker" and the mode control (pwa.md 3.0a), with the owner's account (seat_personal).
+async function usageFlow(page, sizeName) {
+  const t = (m) => page.tag(`usage: ${m}`);
+  const text = (sel) => page.$eval(sel, (e) => e.textContent).catch(() => null);
+  // A choice redraws the row twice (at once, then with the hub's answer): click once it is quiet.
+  const choose = async (mode) => {
+    await page.waitForFunction(() => !document.querySelector('fieldset.mode-pick[disabled]'), { timeout: 4000 });
+    await sleep(150);
+    await page.evaluate((m) => document.querySelector(`label[for=mode-seat_personal-${m}]`).click(), mode);
+  };
+  await page.evaluate(() => { try { localStorage.removeItem('wy-accounts-open'); } catch (_) {} });
+  await visit(page, sizeName, 'o-usage-closed', '#/accounts?seat=seat_personal', '[data-key=mode-seat_personal]');
+
+  // The choice: protected is on, each option has its definition right under it.
+  const sect = await text('[data-key=mode-seat_personal]');
+  if (!/How should the picker use this account\?/.test(sect)) fail(t('no question'));
+  for (const d of ['Kept for you. New sessions only while this week is behind an even pace and the 5-hour window is under 45%.',
+    'Use it up. Sessions go here until 98% of the week or 5 hours.', 'Not chosen yet; treated as aggressive.']) if (!sect.includes(d)) fail(t(`definition missing: ${d}`));
+  if (!(await page.$eval('[data-key=mode-opt-seat_personal-protected]', (e) => e.checked))) fail(t('protected is not selected'));
+  if (await page.$('[data-key=mode-unset-seat_personal]')) fail(t('a protected account shows the not-chosen line'));
+  // A change saves at once and survives a reload; another change puts it back.
+  await choose('aggressive');
+  await page.waitForFunction(async () => (await (await fetch('/v1/accounts', { cache: 'no-store' })).json()).accounts.find((a) => a.id === 'seat_personal').mode === 'aggressive', { timeout: 4000 })
+    .catch(() => fail(t('choosing Aggressive did not reach the hub')));
+  await page.waitForSelector('[data-key=mode-opt-seat_personal-aggressive]:checked', { timeout: 3000 }).catch(() => fail(t('Aggressive is not selected after saving')));
+  await choose('none');
+  await page.waitForSelector('[data-key=mode-unset-seat_personal]', { timeout: 4000 }).catch(() => fail(t('Not chosen shows no highlighted line')));
+  await choose('protected');
+  await page.waitForFunction(() => !document.querySelector('[data-key=mode-unset-seat_personal]'), { timeout: 4000 }).catch(() => fail(t('the highlighted line stayed after choosing Protected')));
+  if (!(await page.$eval('[data-key=mode-opt-seat_personal-protected]', (e) => e.checked))) fail(t('protected is not selected again'));
+  // A refusal puts the choice back and says why.
+  await page.evaluate(() => {
+    window.__fetch = window.fetch;
+    window.fetch = (u, o) => (o && o.method === 'PATCH' ? Promise.resolve(new Response(JSON.stringify({ error: 'the hub said no', code: 'bad_request' }), { status: 400, headers: { 'Content-Type': 'application/json' } })) : window.__fetch(u, o));
+  });
+  await choose('aggressive');
+  await page.waitForSelector('[data-key=mode-error-seat_personal]', { timeout: 4000 }).catch(() => fail(t('a refused change shows no reason')));
+  if (!(await page.$eval('[data-key=mode-opt-seat_personal-protected]', (e) => e.checked))) fail(t('a refused change did not restore the old choice'));
+  if (!/the hub said no/.test((await text('[data-key=mode-error-seat_personal]')) || '')) fail(t('the refusal reason is not shown'));
+  await page.evaluate(() => { window.fetch = window.__fetch; });
+  await choose('aggressive'); // a good save clears the reason
+  await page.waitForFunction(() => !document.querySelector('[data-key=mode-error-seat_personal]'), { timeout: 4000 }).catch(() => fail(t('the reason stayed after a good save')));
+  await choose('protected');
+  await page.waitForSelector('[data-key=mode-opt-seat_personal-protected]:checked', { timeout: 3000 }).catch(() => fail(t('protected is not back')));
+
+  // The work account was never chosen: the highlighted line and the read of its local override.
+  await page.click('[data-key=seat-toggle-seat_work]');
+  await page.waitForSelector('[data-key=mode-unset-seat_work]', { timeout: 3000 }).catch(() => fail(t('an unchosen account has no highlighted line')));
+  await page.click('[data-key=seat-toggle-seat_work]');
+
+  // Usage and the picker, opened.
+  await page.click('[data-key=rel-seat_personal] > summary');
+  await page.waitForSelector('[data-key=rel-tiles-seat_personal]', { timeout: 5000 }).catch(() => fail(t('the tiles never appeared')));
+  await sleep(200);
+  const body = await text('[data-key=rel-seat_personal] .rel-body') || '';
+  const want = ['Can take a new session: 3rd in line', '3rd in line: 2 other accounts get a new session before this one; they take turns.',
+    '5-hour 1% (stops at 45%)', 'Week 29%, the even pace allows 52% today', 'New sessions in the last hour: 0 (at most 2)',
+    '6.8% of the 5-hour limit = 1% of the week', '≈ 6.8 full 5-hour windows use up the week', 'One full 5-hour window ≈ 15% of the week', 'measured over 7 days',
+    'Each new session is set aside 8% of the 5-hour limit until its real use shows up (default; measured after 20 sessions, 1 so far)',
+    'This week 1% of the 5-hour limit bought about $1.67 of Opus 5.5 work at API prices. Last week: not enough data yet.',
+    'A change of more than 20% on most accounts raises an alert.', 'Sonnet 5.5: not used in the last 2 weeks.', 'Haiku 5.5: not used in the last 2 weeks.',
+    'Hover or tap a day to see its value.', 'Kept for you.'];
+  for (const w of want) if (!body.includes(w)) fail(t(`missing "${w}"`));
+  if ((body.match(/A change of more than 20%/g) || []).length !== 1) fail(t('the alert line is not shown exactly once'));
+  if ((body.match(/Hover or tap a day/g) || []).length !== 1) fail(t('the hover hint is not shown exactly once'));
+  for (const bad of [/(^|\s)[fcn]\s/, /lane/i, /normalised/i, /Tap a bar/]) if (bad.test(body)) fail(t(`the section matches ${bad}`));
+  // The chart: a picture with a summary, a table, a y axis, a gap mark; a day shows its value on one line.
+  const chart = await page.$eval('[data-key=rel-chart-seat_personal-ratio]', (e) => ({ role: e.querySelector('svg').getAttribute('role'), label: e.querySelector('svg').getAttribute('aria-label'),
+    rows: e.querySelectorAll('table.sr-only tr').length, gaps: e.querySelectorAll('.rel-gap').length, bars: e.querySelectorAll('.rel-bar').length, ticks: e.querySelectorAll('.rel-ytick').length,
+    days: e.querySelectorAll('button.rel-day').length, legend: e.querySelector('.rel-legend').textContent })).catch(() => null);
+  if (!chart) fail(t('no ratio chart'));
+  else {
+    if (chart.role !== 'img' || !/each day/.test(chart.label)) fail(t(`chart role/label ${chart.role} ${chart.label}`));
+    if (chart.rows !== 14 || chart.days !== 14 || chart.ticks !== 3 || chart.gaps < 1 || chart.bars < 1) fail(t(`chart parts ${JSON.stringify(chart)}`));
+    if (!/Opus 5\.5/.test(chart.legend) || !/no data/.test(chart.legend)) fail(t(`legend "${chart.legend}"`));
+  }
+  const fill = await page.$eval('.rel-bar', (e) => getComputedStyle(e).fill);
+  if (!fill || fill === 'none' || fill === 'rgb(0, 0, 0)') fail(t(`bars have no colour: ${fill}`));
+  await page.evaluate(() => document.querySelector('[data-key=rel-chart-seat_personal-ratio] button.rel-day:nth-of-type(13)').click());
+  const status = await text('[data-key=rel-status-seat_personal-ratio]');
+  if (!/^\d+ \w{3}: \d+(\.\d)?% of the 5-hour limit per 1% of the week · mostly Opus 5\.5 · 30 readings$/.test(status || '')) fail(t(`day status "${status}"`));
+  await shot(page, `${sizeName}-o-usage-open`);
+  await page.click('[data-key=rel-how-seat_personal] > summary');
+  const how = await text('[data-key=rel-how-seat_personal]');
+  if (!/How many % of the 5-hour limit a million tokens of Claude Code use cost: 1\.38, measured from 1504 readings over 7 days/.test(how || '')) fail(t('How this works lacks the meter factor sentence'));
+  await shot(page, `${sizeName}-o-usage-how`);
+  // The disclosure stays open across the page's redraws, and the other account shows its chart.
+  await sleep(300);
+  if (!(await page.$eval('[data-key=rel-seat_personal]', (e) => e.open))) fail(t('Usage and the picker closed by itself'));
+  await page.click('[data-key=seat-toggle-seat_work]');
+  await page.click('[data-key=rel-seat_work] > summary');
+  await page.waitForSelector('[data-key=rel-chart-seat_work-cap-Opus\\ 5\\.5]', { timeout: 5000 }).catch(() => fail(t('no capacity chart for an account with two weeks')));
+  const wt = await text('[data-key=rel-seat_work] .rel-body') || '';
+  if (!/Not taking new sessions now/.test(wt) || !/blocking/.test(wt) || !/Frees up /.test(wt)) fail(t('a skipped account does not say so'));
+  if (!/hub says|set on this machine|On laptop a setting on that machine makes it protected/.test(await text('[data-key=mode-seat_work]') || '')) fail(t('no local-override line for work'));
+  await shot(page, `${sizeName}-o-usage-work`);
+  // Dark mode: the same section, same colours from variables.
+  await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
+  await sleep(200);
+  await shot(page, `${sizeName}-o-usage-work-dark`);
+  await page.click('[data-key=seat-toggle-seat_work]');
+  await sleep(200);
+  await shot(page, `${sizeName}-o-usage-dark`);
+  await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' }]);
+  await page.evaluate(() => { try { localStorage.removeItem('wy-accounts-open'); } catch (_) {} });
 }
 
 async function orderFlow(page, sizeName) {
@@ -1010,19 +1174,40 @@ async function pwaFlow() {
   await sleep(500);
   const build1 = await page.evaluate(() => new Promise((res) => { navigator.serviceWorker.addEventListener('message', (e) => e.data.type === 'build' && res(e.data.build)); navigator.serviceWorker.controller.postMessage({ type: 'build' }); }));
   if (build1 !== 'ffffffffffff' || build1 === build0) fail(`reloaded page runs build ${build1}, expected ffffffffffff (was ${build0})`);
-  // A page that has only just started applies the next build without a tap.
-  await page.evaluate(() => sessionStorage.removeItem('wy.autoUpdateAt'));
-  // ...but not with a dialog open: the banner shows, the page is not reloaded, and the build is
-  // taken once the dialog is closed (the loop below).
-  await page.evaluate(() => { window.__alive = true; const d = document.createElement('dialog'); d.id = 'smoke-modal'; document.body.append(d); d.setAttribute('open', ''); });
+  // A page that has only just started applies the next build without a tap, but not with a
+  // dialog open. The policy's "just started" is FRESH_PAGE_MS (15 s) of page age, and the
+  // install of the new build can take most of that on a slow runner, so the build is
+  // installed first (on this page, held back by a recent auto-update) and the checks then run
+  // on a page loaded afterwards, whose age the waits below no longer depend on.
   await fetch(BASE + '/_dev/build', { method: 'POST', body: JSON.stringify({ hash: 'eeeeeeeeeeee' }), headers: { 'Content-Type': 'application/json' } });
+  await page.evaluate(() => sessionStorage.setItem('wy.autoUpdateAt', String(Date.now())));
   await page.evaluate(async () => { await (await navigator.serviceWorker.getRegistration()).update(); }).catch(() => {});
+  try {
+    await page.waitForFunction(async () => { const r = await navigator.serviceWorker.getRegistration(); return !!(r && r.waiting); }, { timeout: 20000, polling: 250 });
+  } catch (e) { fail('the next build did not install'); }
+  // The reloaded page opens with a dialog (added before the app's scripts run): the banner
+  // shows, the page is not reloaded, and the build is taken once the dialog is closed.
+  // (wy.autoUpdateAt is cleared there too: cleared here, this page could take the build first.)
+  await page.evaluate(() => sessionStorage.setItem('smoke.modal', '1'));
+  await page.evaluateOnNewDocument(() => {
+    if (sessionStorage.getItem('smoke.modal') !== '1') return;
+    sessionStorage.removeItem('smoke.modal');
+    sessionStorage.removeItem('wy.autoUpdateAt');
+    // The document is still empty here; the app's module scripts run once it is parsed.
+    const add = () => {
+      if (!document.documentElement || document.getElementById('smoke-modal')) return !!document.documentElement;
+      const d = document.createElement('dialog'); d.id = 'smoke-modal'; d.setAttribute('open', '');
+      document.documentElement.append(d);
+      return true;
+    };
+    if (!add()) new MutationObserver((_, o) => { if (add()) o.disconnect(); }).observe(document, { childList: true });
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.evaluate(() => { window.__alive = true; });
   try { await page.waitForSelector('.banner-update', { timeout: 8000 }); } catch (e) { fail('"Update ready" did not show while a dialog was open'); }
   await sleep(3500); // two re-checks of the guard: asserting that nothing happens takes a wait
   if (!(await page.evaluate(() => window.__alive === true && !!document.getElementById('smoke-modal')).catch(() => false))) fail('the page reloaded by itself while a dialog was open');
   await page.evaluate(() => document.getElementById('smoke-modal') && document.getElementById('smoke-modal').remove());
-  await fetch(BASE + '/_dev/build', { method: 'POST', body: JSON.stringify({ hash: 'eeeeeeeeeeee' }), headers: { 'Content-Type': 'application/json' } });
-  await page.evaluate(async () => { await (await navigator.serviceWorker.getRegistration()).update(); }).catch(() => {});
   let build2 = '';
   for (let i = 0; i < 40 && build2 !== 'eeeeeeeeeeee'; i++) {
     await sleep(250);

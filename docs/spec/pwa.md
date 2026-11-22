@@ -85,8 +85,8 @@ Hash routes:
 
 | Route | Screen | Notes |
 | --- | --- | --- |
-| `#/` | Now (`PhoneNow`) | Rows get **Seen** and **Snooze** (swipe left/right on touch; two buttons in a row menu for keyboard and screen readers); seen rows dimmed; alert status ("push in 40 s", "pushed 14:04", "snoozed until 14:20"); offline banner (4) |
-| `#/sessions`, `?filter=needs_you\|working\|done\|all`, `?by=machine` | Sessions (`PhoneSessions`) | Filter chips and "By machine" grouping as drawn |
+| `#/` | Now (`PhoneNow`) | Rows get **Seen** and **Snooze** (swipe left/right on touch; two buttons in a row menu for keyboard and screen readers). Every row has Seen: a skipped alert (`stale`, `rule_off`, `peers`, …) has it too, and a row with no alert uses `POST /v1/sessions/{id}/seen`; Snooze only while the alert can still push (push.md 4); a seen row leaves Needs you until its session's state changes (push.md 4); alert status ("push in 40 s", "pushed 14:04", "snoozed until 14:20"); offline banner (4) |
+| `#/sessions`, `?filter=needs_you\|working\|done\|all`, `?by=machine` | Sessions (`PhoneSessions`) | A search box (3.0b), filter chips and "By machine" grouping as drawn |
 | `#/sessions/<id>?alert=<al>` | Session (`PhoneSession`) | **Open in Claude** (`remote_url`, with the wrong-account note), **Copy resume command**, **Snooze 15 min** (alert), state history. The heading (and the Now and Sessions rows) is the folder, then ` · <title or name>` unless that only repeats the folder ("infra", not "infra · infra") |
 | `#/accounts?seat=<id>` | Accounts (`PhoneAccounts`) | "Most room right now" line, then one compact row per account (3.0a); `seat` opens, scrolls to and highlights its row |
 | `#/machines?machine=<id>` | Machines | Under More on phones; stays in the desktop sidebar |
@@ -114,7 +114,8 @@ answer (a network error while the hub restarts) changes nothing. A `read`-only b
 screen; controls that need `push` or `owner` are hidden or show "Sign in as owner on the hub
 (`wy hub owner-link`)".
 
-Rules on the phone (`PhoneAlerts`): one row per base trigger with its global delay as text
+Rules on the phone (`PhoneAlerts`): one row per base trigger group (the two limit triggers share
+one row, and the four usage notices, push.md 3.9, share one: "Usage and limit changes") with its global delay as text
 ("· 30 s") and a switch. For a push-scoped device the switch edits `prefs.mute`
 (`PATCH /v1/devices/self`); for an owner session it edits the global rule (`PUT
 /v1/rules/{id}`), and the delay is editable. Overrides are listed (owner: add/remove with a
@@ -177,6 +178,98 @@ The desktop app's Hub tab shows this same page.
   extra usage and spend, open sessions, "claude.ai usage read N min ago") and, for the owner, **Edit
   label and colour**. Several rows can be open; the open rows are kept per browser in
   `localStorage` (`wy-accounts-open`, optional). **Expand all / Collapse all** sits at the top.
+- **How the picker uses this account** (setup.md 8.5, *Kind*), a section of its own in every
+  open row, above Details. Its wording comes from one place, `components/pick-mode.js`
+  (`MODE_WORDS`; tested in `pick-mode.test.cjs`), which every other mention of protected or
+  aggressive on the board also uses (the verdict below, its hover title):
+  - **Protected**: "Kept for you. New sessions only while this week is behind an even pace and
+    the 5-hour window is under 45%."
+  - **Aggressive**: "Use it up. Sessions go here until 98% of the week or 5 hours."
+  - **Not chosen**: "Not chosen yet; treated as aggressive."
+
+  The setting is the seat's hub setting (`Seat.mode`, api.yaml), the same on every machine.
+  The owner sees the question "How should the picker use this account?" with three radio
+  options (Protected, Aggressive, Not chosen), each with its definition right under its name;
+  a change saves at once with `PATCH /v1/accounts/{seat}` `{"mode": …}` (null for Not chosen)
+  and a refusal puts the old choice back with the reason. Anyone else sees the current choice
+  and its definition as text. An account with no mode shows "Not chosen yet; treated as
+  aggressive." as a highlighted line at the top of the section (the options are right under
+  it). When the newest verdict came from a machine whose own `next.accounts.<key>.mode`
+  decides (`Verdict.mode_from` `local`) and its kind differs from the hub setting (none counts
+  as aggressive), a line says so: "On gpu-box a setting on that machine makes it protected
+  (set on this machine); it wins there over this choice."
+- **Usage and the picker**, inside the Details section of an open row and nowhere else (no page
+  or tab of its own): a closed disclosure (`<details>`, kept open across redraws by its
+  `data-key`) that reads `GET /v1/accounts/{seat}/relation` (api.yaml `UsageRelation`, setup.md
+  8.5 Usage relation) when first opened, and again when opened more than 5 minutes later. Its
+  pure logic is in `components/relation-fmt.js` (tested in `relation-fmt.test.cjs`). Written
+  for someone who has never read setup.md: plain words, no single-letter symbols (`f`, `c`,
+  `n`, `ρ`), and every number in one short sentence that says what it means. Top to bottom:
+  1. **Verdict** (the newest verdict of `wy account next`, then, muted, "as of 12 min ago on
+     gpu-box"; over an hour: "older than an hour"):
+     - the headline: "Can take the next new session", "Can take a new session: 3rd in line",
+       or "Not taking new sessions now"; with the place explained: "3rd in line: 2 other
+       accounts get a new session before this one; they take turns." (1st: "It gets the next
+       new session started with wy account next."); "weekly room expiring" says "Its week
+       resets within 2 days, so it goes first."
+     - its kind in words, with the definition from `MODE_WORDS` inline (a protected account
+       also on hover, `title`), and when it is not chosen: "Not chosen yet; treated as
+       aggressive.";
+     - the rules that would stop it, each with the current value against the threshold, from
+       the verdict's levels and caps (`weekly_pct`, `weekly_cap`, `five_hour_pct`,
+       `five_hour_cap`, `burst`, `burst_cap`): "5-hour 1% (stops at 45%)", "Week 29%, the even
+       pace allows 52% today" (protected) or "Week 29% (stops at 98%)" (aggressive), "New
+       sessions in the last hour: 1 (at most 2)"; a rule that blocks is marked "blocking". An
+       older verdict without the caps shows the levels alone;
+     - when it is not taking sessions: the reason in words (burst cap: "it got its most new
+       sessions for one hour"; stale: "its newest usage reading is too old to trust"; protected
+       rule; limit: "it is at its limit") and "Frees up Thu 14:00", or "No known time when it
+       frees up"; when no account was free: "No account was free; the first frees up 11:30".
+     None: "No verdict yet: wy account next has not reported this account."
+  2. **The 5-hour limit and the week**, three tiles side by side (stacked on a narrow screen),
+     from the calibrated ratio (`calibration.ratio.value`, 5-hour points per weekly point):
+     (a) "6.8% of the 5-hour limit = 1% of the week" (the ratio, one decimal); (b) "≈ 6.8 full
+     5-hour windows use up the week" (100 × ratio / 100 = the ratio); (c) "One full 5-hour
+     window ≈ 15% of the week" (100 / ratio, whole percent; one decimal under 10). Under them
+     one label for all three: "measured over 7 days" (weight 1), "partly measured (40%), over
+     2 days" (blending) or "default (not measured yet: needs 3 days and 20 readings, 4 so
+     far)" (weight 0), and "measured value looked wrong, not used" when implausible.
+  3. **The session cost line**, from the lane charge: "Each new session is set aside 8% of the
+     5-hour limit until its real use shows up (default; measured after 20 sessions, 1 so
+     far)", or "(measured from 34 sessions)". With no calibration: "Not measured yet: the
+     hub has no calibration for this account."
+  4. **Charts** (`components/rel-chart.js`; SVG): each has a title that says what is plotted
+     and what a higher bar means, a y axis with values (0 and two more round steps), a day axis
+     (first, middle and last day), and a text alternative (`role="img"` with an `aria-label`
+     summing it up, and a visually hidden table of the days). A day with no data is a gap
+     with a small "no data" mark, never blank space. Hover, focus or tap on a day shows its
+     value in one line under the chart; one hint, "Hover or tap a day to see its value.", is
+     shown once, under the first chart only. Colours are CSS variables that work in light and
+     dark mode.
+     - **"5-hour % per 1% of the week, each day"** ("Higher: the week lasts longer compared
+       with the 5-hour limit."): the daily ratio, each bar coloured by the day's most-used
+       model, with a legend of full model names ("Opus 4.6", never initials). A day value:
+       "12 Nov: 7.1% of the 5-hour limit per 1% of the week · mostly Opus 4.6 · 30
+       readings". Hidden with one line when no day has a ratio: "Not enough readings in the
+       last 2 weeks to show this."
+     - **The 5-hour capacity** per model (most dollars first): first one plain sentence per
+       model: "This week 1% of the 5-hour limit bought about $1.67 of Opus 4.6 work at API
+       prices. Last week: $1.52 (10% more now)." or "Last week: not enough data yet.", then
+       once: "A change of more than 20% on most accounts raises an alert." A chart of the
+       daily dollars per 1% (with last week's level as a dashed line, labelled) only when
+       both weeks have a value; otherwise none. A model with no index at all in the 14 days
+       gets one line instead: "Sonnet 4.5: not used in the last 2 weeks." When the seat is
+       not Claude-Code-heavy this week a muted note says so ("62% of the 5-hour rise had
+       Claude Code tokens: this is not a fair measure this week and does not count toward
+       limit-change alerts") and the chart is muted.
+  5. **How this works**, a closed disclosure at the end: the details in words. The meter factor
+     ("How many % of the 5-hour limit a million tokens of Claude Code use cost: 1.38,
+     measured from 1504 readings over 7 days"), the ratio and the session cost with their
+     state, that the hub works them out from every machine's readings and moves from safe
+     defaults to measured values after about 3 days and 20 readings, the last restart and its
+     reason, and what the capacity index is.
+
+  A load error shows in the disclosure with a **Try again** button.
 - Below the list one muted line: "The bar shows the tighter of the 5 h and 7 d limits. Select an
   account for everything else."
 - **Most room right now** ("Most room right now: claude-2 (5 h 0% · 7 d 3%)"): among non-hidden
@@ -185,6 +278,52 @@ The desktop app's Hub tab shows this same page.
   than 6 hours counts until its reset). An account with no reading at all is skipped. Score =
   max(effective 5 h, effective 7 d); the lowest wins; ties go to the lower 7 d, then the lower 5 h,
   then list order; only when the score is under 80.
+
+### 3.0b Searching the sessions
+
+The Sessions screen has a search box above the filter chips (label "Search sessions",
+placeholder "Folder, title, name or message"). The board, the desktop app's Hub view (which is
+the board, desktop.md C7) and the Android app (phone.md P4) behave the same way.
+
+- **What it searches.** Only what the list already holds: the `GET /v1/sessions` page the
+  screen shows (the last 2 days, up to 500 sessions), on the device. The query is never sent to
+  the hub, and the hub has no search endpoint. Per session it looks at: the folder as the row
+  shows it (`project`, else the last segment of `cwd`; never the "(no project)" placeholder),
+  `title`, `name`, the row's last line (what the row shows: the question, the permission
+  request, the rate-limit line or the last message), `last_message` and `question`. The latest
+  message is `last_message`, the tail (at most 400 characters) of Claude's last message, which a
+  machine sends only when last messages are allowed (record.md 4.1; `privacy.last_message`,
+  paths.md). With last messages off there is no message text to search. The search adds no field to the
+  API, no request, and full transcripts never reach the hub.
+- **Matching.** The query is trimmed and split on white space into at most 8 terms (each cut
+  to 64 characters; the box takes 200). A session matches when every term is found in at least
+  one of its fields; different terms may match different fields. Case and accents are ignored:
+  both sides are folded character by character (canonical decomposition, NFD; combining marks
+  U+0300–036F, U+1AB0–1AFF, U+1DC0–1DFF, U+20D0–20FF and U+FE20–FE2F removed; then lower case),
+  so "cafe" finds "Café" and "CAFÉ" finds "cafe". Nothing else is folded: no stemming, no
+  fuzzy match, "ß" stays "ß". An empty or all-space box shows every session.
+- **With a query.** The chips' counts count only matching sessions, so a 0 tells the reader the
+  matches are under another chip. The groups show only matching rows, and the "older sessions"
+  line counts only matching ones. Every found term is highlighted (`<mark>` on the board, a
+  tinted span on the phone) in the folder, the title or name, and the last line. When a term
+  matches only a field the row does not show (the name when the row shows the title, the last
+  message when the row shows a question or a permission request), the row gets one more muted
+  line naming the field ("Name: ", "Title: ", "Message: ", "Question: ") with about 80
+  characters around the first such match, `…` where it was cut, highlighted. Under the box a
+  line says how many match ("3 of 41 sessions match"; a polite status for screen readers). When
+  nothing under the chip matches: "No sessions here match “deploy”." On the board, when another
+  chip has matches, a **Search all sessions** button opens `?filter=all` with the query kept;
+  on the phone the chip counts show where they are.
+- **It stays.** The query survives every refresh of the list (polls, stream events, redraws),
+  and the box keeps its focus and caret through a redraw. Changing the chip, the grouping or the
+  machine keeps it. On the board it is kept in memory for the tab, so opening a session and
+  coming back keeps it; a reload clears it. It is never put in the address or stored anywhere,
+  because it may hold text from a message. On the phone it is the Sessions screen's state: kept
+  while the screen stays mounted, and a deep link that opens the Sessions screen starts empty.
+  **Clear** (the × in the box) and, on the board, Escape in the box clear it.
+- **Code.** The folding, matching, highlight ranges and excerpts are one pure module,
+  `webui/static/components/search-fmt.js`, ported to `phone/src/lib/format/search.ts`; the
+  phone's tests run both on one case table.
 
 ### 3.1 Peers (`#/more/peers`)
 
@@ -408,7 +547,8 @@ standalone)')` and `navigator.standalone` for "already installed").
   new fixtures validate against `api.yaml`.
 - `node --test webui/static/*.test.cjs` (Node 20+, no packages): `chooseTarget`, payload
   parsing fallbacks, the data-cache URL matcher; the Peers cells, edits (only an added pair
-  widens), "why not" sentences and audit text (`peers-fmt.test.cjs`). The devserver serves the
+  widens), "why not" sentences and audit text (`peers-fmt.test.cjs`). Session search (3.0b): folding, terms, matching, highlight ranges and excerpts
+  (`search-fmt.test.cjs`). The devserver serves the
   matrix, pause and audit endpoints with the hub's who-may-do-what (`devserver/peers_test.go`).
 - Headless Chrome (extends `webui/smoke`, `WY_WEBUI_BROWSER=1`, puppeteer-core), against the
   devserver at `http://127.0.0.1` (a secure context):
