@@ -515,33 +515,49 @@ func TestMeter(t *testing.T) {
 	}
 }
 
-// Unexplained claude.ai use: the web readings' rise less the meter, per hour, added once the
-// newest reading is over 15 minutes old.
+// Unexplained claude.ai use: the rise of clean intervals per hour when they add up to 10
+// minutes, else the web readings' rise less the meter, per hour; added once the newest
+// reading is over 15 minutes old.
 func TestWebUse(t *testing.T) {
 	rst := hrs(3)
 	w := &Window{Key: "five_hour", Samples: []Sample{
 		{At: hrs(-1.5), Pct: 10, ResetsAt: rst, Source: "web"},
+		{At: hrs(-1.2), Pct: 12, ResetsAt: rst, Source: "statusline"}, // a session ran: not clean
 		{At: hrs(-1), Pct: 20, ResetsAt: rst, Source: "web"},
 		{At: hrs(-0.5), Pct: 30, ResetsAt: rst, Source: "web"},
 		{At: hrs(-0.4), Pct: 31, ResetsAt: rst, Source: "statusline"},
 	}}
 	f5 := 1e-6
-	us := units(-0.7, 2e6) // 2 points the meter saw inside the web span
-	extra, hasWeb, hasRate := webUse(w, us, hrs(-0.5), f5, lnow)
+	us := units(-0.7, 2e6) // 2 points the meter saw inside the web span: not clean either
+	extra, hasWeb, from := webUse(w, us, hrs(-0.5), f5, lnow)
 	// The last 60 minutes of web readings (the bound included): 10 % to 30 %, less 2 points
 	// metered = 18 points per hour; the reading is 30 min old: 9 points.
-	if !hasWeb || !hasRate || math.Abs(extra-9) > 1e-9 {
-		t.Errorf("extra %v web %v rate %v, want 9 true true", extra, hasWeb, hasRate)
+	if !hasWeb || from != unexplainedNet || math.Abs(extra-9) > 1e-9 {
+		t.Errorf("extra %v web %v from %q, want 9 true net", extra, hasWeb, from)
 	}
 	if extra, _, _ := webUse(w, us, hrs(-0.1), f5, lnow); extra != 0 {
 		t.Errorf("a reading 6 min old: extra %v, want 0", extra)
 	}
+	// Without the status-line reading the first interval is clean: 10 points in 30 minutes.
+	clean := &Window{Key: "five_hour", Samples: append([]Sample{w.Samples[0]}, w.Samples[2:]...)}
+	if extra, _, from := webUse(clean, us, hrs(-0.5), f5, lnow); from != unexplainedClean || math.Abs(extra-10) > 1e-9 {
+		t.Errorf("clean: extra %v from %q, want 10 clean", extra, from)
+	}
+	// Clean intervals under 10 minutes in all fall back to the net rate.
+	short := &Window{Key: "five_hour", Samples: []Sample{
+		{At: hrs(-1), Pct: 10, ResetsAt: rst, Source: "web"},
+		{At: hrs(-0.95), Pct: 15, ResetsAt: rst, Source: "web"},
+		{At: hrs(-0.5), Pct: 20, ResetsAt: rst, Source: "web"},
+	}}
+	if extra, _, from := webUse(short, units(-0.7, 2e6), hrs(-0.5), f5, lnow); from != unexplainedNet || math.Abs(extra-8) > 1e-9 {
+		t.Errorf("short clean: extra %v from %q, want 8 net", extra, from)
+	}
 	one := &Window{Key: "five_hour", Samples: []Sample{{At: hrs(-1), Pct: 20, Source: "web"}}}
-	if _, hasWeb, hasRate := webUse(one, nil, hrs(-1), f5, lnow); !hasWeb || hasRate {
-		t.Errorf("one web reading: web %v rate %v, want true false", hasWeb, hasRate)
+	if _, hasWeb, from := webUse(one, nil, hrs(-1), f5, lnow); !hasWeb || from != "" {
+		t.Errorf("one web reading: web %v from %q, want true none", hasWeb, from)
 	}
 	old := &Window{Key: "five_hour", Samples: []Sample{{At: hrs(-7), Pct: 10, Source: "web"}, {At: hrs(-6), Pct: 30, Source: "web"}}}
-	if _, _, hasRate := webUse(old, nil, hrs(-6), f5, lnow); hasRate {
+	if _, _, from := webUse(old, nil, hrs(-6), f5, lnow); from != "" {
 		t.Error("a rate older than 5 hours is still used")
 	}
 	if _, hasWeb, _ := webUse(&Window{Samples: []Sample{{At: hrs(-1), Pct: 5, Source: "statusline"}}}, nil, hrs(-1), f5, lnow); hasWeb {

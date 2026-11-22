@@ -225,6 +225,16 @@ func accountNext(e nextEnv, args []string) error {
 	in := picker.Input{Now: now, Strategy: strat, Model: *model, Settings: settings, Candidates: picker.Candidates(slots, src),
 		Outbox: ob, N: k, SIDs: sids, Urgent: *urgent}
 
+	if lanes {
+		// The hub's calibration factors: kept for when the hub cannot be read (setup.md 8.5).
+		calPath := filepath.Join(e.dirs.State.Path, "next", "calibration.json")
+		in.Calibration = picker.LoadCalibration(calPath)
+		if src.Hub != nil && !*noReserve {
+			if err := picker.SaveCalibration(calPath, in.Calibration, in.Candidates, now); err != nil {
+				warns = append(warns, "calibration copy: "+err.Error())
+			}
+		}
+	}
 	ledger := leases.Ledger{Dir: filepath.Join(e.dirs.State.Path, "next")}
 	var res picker.Result
 	var lines []leases.Line

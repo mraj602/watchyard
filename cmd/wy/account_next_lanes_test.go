@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -260,5 +261,80 @@ func TestAccountNextLanesDamagedLedger(t *testing.T) {
 	d := decodeLanes(t, r.out)
 	if r.code != 0 || d.Skipped != 1 || len(d.Picks) != 1 {
 		t.Errorf("code %d doc %+v", r.code, d)
+	}
+}
+
+// The hub's calibration factors are used and kept in next/calibration.json; without the hub
+// the kept copy is used, and an account the hub has not calibrated is fitted locally
+// (setup.md 8.5, Calibration). --no-reserve writes nothing.
+func TestAccountNextCalibration(t *testing.T) {
+	f := newNextFixture(t)
+	f.machineToken()
+	f.usage = true
+	s1 := seat("seat_1", "a1", "o1", "", "", 10, 30)
+	fb := func(v float64) map[string]any {
+		return map[string]any{"value": v, "fallback": v, "measured": nil, "weight": 0, "n": 0, "days": 0, "implausible": false}
+	}
+	s1["calibration"] = map[string]any{"at": nextNow.Add(-time.Hour).Format(time.RFC3339), "since": nil, "reset": nil,
+		"f":     map[string]any{"value": 2.5, "fallback": 1.4, "measured": 2.5, "weight": 1, "n": 60, "days": 5, "implausible": false},
+		"ratio": fb(7.2), "lane_price": fb(4), "lane_charge": 8, "lane_units": nil,
+		"unexplained_pct_per_hour": nil, "unexplained_hours": 0}
+	f.seats = []map[string]any{s1, seat("seat_2", "a2", "o2", "", "", 10, 30)}
+	path := filepath.Join(f.dirs.State.Path, "next", "calibration.json")
+
+	type calDoc struct {
+		Accounts []struct {
+			Folder string `json:"folder"`
+			Lanes  *struct {
+				Calibration *struct {
+					Source     string  `json:"source"`
+					LaneCharge float64 `json:"lane_charge"`
+					F          struct {
+						Value  float64 `json:"value"`
+						Weight float64 `json:"weight"`
+					} `json:"f"`
+				} `json:"calibration"`
+			} `json:"lanes"`
+		} `json:"accounts"`
+	}
+	sources := func(args ...string) map[string]string {
+		t.Helper()
+		r := f.run(args...)
+		var d calDoc
+		if err := json.Unmarshal([]byte(r.out), &d); err != nil {
+			t.Fatalf("json: %v\n%s\n%s", err, r.out, r.errOut)
+		}
+		out := map[string]string{}
+		for _, a := range d.Accounts {
+			if a.Lanes != nil && a.Lanes.Calibration != nil {
+				c := a.Lanes.Calibration
+				out[a.Folder] = c.Source + " " + strconv.FormatFloat(c.F.Value, 'f', -1, 64)
+			}
+		}
+		return out
+	}
+
+	got := sources("--json", "--no-reserve")
+	if got["~/.claude"] != "hub 2.5" || got["~/.claude-2"] != "local 1.4" {
+		t.Fatalf("sources %v", got)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("--no-reserve wrote the calibration copy")
+	}
+	sources("--json")
+	st, err := os.Stat(path)
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("calibration copy: %v %v", err, st)
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), `"acct:a1/o1"`) || strings.Contains(string(b), `"acct:a2/o2"`) {
+		t.Fatalf("copy %s", b)
+	}
+	if got := sources("--json", "--no-hub", "--no-reserve"); got["~/.claude"] != "cached 2.5" || got["~/.claude-2"] != "local 1.4" {
+		t.Fatalf("without the hub: %v", got)
+	}
+	r := f.run("--explain", "--no-reserve")
+	if !strings.Contains(r.out, "(hub): f 2.50/M units (weight 1.00, n 60)") {
+		t.Fatalf("explain:\n%s", r.out)
 	}
 }

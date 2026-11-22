@@ -7,12 +7,14 @@
 //
 // Contract: docs/spec/setup.md 8.5.
 //
-// Depends on: config, record, leases.
+// Depends on: config, record, leases, calib.
 package picker
 
 import (
 	"strings"
 	"time"
+
+	"github.com/mraj602/watchyard/internal/calib"
 )
 
 // Sample is one reading of a window: percent used at a time.
@@ -64,6 +66,8 @@ type Candidate struct {
 	Source string
 	// RemoteLeases are other machines' leases of the seat, from the hub (lanes).
 	RemoteLeases []HubLease
+	// Calib is the hub's calibration of the seat (lanes; nil: none).
+	Calib *calib.Factors
 }
 
 // Key is the identity used for leases, burst caps and the round robin: the seat (account and

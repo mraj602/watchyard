@@ -16,8 +16,9 @@ import (
 	"time"
 )
 
-// LaneParams are the parameters of the lanes strategy. They are fixed for now
-// (DefaultLaneParams); per-account calibration comes later.
+// LaneParams are the parameters of the lanes strategy (DefaultLaneParams). The lane price, the
+// ratio and the meter factor are each account's own when it has calibrated factors
+// (LaneAccount; setup.md 8.5, Calibration).
 type LaneParams struct {
 	Target       float64 // protected weekly target T
 	Headstart    float64 // points the pace line allows above the even share of the week
@@ -69,6 +70,21 @@ func (p LaneParams) Price() (c5, cf float64) {
 	return c5, math.Max(cf, c5)
 }
 
+// account is p with the account's calibrated factors in place of the meter factor, the ratio
+// and the lane charge (a zero factor keeps the parameter).
+func (p LaneParams) account(acc LaneAccount) LaneParams {
+	if acc.F5 > 0 {
+		p.F5 = acc.F5
+	}
+	if acc.Ratio > 0 {
+		p.Ratio = acc.Ratio
+	}
+	if acc.Charge > 0 {
+		p.LeasePrice, p.CostMult, p.LaneFull5 = acc.Charge, 1, 0
+	}
+	return p
+}
+
 func (p LaneParams) ratio() float64 {
 	if p.Ratio > 0 {
 		return p.Ratio
@@ -110,6 +126,11 @@ type LaneAccount struct {
 	// Limit7d and Limit5h replace the weekly limit (aggressive) or target (protected) and the
 	// 5-hour limit (aggressive) or floor (protected); 0 keeps the parameter.
 	Limit7d, Limit5h float64
+	// F5 (5-hour points per unit), Ratio and Charge (the lane charge c = cf, 5-hour points)
+	// are the account's calibrated factors; 0 keeps the parameter.
+	F5, Ratio, Charge float64
+	// K5 and K7 are the meter margin factors: g5 = K5 × f × m5, g7 = K7 × f × m7 / ρ.
+	K5, K7 float64
 }
 
 // LaneLease is one lease, local or another machine's.
@@ -150,9 +171,11 @@ type LaneRow struct {
 	Burst        int // leases in the burst window
 	BurstCap     int
 	Capped       bool
-	Added5       float64 // 5-hour points added since the reading (meter, leases, unexplained)
+	Added5       float64 // 5-hour points added since the reading (meter, margin, leases, unexplained)
 	Meter5       float64 // the meter's 5-hour points
 	Meter7       float64 // the meter's weekly points
+	Margin5      float64 // the meter margin g5, 5-hour points
+	Margin7      float64 // the meter margin g7, weekly points
 	SampleAgeMin float64
 	SampleAt     time.Time // zero: no reading time
 	FiveReset    time.Time
@@ -275,6 +298,7 @@ type laneState struct {
 	unknown         []string
 	leaseN, capN    int
 	add5, m5, m7    float64
+	g5, g7          float64
 	ageMin          float64
 	ts              time.Time
 	noTS            bool
@@ -285,6 +309,7 @@ type laneState struct {
 
 func laneLive(acc LaneAccount, c cleanSample, now time.Time, p LaneParams, leases []LaneLease) laneState {
 	w, h, hrs := c.effective(now)
+	p = p.account(acc)
 	ratio := p.ratio()
 	f5 := p.F5
 	price5, pricef := p.Price()
@@ -294,10 +319,12 @@ func laneLive(acc LaneAccount, c cleanSample, now time.Time, p LaneParams, lease
 		h = 0
 	}
 	m5part := m5 * f5
-	add5 := m5part + math.Max(0, acc.Extra5)
+	g5 := math.Max(0, acc.K5) * m5part
+	add5 := m5part + g5 + math.Max(0, acc.Extra5)
 	add7 := m7 * f5 / ratio
+	g7 := math.Max(0, acc.K7) * add7
 	st := laneState{hrs: hrs, unknown: c.unknown, ts: c.ts, noTS: c.noTS, fiveRst: c.fiveRst,
-		m5: m5part, m7: add7}
+		m5: m5part, m7: add7, g5: g5, g7: g7}
 	reserve, keepw := 0.0, 0.0
 	leaseSince := false
 	for _, L := range leases {
@@ -341,8 +368,8 @@ func laneLive(acc LaneAccount, c cleanSample, now time.Time, p LaneParams, lease
 		}
 	}
 	h2 := h + add5
-	wCore := w + add7 + keepw
-	w2 := wCore + (add5-m5part)/ratio
+	wCore := w + add7 + g7 + keepw
+	w2 := wCore + (add5-m5part-g5)/ratio
 	wRes := wCore + reserve/ratio
 	st.ageMin = now.Sub(c.ts).Minutes()
 	ran := acc.Live || leaseSince
@@ -529,7 +556,6 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 	for i, a := range in.Accounts {
 		clean[i] = cleanLaneSample(a.Sample, now)
 	}
-	c5, cf := p.Price()
 	for k := 0; k < in.N; k++ {
 		table := make([]LaneRow, 0, len(in.Accounts))
 		keys := make([]laneKey, 0, len(in.Accounts))
@@ -579,7 +605,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 			}
 			row := LaneRow{Key: acc.Key, Protected: prot, Score: sc, Skip: skip, Reason: why, Weekly: v.w, FiveHour: v.h,
 				Reserve: v.wRes, HoursToReset: v.hrs, Leases: v.leaseN, Burst: v.capN, BurstCap: cp, Capped: capped,
-				Added5: v.add5, Meter5: v.m5, Meter7: v.m7, SampleAgeMin: v.ageMin, FiveReset: v.fiveRst,
+				Added5: v.add5, Meter5: v.m5, Meter7: v.m7, Margin5: v.g5, Margin7: v.g7, SampleAgeMin: v.ageMin, FiveReset: v.fiveRst,
 				Stale: v.stale, Unknown: v.unknown, SkipLevel: level, Last: last, Expiring: expiring && !skip}
 			if !v.noTS {
 				row.SampleAt = v.ts
@@ -646,6 +672,13 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 			sid = in.SIDs[k]
 		}
 		r := table[pick]
+		c5, cf := p.Price()
+		for _, a := range in.Accounts {
+			if a.Key == r.Key {
+				c5, cf = p.account(a).Price()
+				break
+			}
+		}
 		res.Picks = append(res.Picks, LanePick{Key: r.Key, SID: sid, Forced: r.Forced, C5: pyRound(c5, 4), CF: pyRound(cf, 4)})
 		lc5, lcf := pyRound(c5, 4), pyRound(cf, 4)
 		leases = append(leases, LaneLease{Key: r.Key, T0: now, SID: sid, C5: &lc5, CF: &lcf})

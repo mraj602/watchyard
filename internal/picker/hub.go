@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mraj602/watchyard/internal/calib"
 )
 
 // HistoryFor is how far back the hub's samples are fetched: the 7-day lookback plus room.
@@ -78,6 +80,9 @@ type HubData struct {
 	Samples map[string][]HubSample
 	// Leases per seat id: other machines' leases (only from /v1/usage).
 	Leases map[string][]HubLease
+	// Calib per seat id: the hub's calibration factors (only from /v1/usage; a seat the hub
+	// has not calibrated yet has none).
+	Calib map[string]calib.Factors
 }
 
 // HubClient reads the hub: /v1/usage with the machine token (or any read token), or
@@ -142,14 +147,15 @@ func (h HubClient) FetchUsage(ctx context.Context, now time.Time) (HubData, erro
 	var doc struct {
 		Machine *string `json:"machine"`
 		Seats   []struct {
-			ID           string      `json:"id"`
-			Account      string      `json:"account"`
-			Org          string      `json:"org"`
-			Label        *string     `json:"label"`
-			Windows      []HubWindow `json:"windows"`
-			Samples      []HubSample `json:"samples"`
-			Leases       []HubLease  `json:"leases"`
-			LiveSessions int         `json:"live_sessions"`
+			ID           string          `json:"id"`
+			Account      string          `json:"account"`
+			Org          string          `json:"org"`
+			Label        *string         `json:"label"`
+			Windows      []HubWindow     `json:"windows"`
+			Samples      []HubSample     `json:"samples"`
+			Leases       []HubLease      `json:"leases"`
+			Calibration  json.RawMessage `json:"calibration"`
+			LiveSessions int             `json:"live_sessions"`
 			Places       []struct {
 				Slot string `json:"slot"`
 			} `json:"places"`
@@ -167,7 +173,7 @@ func (h HubClient) FetchUsage(ctx context.Context, now time.Time) (HubData, erro
 	if doc.Machine != nil {
 		machine = *doc.Machine
 	}
-	d := HubData{Samples: map[string][]HubSample{}, Leases: map[string][]HubLease{}}
+	d := HubData{Samples: map[string][]HubSample{}, Leases: map[string][]HubLease{}, Calib: map[string]calib.Factors{}}
 	for _, x := range doc.Seats {
 		s := HubSeat{ID: x.ID, Account: x.Account, Org: x.Org, Label: x.Label, Windows: x.Windows, LiveSessions: x.LiveSessions}
 		for _, p := range x.Places {
@@ -187,6 +193,10 @@ func (h HubClient) FetchUsage(ctx context.Context, now time.Time) (HubData, erro
 		d.Seats = append(d.Seats, s)
 		d.Samples[x.ID] = x.Samples
 		d.Leases[x.ID] = x.Leases
+		var f *calib.Factors
+		if len(x.Calibration) > 0 && json.Unmarshal(x.Calibration, &f) == nil && f != nil && !f.At.IsZero() {
+			d.Calib[x.ID] = *f
+		}
 	}
 	return d, nil
 }

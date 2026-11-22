@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/mraj602/watchyard/internal/calib"
 	"github.com/mraj602/watchyard/internal/config"
 )
 
@@ -225,6 +227,14 @@ func explainLanes(w io.Writer, res Result) error {
 	if err := tw.Flush(); err != nil {
 		return err
 	}
+	seen := map[string]bool{}
+	for _, r := range res.Ranked {
+		if r.Lanes == nil || r.Lanes.Calibration == nil || seen[r.key] {
+			continue
+		}
+		seen[r.key] = true
+		fmt.Fprintln(w, calibLine(r.Label, *r.Lanes.Calibration))
+	}
 	for _, p := range res.Picks {
 		fmt.Fprintln(w, "Pick: "+Line(p.Ranked))
 	}
@@ -235,6 +245,35 @@ func explainLanes(w io.Writer, res Result) error {
 		fmt.Fprintln(w, "note: "+x)
 	}
 	return nil
+}
+
+// calibLine is the --explain calibration line of one account:
+// "Calibration a (hub): f 1.52/M units (weight 1.00, n 143), ratio 7.2 (fallback, n 3), lane
+// charge 8.0 from lane price 4.0 (fallback, n 0); margins 5h +1.2, 7d +0.15; ...".
+func calibLine(label string, c CalibView) string {
+	factor := func(f calib.Factor, digits int, unit string) string {
+		v := strconv.FormatFloat(f.Value, 'f', digits, 64) + unit
+		switch {
+		case f.Implausible && f.Measured != nil:
+			return v + " (fallback; measured " + strconv.FormatFloat(*f.Measured, 'f', digits, 64) + " implausible)"
+		case f.Weight <= 0:
+			return v + fmt.Sprintf(" (fallback, n %d)", f.N)
+		}
+		return v + fmt.Sprintf(" (weight %.2f, n %d)", f.Weight, f.N)
+	}
+	s := fmt.Sprintf("Calibration %s (%s): f %s, ratio %s, lane charge %.1f from lane price %s",
+		label, c.Source, factor(c.F, 2, "/M units"), factor(c.Ratio, 1, ""), c.LaneCharge, factor(c.LanePrice, 1, ""))
+	if c.ResetReason != nil && c.Since != nil {
+		s += fmt.Sprintf("; restarted %s (%s)", c.Since.Format("Jan 2 15:04"), *c.ResetReason)
+	}
+	s += fmt.Sprintf("; margins 5h +%.1f, 7d +%.2f", c.Margin5hPct, c.Margin7dPct)
+	if c.UnexplainedFrom != nil {
+		s += "; unexplained rate from " + *c.UnexplainedFrom + " readings"
+	}
+	if c.UnexplainedPctPerHour != nil {
+		s += fmt.Sprintf("; claude.ai-only %.1f%%/h over %.1f h", *c.UnexplainedPctPerHour, c.UnexplainedHours)
+	}
+	return s
 }
 
 func dash(xs []string) string {

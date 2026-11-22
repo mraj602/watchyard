@@ -135,6 +135,8 @@ one folder.
   next/leases/<YYYY-MM-DD>.jsonl  wy account next: the lease ledger, append-only day files (UTC),
                                mode 0600, kept 8 days (setup.md 8.5); wy hook appends launched/ended
   next/leases.lock             held while wy account next reads the ledger, ranks and appends
+  next/calibration.json        wy account next: the calibration factors last read from the hub, per seat,
+                               mode 0600, used for 7 days when the hub cannot be read (setup.md 8.5)
   board/last-view.json         last board view shown, mode 0600 (terminal.md T3)
   term/title-<session>.json    last tab title per session, pruned after 7 days by wy tick (terminal.md T6)
   keys/                        mode 0700: device.json, owner.sealed (owner machine), owner.pub, hub.pub,

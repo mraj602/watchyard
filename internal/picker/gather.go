@@ -49,6 +49,9 @@ func Candidates(slots []Slot, src Sources) []Candidate {
 				}
 				c.Windows = hubWindows(*seat, src.Hub.Samples[seat.ID])
 				c.RemoteLeases = src.Hub.Leases[seat.ID]
+				if f, ok := src.Hub.Calib[seat.ID]; ok {
+					c.Calib = &f
+				}
 			}
 			c.SignedOut = signedOut(s.Folder, src.Machine, c.SeatID, src.Hub.Seats)
 		}
@@ -150,12 +153,7 @@ func hubWindows(seat HubSeat, samples []HubSample) []Window {
 // overlayLocal uses this machine's own status-line readings of the candidate's seat (or of
 // its folder when the seat is unknown) where they are newer than the hub's.
 func overlayLocal(c *Candidate, local []LocalSample) {
-	mine := func(s LocalSample) bool {
-		if c.Account != "" && s.Account != "" {
-			return s.Account == c.Account && (c.Org == "" || s.Org == "" || s.Org == c.Org)
-		}
-		return s.Slot == c.Folder
-	}
+	mine := func(s LocalSample) bool { return localOf(*c, s) }
 	used := false
 	for _, k := range []string{"five_hour", "seven_day"} {
 		var newest *LocalSample
@@ -223,6 +221,15 @@ func overlayLocal(c *Candidate, local []LocalSample) {
 			c.Source = "local"
 		}
 	}
+}
+
+// localOf reports whether a status-line reading of this machine is of the candidate's seat
+// (or of its folder when either seat is unknown).
+func localOf(c Candidate, s LocalSample) bool {
+	if c.Account != "" && s.Account != "" {
+		return s.Account == c.Account && (c.Org == "" || s.Org == "" || s.Org == c.Org)
+	}
+	return s.Slot == c.Folder
 }
 
 func pick(s LocalSample, key string) (*float64, *time.Time) {

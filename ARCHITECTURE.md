@@ -226,7 +226,8 @@ Client side (runs on every machine):
 | `internal/update` | `wy update`: release manifest, verified download, replace and rollback, post-update steps, `--machines` | brand |
 | `internal/doctor` | `wy doctor` (reach, held records, frozen hub, direct push, forward port; on the hub also push and pull-target checks, reading `hub.db` read-only with the SQLite driver, no hub package) | paths, config, identity, outbox, client, directpush, setup/ledger, setup/backup, share |
 | `internal/timer` | OS timer running `wy tick --quiet` every minute | brand |
-| `internal/picker` | `wy account next`: seat matching, the `lanes` ranker (readings, token meter, leases, burst caps, batches) and the projection strategies, hub reads (`/v1/usage` with the machine token, or the board token), one outbox pass for limit samples, token rows and hook events | config, record, leases |
+| `internal/picker` | `wy account next`: seat matching, the `lanes` ranker (readings, token meter, leases, burst caps, batches) and the projection strategies, hub reads (`/v1/usage` with the machine token, or the board token), one outbox pass for limit samples, token rows and hook events; each account's calibration (the hub's, the kept copy in `next/calibration.json`, or a local fit) and its meter margins | config, record, leases, calib, atomicfile |
+| `internal/calib` | Online calibration of `wy account next` (setup.md 8.5, Calibration): used readings and pairs, the meter factor, ratio and lane price with their blending and restarts, the meter-margin corrector; pure, shared by the hub and the picker | — (leaf) |
 | `internal/leases` | The lease ledger of `wy account next`: append-only day files with an fsync per line, the ledger lock, the hook's `launched`/`ended` marks | — (leaf) |
 
 Setup side (`wy setup`, `wy account`, `wy uninstall`, `wy tick`):
@@ -272,6 +273,7 @@ Hub side (same binary, `wy hub …`):
 | `internal/hub/auth` | Tokens, scopes, `wy hub token` | hub/store |
 | `internal/hub/state` | Session state fold, question detector, gone | record (+ hub/store for persistence) |
 | `internal/hub/usage` | Windows, resets, pace | record, hub/store |
+| `internal/hub/calibrate` | The calibration job: every 15 minutes folds each seat's new samples, token rows and leases (by cursor and index) into `seat_calibration` | calib, hub/store |
 | `internal/hub/ingest` | `POST /v1/ingest` | record, hub/store, hub/auth, hub/state, hub/usage |
 | `internal/hub/events` | Stream broker (SSE fan-out) | — |
 | `internal/hub/api` | Read API, SSE, mounts ingest and webui; pairing, devices, push targets, rules and alerts handlers | hub/store, hub/auth, hub/ingest, hub/events, hub/state, hub/usage, hub/pair, hub/push/{model,rules,webpush,ntfy,link,refresh}, webui |
@@ -286,7 +288,7 @@ Hub side (same binary, `wy hub …`):
 | `internal/hub/push/refresh` | The widget `Refresher` (push.md 13.5): link targets only, sends `refresh` frames through the link sender | hub/store, hub/events, hub/push/{model,link,clock} |
 | `internal/hub/push/webpushtest`, `ntfytest` | Fake Web Push service and ntfy stub for tests | — |
 | `internal/hub/pull` | Pull scheduler: SSH sessions to pull targets (pinned host keys, the hub's key in `<state>/pull`), backoff, `RunNow`; records go through the ingester | hub/store, hub/ingest, drainproto, atomicfile, record, hub/api (the `Puller` and `PullStatus` types only) |
-| `internal/hub/cli` | `wy hub …` and `wy phone pair`; `serve` builds the store, senders (Web Push, ntfy, link), engine, API, pull scheduler and widget refresher, and shuts them down in order (API, HTTP, pull scheduler, refresher, engine, store) | everything above, webui |
+| `internal/hub/cli` | `wy hub …` and `wy phone pair`; `serve` builds the store, senders (Web Push, ntfy, link), engine, API, pull scheduler, widget refresher and calibration job, and shuts them down in order (API, HTTP, pull scheduler, refresher, engine, calibration job, store) | everything above, webui |
 | `webui` | Embedded board and phone app (PWA) | — |
 
 Keys, the link and peers (both sides):

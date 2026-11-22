@@ -81,6 +81,12 @@ forward instead: `smart` (spend the weekly room that would otherwise expire unus
 keeping clear of accounts about to fill their 5 hours), `expiring`, `most-room`, `spread`,
 `fill` (a fixed order) and `sticky`.
 
+`lanes` also learns each account: how many 5-hour points a million tokens cost, how 5-hour
+points turn into weekly ones, and what a new session costs in its first 5 hours. A new
+account uses safe defaults for about 3 days, then its own measured values (the hub works
+them out for every machine; without one, each machine uses its own data). `--explain` shows
+them on one line per account.
+
 Settings per account, keyed by its email (the same on every machine) or by a label:
 
 ```sh

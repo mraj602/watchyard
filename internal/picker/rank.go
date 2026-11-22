@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mraj602/watchyard/internal/calib"
 	"github.com/mraj602/watchyard/internal/config"
 	"github.com/mraj602/watchyard/internal/leases"
 )
@@ -35,6 +36,8 @@ type Input struct {
 	Urgent bool
 	// Params are the lanes parameters; nil means DefaultLaneParams.
 	Params *LaneParams
+	// Calibration is the kept copy of the hub's factors by account key (CalibFile; lanes).
+	Calibration map[string]calib.Factors
 }
 
 // Ranked is one account in the result.

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mraj602/watchyard/internal/calib"
 	"github.com/mraj602/watchyard/internal/config"
 	"github.com/mraj602/watchyard/internal/leases"
 )
@@ -51,6 +52,7 @@ type LaneView struct {
 	Stale            bool       `json:"stale"`
 	Unknown          []string   `json:"unknown"`
 	SkipLevel        int        `json:"skip_level"`
+	Calibration      *CalibView `json:"calibration"`
 }
 
 // Decide ranks with the strategy of in (lanes or a projection strategy) and returns the
@@ -247,12 +249,18 @@ func sameWindow(a, b time.Time) bool {
 	return d <= resetTolerance && d >= -resetTolerance
 }
 
+// Unexplained rate sources (`--json` lanes.calibration.unexplained_from).
+const (
+	unexplainedClean = "clean"
+	unexplainedNet   = "net"
+)
+
 // webUse is the unexplained claude.ai use (setup.md 8.5, effective state 4): the 5-hour
-// points to add since the reading at ts, whether the seat has web readings, and whether a
-// rate is known.
-func webUse(w *Window, us []unitAt, ts time.Time, f5 float64, now time.Time) (extra float64, hasWeb, hasRate bool) {
+// points to add since the reading at ts, whether the seat has web readings, and how the rate
+// was measured ("" when no rate is known).
+func webUse(w *Window, us []unitAt, ts time.Time, f5 float64, now time.Time) (extra float64, hasWeb bool, from string) {
 	if w == nil {
-		return 0, false, false
+		return 0, false, ""
 	}
 	var web []Sample
 	for _, s := range w.Samples {
@@ -265,27 +273,54 @@ func webUse(w *Window, us []unitAt, ts time.Time, f5 float64, now time.Time) (ex
 		web = append(web, s)
 	}
 	if len(web) == 0 {
-		return 0, false, false
+		return 0, false, ""
 	}
 	sort.SliceStable(web, func(i, j int) bool { return web[i].At.Before(web[j].At) })
 	last := web[len(web)-1]
 	rate := 0.0
 	if now.Sub(last.At) <= webRateKeep {
+		var span []Sample // the web readings of the current window in the last 60 minutes
 		for _, s := range web {
-			if last.At.Sub(s.At) > webSpan || !sameWindow(s.ResetsAt, last.ResetsAt) {
+			if last.At.Sub(s.At) <= webSpan && sameWindow(s.ResetsAt, last.ResetsAt) {
+				span = append(span, s)
+			}
+		}
+		// Clean intervals first: no token row and no status-line reading between two
+		// consecutive web readings, so no Claude Code session ran.
+		var rise float64
+		var clean time.Duration
+		for i := 1; i < len(span); i++ {
+			a, b := span[i-1], span[i]
+			if !b.At.After(a.At) || sumBetween(us, a.At, b.At) != 0 || sessionBetween(w, a.At, b.At) {
 				continue
 			}
-			if span := last.At.Sub(s.At); span >= webMinSpan {
-				rise := last.Pct - s.Pct - f5*sumBetween(us, s.At, last.At)
-				rate, hasRate = math.Max(0, rise/span.Hours()), true
-			}
-			break // s is the oldest reading of the span
+			rise += b.Pct - a.Pct
+			clean += b.At.Sub(a.At)
+		}
+		switch {
+		case clean >= webMinSpan:
+			rate, from = math.Max(0, rise/clean.Hours()), unexplainedClean
+		case len(span) > 0 && last.At.Sub(span[0].At) >= webMinSpan:
+			s := span[0]
+			net := last.Pct - s.Pct - f5*sumBetween(us, s.At, last.At)
+			rate, from = math.Max(0, net/last.At.Sub(s.At).Hours()), unexplainedNet
 		}
 	}
-	if age := now.Sub(ts); age > webGap && hasRate {
+	if age := now.Sub(ts); age > webGap && from != "" {
 		extra = rate * math.Min(age.Hours(), window5h.Hours())
 	}
-	return extra, true, hasRate
+	return extra, true, from
+}
+
+// sessionBetween reports a reading of the window from a Claude Code session (any source but
+// claude.ai) strictly between two times.
+func sessionBetween(w *Window, a, b time.Time) bool {
+	for _, s := range w.Samples {
+		if s.Source != "web" && s.At.After(a) && s.At.Before(b) {
+			return true
+		}
+	}
+	return false
 }
 
 // laneGroup is the folders on this machine logged in to one account (key).
@@ -392,6 +427,11 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		ls = append(ls, ll)
 	}
 
+	// The calibration of each account (setup.md 8.5, Calibration); the local fit's lane price
+	// pools this machine's ledger.
+	pool := calib.PoolLanes(now, localLanes(ls, perSession, now))
+	views := map[string]*CalibView{}
+
 	accts := make([]LaneAccount, 0, len(groups))
 	for ord, g := range groups {
 		rep := cands[g.rep]
@@ -419,9 +459,31 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		m5, keep := meter5(us, sample.TS, five, now)
 		acc := LaneAccount{Key: g.key, Ord: ord, Protected: rs[g.rep].policy.Protected(), Sample: sample,
 			Meter: LaneMeter{M5: m5, M7: meter7(us, seven, now), KeepH: keep}}
-		extra, hasWeb, hasRate := webUse(windowOf(rep, "five_hour"), us, sample.TS, p.F5, now)
+		cf, src, k5, k7 := accountCalib(rep, in.Calibration, in.Outbox.Samples, us, pool, now)
+		// A factor still at its fallback keeps the parameter (the same value by default).
+		if cf.F.Weight > 0 {
+			acc.F5 = cf.F.Value / 1e6
+		}
+		if cf.Ratio.Weight > 0 {
+			acc.Ratio = cf.Ratio.Value
+		}
+		if cf.LanePrice.Weight > 0 {
+			acc.Charge = cf.LaneCharge
+		}
+		acc.K5, acc.K7 = k5, k7
+		f5 := acc.F5
+		if f5 <= 0 {
+			f5 = p.F5
+		}
+		extra, hasWeb, from := webUse(windowOf(rep, "five_hour"), us, sample.TS, f5, now)
 		acc.Extra5 = extra
-		acc.WebStale = acc.Protected && hasWeb && !hasRate && now.Sub(sample.TS) > webGap
+		acc.WebStale = acc.Protected && hasWeb && from == "" && now.Sub(sample.TS) > webGap
+		cv := newCalibView(src, cf)
+		cv.Corrector5h, cv.Corrector7d = pyRound(k5, 4), pyRound(k7, 4)
+		if from != "" {
+			cv.UnexplainedFrom = &from
+		}
+		views[g.key] = cv
 		for _, i := range g.idxs {
 			acc.Live = acc.Live || cands[i].LiveSessions > 0
 		}
@@ -472,6 +534,11 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		for _, i := range g.idxs {
 			r := &rs[i]
 			v := laneView(row, extraOf[row.Key], now)
+			if cv := views[row.Key]; cv != nil {
+				c := *cv
+				c.Margin5hPct, c.Margin7dPct = pyRound(row.Margin5, 2), pyRound(row.Margin7, 3)
+				v.Calibration = &c
+			}
 			r.Lanes, r.Pending, r.Stale, r.Score = &v, row.Leases, row.Stale, round2(row.Score)
 			if !row.SampleAt.IsZero() {
 				t := row.SampleAt
@@ -556,7 +623,7 @@ func laneLimits(pol Policy, protected bool, p LaneParams) (lim7, lim5 float64) {
 func laneView(row LaneRow, extra float64, now time.Time) LaneView {
 	v := LaneView{WeeklyPct: pyRound(row.Weekly, 1), FiveHourPct: pyRound(row.FiveHour, 1),
 		WeeklyReservePct: pyRound(row.Reserve, 1), HoursToReset: pyRound(row.HoursToReset, 2),
-		Meter5hPct: pyRound(row.Meter5, 1), Meter7dPct: pyRound(row.Meter7, 2), Unexplained5hPct: pyRound(extra, 1),
+		Meter5hPct: pyRound(row.Meter5+row.Margin5, 1), Meter7dPct: pyRound(row.Meter7+row.Margin7, 2), Unexplained5hPct: pyRound(extra, 1),
 		Leases: row.Leases, Burst: row.Burst, BurstCap: row.BurstCap, Capped: row.Capped, Expiring: row.Expiring,
 		Stale: row.Stale, Unknown: append([]string{}, row.Unknown...), SkipLevel: row.SkipLevel}
 	if !row.SampleAt.IsZero() {

@@ -27,6 +27,13 @@ All notable changes to Watchyard are recorded here. The format follows
   times and recent samples, other machines' recent leases (no session ids), plus the calling
   machine's own folders, and nothing else. `wy account next` reads it, so upgrade the hub
   before the machines. Schema version 15 adds `account_lease`.
+- `wy account next` (`lanes`) calibrates each account: its meter factor (5-hour points per
+  million token units), its 5-hour-to-weekly ratio and its lane price adjust themselves to
+  its measured use after about 3 days and 20 measurements, restart after a run of one-sided
+  misses or a change of login, and a margin covers the meter's recent under-reading. The
+  hub does the work every 15 minutes and returns the factors in `GET /v1/usage`; without a
+  hub the account is fitted from this machine's data. `--json` and `--explain` show the
+  factors. Schema version 16 adds `seat_calibration`.
 
 ### Changed
 
