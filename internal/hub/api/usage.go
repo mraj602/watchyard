@@ -10,7 +10,8 @@ import (
 )
 
 // GET /v1/usage (setup.md 8.5, tokens.md 3): each seat's limit windows, recent samples,
-// other machines' recent leases and its calibration factors for `wy account next`, readable with a machine token. It is the owner's own seat usage,
+// other machines' recent leases, the calling machine's own of the last 5 hours (each with its session's
+// burn for its first 5 hours) and its calibration factors for `wy account next`, readable with a machine token. It is the owner's own seat usage,
 // percentages and times only: no email, no org name, no session, project or message, and
 // places and signed-out folders only of the calling machine. Scopes read or write.
 func init() {
@@ -24,6 +25,10 @@ const (
 	usageMaxSamples   = 5000
 	usageLeasesFor    = 7 * 24 * time.Hour
 	usageMaxLeases    = 500
+	// usageLeaseLife is the lease life: a younger lease with a session id is recent and its
+	// burn is measured, for at most usageMaxBurn leases per seat and list.
+	usageLeaseLife = 5 * time.Hour
+	usageMaxBurn   = 200
 )
 
 // UsageDoc is api.yaml UsageDoc.
@@ -48,6 +53,8 @@ type UsageSeat struct {
 	SignedOut    []UsageSlot       `json:"signed_out"`
 	// Leases are other machines' picks of the last 7 days, oldest first (setup.md 8.5).
 	Leases []store.UsageLease `json:"leases"`
+	// OwnLeases are the calling machine's picks of the last 5 hours, measured the same way.
+	OwnLeases []store.UsageLease `json:"own_leases"`
 	// Calibration is the seat's calibration factors as the hub's calibration job stored them
 	// (api.yaml Calibration), null before its first run for the seat.
 	Calibration json.RawMessage `json:"calibration"`
@@ -88,6 +95,7 @@ func (s *Server) machineUsage(w http.ResponseWriter, r *http.Request) {
 		m := caller.MachineID
 		out.Machine = &m
 	}
+	burns := store.BurnCache{}
 	for _, x := range rows {
 		ws, err := s.store.Windows(r.Context(), x.ID, nil, time.Time{}, true)
 		if err != nil {
@@ -99,14 +107,24 @@ func (s *Server) machineUsage(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, err)
 			return
 		}
-		ls, err := s.store.UsageLeases(r.Context(), x.ID, caller.MachineID, now.Add(-usageLeasesFor), usageMaxLeases)
+		q := store.LeaseQuery{Seat: x.ID, Machine: caller.MachineID, Since: now.Add(-usageLeasesFor), Limit: usageMaxLeases,
+			Now: now, Life: usageLeaseLife, MaxBurn: usageMaxBurn}
+		ls, err := s.store.UsageLeases(r.Context(), q, burns)
 		if err != nil {
 			s.fail(w, err)
 			return
 		}
+		own := []store.UsageLease{}
+		if caller.MachineID != "" {
+			q.Own, q.Since = true, now.Add(-usageLeaseLife)
+			if own, err = s.store.UsageLeases(r.Context(), q, burns); err != nil {
+				s.fail(w, err)
+				return
+			}
+		}
 		seat := UsageSeat{ID: x.ID, Account: x.Account, Org: x.Org, Label: x.Label, Windows: windowsOf(ws, now),
 			Samples: sm, LiveSessions: x.LiveSessions, Places: []UsageSlot{}, SignedOut: []UsageSlot{}, Leases: ls,
-			Calibration: cal[x.ID]}
+			OwnLeases: own, Calibration: cal[x.ID]}
 		if seat.Samples == nil {
 			seat.Samples = []store.SampleRow{}
 		}

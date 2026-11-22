@@ -1,6 +1,8 @@
 package api_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -77,7 +79,7 @@ func TestUsageForMachineToken(t *testing.T) {
 	if len(seats) != 1 {
 		t.Fatalf("seats %s", doc["seats"])
 	}
-	if got := strings.Join(keysOf(seats[0]), ","); got != "account,calibration,id,label,leases,live_sessions,org,places,samples,signed_out,windows" {
+	if got := strings.Join(keysOf(seats[0]), ","); got != "account,calibration,id,label,leases,live_sessions,org,own_leases,places,samples,signed_out,windows" {
 		t.Errorf("seat keys %s", got)
 	}
 	var seat struct {
@@ -166,8 +168,9 @@ func tokenRec(t *testing.T, machine, sid string, at time.Time, input, output int
 	return b
 }
 
-// GET /v1/usage lists other machines' leases of the seat, with launched, ended and burned
-// units from their sessions, and never their session id or machine (setup.md 8.5).
+// GET /v1/usage lists other machines' leases of the seat, with launched, ended and seen from
+// their sessions, and never their session id or machine (setup.md 8.5). A recent lease has
+// its burn even when its session ended.
 func TestUsageLeases(t *testing.T) {
 	h := startHub(t, "")
 	machine := h.token("machine")
@@ -218,15 +221,18 @@ func TestUsageLeases(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	if got := strings.Join(keys, ","); got != "at,burned_units,c5,cf,ended,has_session,kind,launched,seen,urgent" {
+	if got := strings.Join(keys, ","); got != "at,burn,burned_units,c5,cf,ended,has_session,id,kind,launched,seen,session_hash,urgent" {
 		t.Errorf("lease keys %s", got)
 	}
 	a, b := ls[0], ls[1]
+	sum := sha256.Sum256([]byte(sid))
 	if a["has_session"] != true || a["launched"] != true || a["ended"] != true || a["seen"] != true ||
-		a["burned_units"] != 200.0 || a["kind"] != "aggressive" || a["c5"] != 8.0 || a["urgent"] != false {
-		t.Errorf("first lease %v (burned = 100 + 5 × 20)", a)
+		a["burned_units"] != 200.0 || a["burn"] == nil || a["kind"] != "aggressive" || a["c5"] != 8.0 || a["urgent"] != false ||
+		a["id"] != "01JB0000000000000000000002" || a["session_hash"] != hex.EncodeToString(sum[:]) {
+		t.Errorf("first lease %v (burned = 100 + 5 × 20, ended but recent)", a)
 	}
-	if b["has_session"] != false || b["launched"] != false || b["seen"] != false || b["burned_units"] != 0.0 {
+	if b["has_session"] != false || b["launched"] != false || b["seen"] != false || b["burned_units"] != 0.0 ||
+		b["burn"] != nil || b["session_hash"] != nil {
 		t.Errorf("second lease %v", b)
 	}
 	var ph struct {
@@ -238,4 +244,83 @@ func TestUsageLeases(t *testing.T) {
 	if len(ph.Seats[0].Leases) != 3 {
 		t.Errorf("a token with no machine sees %d leases, want all 3", len(ph.Seats[0].Leases))
 	}
+}
+
+// A recent lease (younger than 5 hours, with a session id) carries its session's burn per
+// minute from the pick to 5 hours after it, from every machine's token rows; the calling
+// machine's own recent leases come in own_leases (setup.md 8.5).
+func TestUsageLeaseBurn(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	h := startHubClock(t, func() time.Time { return now })
+	machine := h.token("machine")
+	phone := h.token("phone")
+	other := startHubDevice(t, h, "machine")
+	const live = "11111111-1111-4111-8111-111111111111"
+	const old = "22222222-2222-4222-8222-222222222222"
+	const mine = "33333333-3333-4333-8333-333333333333"
+	pick := now.Add(-40 * time.Minute)
+	h.ingest(other.token,
+		slotLoginRec(t, other.machine, "~/.claude-9", acctUUID, now.Add(-8*time.Hour)),
+		leaseRec(t, other.machine, pick, "01JB0000000000000000000011", live, true),
+		simpleHook(t, other.machine, live, "SessionStart", pick.Add(time.Second)),
+		tokenRec(t, other.machine, live, pick.Add(-time.Minute), 5000, 0),                       // before the pick
+		tokenRec(t, other.machine, live, pick.Add(10*time.Second), 1000, 0),                     // minute 1
+		tokenRecKey(t, other.machine, live, "k2", pick.Add(50*time.Second), 0, 100),             // minute 1 too: 500
+		tokenRecKey(t, other.machine, live, "k3", pick.Add(20*time.Minute+time.Second), 300, 0), // a later minute
+		leaseRec(t, other.machine, now.Add(-6*time.Hour), "01JB0000000000000000000012", old, true),
+		tokenRec(t, other.machine, old, now.Add(-6*time.Hour+time.Minute), 1000, 0))
+	// This machine's lease, whose lane runs on the other machine.
+	h.ingest(machine, slotLoginRec(t, h.machine, "~/.claude-2", acctUUID, now.Add(-8*time.Hour)),
+		leaseRec(t, h.machine, now.Add(-10*time.Minute), "01JB0000000000000000000013", mine, true),
+		leaseRec(t, h.machine, now.Add(-6*time.Hour), "01JB0000000000000000000014", "", true)) // past the 5 hours
+	h.ingest(other.token, tokenRec(t, other.machine, mine, now.Add(-5*time.Minute), 70, 0))
+
+	type lease struct {
+		ID          string        `json:"id"`
+		BurnedUnits float64       `json:"burned_units"`
+		Burn        *[][2]float64 `json:"burn"`
+		Seen        bool          `json:"seen"`
+	}
+	var doc struct {
+		Seats []struct {
+			Leases    []lease `json:"leases"`
+			OwnLeases []lease `json:"own_leases"`
+		} `json:"seats"`
+	}
+	h.get("/v1/usage", machine, &doc)
+	if len(doc.Seats) != 1 || len(doc.Seats[0].Leases) != 2 {
+		t.Fatalf("%+v", doc.Seats)
+	}
+	o, l := doc.Seats[0].Leases[0], doc.Seats[0].Leases[1]
+	if o.ID != "01JB0000000000000000000012" || o.Burn != nil || o.BurnedUnits != 0 || !o.Seen {
+		t.Errorf("a lease past its 5 hours: %+v", o)
+	}
+	want := [][2]float64{{50, 1500}, {1201, 300}}
+	if l.Burn == nil || fmt.Sprint(*l.Burn) != fmt.Sprint(want) || l.BurnedUnits != 1800 {
+		t.Errorf("live lease burn %+v, want %v (sum 1800)", l, want)
+	}
+	own := doc.Seats[0].OwnLeases
+	if len(own) != 1 || own[0].ID != "01JB0000000000000000000013" || own[0].Burn == nil || own[0].BurnedUnits != 70 {
+		t.Errorf("own leases %+v, want the live one with its lane's 70 units", own)
+	}
+	var ph struct {
+		Seats []struct {
+			OwnLeases []lease `json:"own_leases"`
+		} `json:"seats"`
+	}
+	h.get("/v1/usage", phone, &ph)
+	if ph.Seats[0].OwnLeases == nil || len(ph.Seats[0].OwnLeases) != 0 {
+		t.Errorf("a token with no machine: own_leases %v, want []", ph.Seats[0].OwnLeases)
+	}
+}
+
+func tokenRecKey(t *testing.T, machine, sid, key string, at time.Time, input, output int64) []byte {
+	t.Helper()
+	r, err := record.NewTokenRows(record.Meta{Machine: machine, Client: "wy/0.6.0", Now: at}, record.TokenRowsPayload{
+		Rows: []record.TokenRow{{Key: key, TS: at.Format(time.RFC3339Nano), SessionID: sid, Input: input, Output: output}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := r.Encode()
+	return b
 }

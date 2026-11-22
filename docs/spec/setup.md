@@ -924,7 +924,8 @@ eligible.
 **Hub data.** When `hub.url` is set, `wy` reads `GET /v1/usage?since=<now − 26 h>` with
 this machine's token (`<state>/token`, `wy connect`; tokens.md 3): per seat its ids, label,
 limit windows, samples since then (with their source and `resets_at`), live sessions, the
-leases other machines recorded in the last 7 days (below), and this machine's places and
+leases other machines recorded in the last 7 days and this machine's own leases of the last 5
+hours, each with what the hub measured of its session (below), and this machine's places and
 signed-out folders. Without a machine token, or when the hub answers 404 (a hub older than
 this `wy`) and `<state>/board/token.json` holds a read token (`wy board connect`), it reads
 `GET /v1/accounts` and, for each seat a local folder matches,
@@ -952,7 +953,8 @@ outbox keeps sent records for `outbox.keep_days`) is read too. For `five_hour` a
 `seven_day`, a local reading of the same seat (account and org, else the same folder) newer
 than the hub's replaces it, and local readings newer than the hub's newest sample are added
 to the history. Without a hub, or when the hub cannot be read, local readings are all there
-is: the output says `local data` and, in `--explain`, that other machines' use is missing.
+is: the output says `local data` and, in `--explain`, that other machines' use is missing
+(their leases then come from the kept copy of the last hub read, Leases and the ledger).
 Live sessions and claude.ai (web) readings are known only from the hub. The `lanes` strategy
 also reads the outbox's `token_rows` and `hook_event` records (record.md 4.1, 4.4) of the same
 7 days, in the same pass: the token meter below. Token rows are merged per `key` over their
@@ -1020,27 +1022,43 @@ its `seven_day` reading; an account with neither has no reading time.
    5-hour reading over 5 hours old, gives `h = 0`; no 5-hour reading gives `h = 0`. No weekly
    reading leaves the weekly level **unknown**.
 2. *Token meter.* Weighted units `u = input + 5 × output + 1.25 × cache_5m + 2 × cache_1h +
-   0.1 × cache_read` of this machine's token rows (outbox) of the sessions of that seat. A
-   session's seat is that of its lease, else that of its hook events, else the login of the
-   row's `slot`. `m5` = units since the later of `ts` and the start of the current 5-hour
+   0.1 × cache_read` of the token rows of the sessions of that seat: this machine's token rows
+   (outbox), except that a leased session whose burned units come from the hub (3) is counted
+   from the hub's per-minute units of it (`burn`) instead of this machine's rows of the lease's
+   life. A session's seat is that of its lease, else that of its hook events, else the login
+   of the row's `slot`. Other machines' sessions without a recent lease are not in the meter:
+   only readings show their use. `m5` = units since the later of `ts` and the start of the current 5-hour
    window: while the reading's window is open that is `resets_at − 5 h`; when it has ended,
    the next window starts at the first token after its reset (and so on, 5 hours each), and
    the reading's `h` no longer counts. `m7` = units since the later of the weekly reading's
    time and the last weekly reset. `h += f × m5 + g5`, `w += f × m7 / ρ + g7`, with the
    account's calibrated `f` and `ρ` and its meter margins `g5`, `g7` (Calibration).
-3. *Leases* (the ledger, below, and other machines' leases from the hub). For each lease of
-   this machine, `b = f ×` the units its session used since the lease (0 for a lease without
-   a session id). Other machines' leases have `b = 0`: their sessions' tokens are not in this
-   machine's meter, so their leases keep their full charge while active. A lease without
-   its own `c5`/`cf` is charged the account's current `c`. A lease counts as
-   launched when the ledger has its `launched` line, or this machine's hook events or token
-   rows show its session since the pick. A lease younger than 5 hours whose session has not
-   ended is *active*: it adds `max(0, c − b)` to `h`, the same divided by `ρ` to `w`, and
-   `max(0, cf − b)` to the reserve. A lease that is no longer active and whose session the
-   meter (or, for another machine's lease, the hub) never saw keeps its weekly charge
-   `max(0, c − b) / ρ` until there is a reading at least 10 minutes after it or a weekly reset
-   after it. A session that never sends a token stays charged in full until its lease ends: a
-   deliberate double count on the safe side.
+3. *Leases* (the ledger, below, and other machines' leases from the hub). A lease's
+   *burned* units are the weighted units its session used since the pick, taken from one
+   source, the larger of: *local*, this machine's token rows of the session (another
+   machine's lease has a local session when its `session_hash` is that of a session in this
+   machine's outbox); and *hub*, the per-minute units the hub measured for a lease younger than
+   5 hours (`burn`, from the token rows of every machine). With neither it is *none* (0), and so is a
+   lease without a session id. `b = f × burned`. The meter (2) counts that session from the
+   same source, so each token of a leased session counts once: a token before the reading is
+   in the reading, one after it is in the meter, and the lease adds only the part of its
+   expected cost not burned yet. A lease without its own `c5`/`cf` is charged the account's
+   current `c`. A lease counts as launched when the ledger has its `launched` line, this
+   machine's hook events or token rows show its session since the pick, or the hub has its
+   session (`launched`; for this machine's leases from `own_leases`, matched by lease id). Its
+   session has *ended* when the ledger has its `ended` line, this machine's hook events end it
+   (`SessionEnd`), or the hub says so (`ended`: `SessionEnd`, or gone from the session list).
+   A lease is *active* while it is younger than 5 hours and its session has not ended. Another
+   machine's lease whose burned units nothing can measure (no `burn`, because the hub could
+   not be read and the kept copy below is used, or the hub is older than this `wy`; and no
+   local session) is also *settled*, and no longer active, once the account has a reading at
+   least 10 minutes after the pick: that reading includes the lane's use so far, and charging
+   it as well would count it twice. An active lease adds `max(0, c − b)` to `h`, the same
+   divided by `ρ` to `w`, and `max(0, cf − b)` to the reserve. A lease that is no longer active
+   and whose session neither source ever saw keeps its weekly charge `max(0, c − b) / ρ` until
+   there is a reading at least 10 minutes after it or a weekly reset after it (so a settled
+   lease keeps none). A session that never sends a token stays charged in full until its lease
+   ends or settles: a deliberate double count on the safe side.
 4. *Unexplained use* (only for an account with claude.ai readings, source `web`, in the hub's
    history). The rate `r` is measured on the web `five_hour` readings of the current window in
    the last 60 minutes of web readings. *Clean* intervals come first: two consecutive web
@@ -1058,6 +1076,14 @@ its `seven_day` reading; an account with neither has no reading time.
    since it); or it is older than 6 hours with a lease since it; or there is no reading time.
 6. `w` and `h` are kept within 0–100. The *reserve level* is `w` before the active leases'
    5-hour charges plus the active leases' reserve divided by `ρ`.
+
+*What leases and the meter cannot see.* A leased session's tokens are counted twice only while
+they are in a reading but not yet on the hub (another machine's flush delay), and a minute of
+`burn` that straddles the reading counts as after it. A settled lease stops charging the rest
+of its expected cost, which only later readings show. Other machines' sessions without a live
+lease, and a leased session's tokens after its lease's 5 hours, are seen only through readings
+(`claude -p` sends none). With the hub down, the kept copy has no lease taken after the last
+hub read, and a lease it lists as not launched is dropped 10 minutes after its pick.
 
 *Eligibility*, after the rules every strategy applies first (logged in on this machine, not
 signed out on the hub, not `exclude`d, inside its `hours` and `days`):
@@ -1243,11 +1269,28 @@ session ends (`ended`) or 5 hours after the pick; its weekly charge may stay lon
 known is also appended to the outbox as an `account_lease` record (record.md 4.10) and, when
 `hub.url` is set, a background `wy flush` is started (debounced like the hook's);
 `wy account next` never waits for it, and works the same with the hub down.
-The hub returns other machines' leases in `/v1/usage` (api.yaml `UsageLease`: time, urgent,
-charges, whether the session started or ended, and the weighted units its token rows used
-since the lease; no session id and no machine), and `lanes` counts them like its own (with
-`b = 0`, above), so two
-machines launching at once spread over the accounts once their records arrive.
+The hub returns per seat in `/v1/usage` the leases other machines recorded in the last 7 days
+(`leases`) and this machine's own leases of the last 5 hours (`own_leases`), each (api.yaml
+`UsageLease`) with its lease id, time, urgent, charges, whether its session started and
+whether it ended, whether the hub has a token row of the session since the pick (`seen`), a
+hash of the session id (`session_hash`, the SHA-256 of the id in hex: it names the session
+only to a machine that already has it) and, for a *recent* lease (younger than 5 hours, with a
+session id, whether or not its session ended), the session's weighted token units from the
+pick to 5 hours after it, per minute (`burn`: pairs of the seconds after the pick of the minute's newest
+row, rounded up, and the minute's units) and their sum (`burned_units`); no session id and no
+machine. To stay cheap, the hub measures `burn` only for recent leases, at most 200 per seat
+(the newest; the others get `burn: null`), each with one read of that session's token rows by
+the `token_row_session` index, cached for the request; an older lease costs one existence
+probe (`seen`). `lanes` counts other machines' leases like its own (above), so two machines
+launching at once spread over the accounts once their records arrive, and nothing is counted
+both in a reading and as a lease's charge.
+
+**Kept copy.** After every hub read (not with `--no-reserve`), the other machines' leases
+that can still charge (younger than 5 hours, or never seen) are written, without `burn`, to
+`<state>/next/hub_leases.json` (mode 0600) by account key, with the read time. When the hub
+cannot be read (not with `--no-hub`, which uses local data only), a copy under 7 days old
+gives the other machines' leases; having no `burn`,
+they settle (above).
 
 **The other strategies** read the same ledger: the pending reservations `p` of an account are
 its leases younger than `next.reserve_min`, `spread` uses each account's newest lease and
@@ -1399,10 +1442,17 @@ Unknown fields are reported by `wy doctor` as unknown keys.
   also has `kind` and `lanes`: `{"weekly_pct", "five_hour_pct", "weekly_reserve_pct",
   "hours_to_reset", "reading_at", "reading_age_min", "five_hour_resets_at", "meter_5h_pct",
   "meter_7d_pct", "unexplained_5h_pct", "leases", "burst", "burst_cap", "capped",
-  "last_lease", "expiring", "stale", "unknown": [...], "skip_level", "calibration"}`
+  "last_lease", "expiring", "stale", "unknown": [...], "skip_level", "calibration",
+  "lease_charges": [...]}`
   (`leases` = active leases, `burst` = leases in the last 60 minutes, `meter_*` the token
   meter's points with its margins, `skip_level` 0 for a burst cap only, 1 stale, 2 a protected
-  rule, 3 a hard limit). `calibration` is `{"source": "hub"|"cached"|"local", "at", "since",
+  rule, 3 a hard limit). `lease_charges` lists the account's leases younger than 5 hours and
+  older ones that still keep a weekly charge, oldest first: `{"at", "machine": "this"|"other",
+  "session_id" (this machine's leases only), "copy" (true: from the kept copy), "launched",
+  "state": "active"|"settled"|"ended"|"expired", "burned_from": "local"|"hub"|"none",
+  "burned_units", "burned_pct", "charge_5h_pct", "reserve_pct", "weekly_kept_pct"}` (`burned_pct`
+  = `b`, `charge_5h_pct` = `max(0, c − b)` while active, `reserve_pct` = `max(0, cf − b)` while
+  active, `weekly_kept_pct` the weekly charge kept after it). `calibration` is `{"source": "hub"|"cached"|"local", "at", "since",
   "reset_reason", "f", "ratio", "lane_price": {"value", "fallback", "measured", "weight", "n",
   "days", "implausible"}, "lane_charge", "lane_units", "unexplained_pct_per_hour",
   "unexplained_hours", "corrector_5h", "corrector_7d", "margin_5h_pct", "margin_7d_pct",
@@ -1415,7 +1465,10 @@ Unknown fields are reported by `wy doctor` as unknown keys.
 - `--explain`: the same as a table, then the pick lines. For `lanes`: kind, weekly level
   (reserve level for protected) and reset, 5-hour level, leases and burst, data source and
   age, why; then one calibration line per account: `f`, `ρ`, the lane charge, their source and
-  weights, the margins and the unexplained rate. For the projection strategies: 5 h
+  weights, the margins and the unexplained rate; then one line per lease of `lease_charges`:
+  account, pick time, this or another machine (and the kept copy), state, the burned units,
+  where they came from (`local`, `hub` or `none`) and `b`, and the lease's 5-hour charge, reserve
+  and kept weekly charge. For the projection strategies: 5 h
   now→end/cap, 7 d now→reset/cap, other windows, data source and age, why.
 - `--exec [-- <cmd> [args...]]`: runs `<cmd>` (default `claude`) found on `PATH` with the
   pick's `CLAUDE_CONFIG_DIR` (unset for the default view of `~/.claude`), replacing `wy` (on
