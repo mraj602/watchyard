@@ -89,6 +89,10 @@ const (
 	'due_at', a.due_at, 'fired_at', a.fired_at, 'fire_count', a.fire_count, 'snoozed_until', a.snoozed_until, 'seen_at', a.seen_at)
 	FROM alert a WHERE a.session_id = s.id AND a.status IN ('pending', 'fired', 'snoozed', 'seen')
 	AND a.episode = 's:' || s.id || ':' || st.state || ':' || st.since_at LIMIT 1)`
+	// sessionSeenExpr is 1 when the current episode's alert is seen (push.md 4): the session
+	// is hidden from the needs-you list and counts until its state changes (a new episode).
+	sessionSeenExpr = `EXISTS (SELECT 1 FROM alert a WHERE a.session_id = s.id AND a.status = 'seen'
+	AND a.episode = 's:' || s.id || ':' || st.state || ':' || st.since_at)`
 	sessionFrom = ` FROM session s LEFT JOIN session_state st ON st.session_id = s.id LEFT JOIN seat se ON se.id = s.seat_id
 	LEFT JOIN machine m ON m.id = s.machine_id LEFT JOIN slot sl ON sl.id = s.slot_id`
 )
@@ -457,7 +461,7 @@ func liveArgs(now time.Time) []any {
 // Counts counts live sessions: open and not dormant (states.md 5).
 func (s *Store) Counts(ctx context.Context, now time.Time) (SessionCounts, error) {
 	var c SessionCounts
-	err := s.r.QueryRowContext(ctx, `SELECT coalesce(sum(`+sessionStateExpr+` = 'working'), 0), coalesce(sum(`+sessionNeedsExpr+` = 1), 0),
+	err := s.r.QueryRowContext(ctx, `SELECT coalesce(sum(`+sessionStateExpr+` = 'working'), 0), coalesce(sum(`+sessionNeedsExpr+` = 1 AND NOT `+sessionSeenExpr+`), 0),
 		coalesce(sum(`+sessionStateExpr+` = 'done'), 0), count(*)`+sessionFrom+` WHERE `+liveNowCondition,
 		liveArgs(now)...).Scan(&c.Working, &c.NeedsYou, &c.Done, &c.Live)
 	return c, err

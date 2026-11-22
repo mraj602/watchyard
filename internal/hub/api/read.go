@@ -214,9 +214,15 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	for i := range needs {
-		needs[i] = withFocus(needs[i], dev)
+	// A session whose current alert is seen is hidden until its state changes (push.md 4).
+	shown := needs[:0]
+	for _, n := range needs {
+		if n.Alert != nil && string(n.Alert.Status) == "seen" {
+			continue
+		}
+		shown = append(shown, withFocus(n, dev))
 	}
+	needs = shown
 	machines, err := s.store.Machines(r.Context(), nil, now)
 	if err != nil {
 		s.fail(w, err)
