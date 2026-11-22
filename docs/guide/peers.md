@@ -216,6 +216,44 @@ wy config set peers.hub_may_widen false
 human prompt. New matrices start with no limit; the rates above still apply. Typing in either
 session, or **Resume thread** on the board, resets the count.
 
+## Let Doorbell wake sessions (Linux)
+
+Doorbell (the `agent-doorbell` Python package) watches for events (CI results, alerts)
+and hands each one to `wy peers send tag:<tag> --stdin`. Watchyard normally refuses a send
+from anything that is not a Claude Code session; Doorbell is the one program you can approve
+as a trusted sender. It can send only to tags, never to a session by name, and never as a
+reply. It sends as one of your accounts, so the matrix and the rate limits apply as usual.
+
+1. Start the agent if it is not running: `wy agent enable`.
+2. At a terminal on the machine Doorbell runs on (not inside a Claude Code session), run:
+
+   ```sh
+   wy peers trust doorbell
+   ```
+
+   `wy` finds `doorbell` on `PATH` (or use `--program <script or venv>`) and resolves it to
+   its virtual environment and Python. It asks which account Doorbell sends as (the first
+   account by default; `--account <label>` skips the question) and then asks y/N.
+3. Make sure the matrix lets that account message the accounts of the sessions holding the
+   tag. A session gets a tag with `wy peers tag add <tag>`.
+4. Set Doorbell's handoff command to `wy peers send tag:<tag> --stdin` (add `--one` to wake
+   only the first holder).
+
+The receiving session sees `[Watchyard] from doorbell (service) on <machine> · account <label>
+· tag <tag> · thread <id>`. Doorbell reads no replies.
+
+`wy peers trust` shows the approval. To revoke it, run `wy peers trust doorbell --off` at the
+terminal, or use Settings → Peers → Trusted senders → **Revoke** on the board or the Android
+app. The hub refuses Doorbell's messages at once, and the machine deletes its approval the next
+time it reads the directory. Only the terminal can approve it again. If you upgrade Doorbell
+in the same venv, nothing changes. A different venv, or a different Python, needs a new
+approval.
+
+This is Linux only for now; on macOS and Windows `wy peers trust` says it is not supported.
+It does not protect against a hostile program running as your user: such a program could
+impersonate Doorbell's process tree. See
+[peers.md section 4.1a](../spec/peers.md#41a-the-trusted-sender-doorbell-130).
+
 ## Turning it off
 
 | Switch | Scope | How |

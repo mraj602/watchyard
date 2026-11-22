@@ -18,6 +18,19 @@ All notable changes to Watchyard are recorded here. The format follows
   account add` ask once per account. A machine's own `next.accounts.<key>.mode` still wins on
   that machine and is shown as "set on this machine"; an account with no mode shows "Not
   chosen yet; treated as aggressive." (unchanged behaviour).
+- **Doorbell as a trusted sender** (Linux): `wy peers trust doorbell` at a terminal approves
+  the Doorbell program on this machine to send to tags (`wy peers send tag:<tag> [--one]
+  --stdin`) as one chosen account. The agent checks the sender itself from the socket's peer
+  credentials and `/proc` (interpreter and script in the approved venv), never from the
+  request. Doorbell never sends to a session by name or as a reply. Its messages carry the
+  header "from doorbell (service) on <machine>", and the matrix, the limits and the audit
+  (`service:doorbell`) apply. To revoke it, run `wy peers trust doorbell --off`, or use
+  Settings → Peers → Trusted senders on the board or the phone. The hub has `peer_trust`
+  (migration 0021) and `GET /v1/peers/trusted`, `POST /v1/peers/trusted/revoke`.
+- **Tags in the UI**: session rows on the board and the phone show the session's tags as chips;
+  search matches tags, and `tag:<name>` matches one tag exactly (a chip sets it). Settings →
+  Peers lists every tag with its holders and the trusted senders that sent to it recently.
+  `Session.tags` in the read API.
 
 ### Changed
 
