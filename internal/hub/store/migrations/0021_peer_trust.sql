@@ -11,6 +11,7 @@ CREATE TABLE peer_trust (
   interpreter   TEXT    NOT NULL,
   venv          TEXT    NOT NULL,
   approved_at   INTEGER NOT NULL,
+  test_build    INTEGER NOT NULL DEFAULT 0 CHECK (test_build IN (0, 1)), -- made by a trusttest build (peers.md 15)
   revoked_at    INTEGER,
   revoked_by    TEXT,                              -- a device id, or 'cli' (wy peers trust doorbell --off)
   updated_at    INTEGER NOT NULL,

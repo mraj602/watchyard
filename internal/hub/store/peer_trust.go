@@ -18,19 +18,23 @@ type PeerTrustRow struct {
 	Account, Program, Interpreter, Venv  string
 	ApprovedAt, RevokedAt, UpdatedAt     int64
 	RevokedBy                            string
+	// TestBuild: a trusttest build made the record (peers.md 10); the board says so.
+	TestBuild bool
 }
 
 // Active reports whether the row allows trusted sends: approved and not revoked since.
 func (r PeerTrustRow) Active() bool { return r.ApprovedAt > 0 && r.RevokedAt == 0 }
 
 const peerTrustSelect = `SELECT t.machine_id, coalesce(m.name, ''), t.sender, t.device_id, t.account, t.program, t.interpreter, t.venv,
-	t.approved_at, coalesce(t.revoked_at, 0), t.updated_at, coalesce(t.revoked_by, '')
+	t.approved_at, coalesce(t.revoked_at, 0), t.updated_at, coalesce(t.revoked_by, ''), t.test_build
 	FROM peer_trust t LEFT JOIN machine m ON m.id = t.machine_id`
 
 func scanPeerTrust(sc interface{ Scan(...any) error }) (PeerTrustRow, error) {
 	var r PeerTrustRow
+	var tb int
 	err := sc.Scan(&r.Machine, &r.MachineName, &r.Sender, &r.Device, &r.Account, &r.Program, &r.Interpreter, &r.Venv,
-		&r.ApprovedAt, &r.RevokedAt, &r.UpdatedAt, &r.RevokedBy)
+		&r.ApprovedAt, &r.RevokedAt, &r.UpdatedAt, &r.RevokedBy, &tb)
+	r.TestBuild = tb != 0
 	return r, err
 }
 
@@ -57,15 +61,15 @@ func (tx *Tx) PutPeerTrust(r PeerTrustRow, nowMS int64) (changed bool, err error
 		return false, nil
 	}
 	if ok && r.ApprovedAt == old.ApprovedAt && old.RevokedAt == 0 && r.Account == old.Account && r.Program == old.Program &&
-		r.Interpreter == old.Interpreter && r.Venv == old.Venv && r.Device == old.Device {
+		r.Interpreter == old.Interpreter && r.Venv == old.Venv && r.Device == old.Device && r.TestBuild == old.TestBuild {
 		return false, nil
 	}
 	_, err = tx.exec(`INSERT INTO peer_trust (machine_id, sender, device_id, account, program, interpreter, venv, approved_at,
-		revoked_at, revoked_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+		revoked_at, revoked_by, updated_at, test_build) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
 		ON CONFLICT(machine_id, sender) DO UPDATE SET device_id = excluded.device_id, account = excluded.account,
 		program = excluded.program, interpreter = excluded.interpreter, venv = excluded.venv, approved_at = excluded.approved_at,
-		revoked_at = NULL, revoked_by = NULL, updated_at = excluded.updated_at`,
-		r.Machine, r.Sender, r.Device, r.Account, r.Program, r.Interpreter, r.Venv, r.ApprovedAt, nowMS)
+		revoked_at = NULL, revoked_by = NULL, updated_at = excluded.updated_at, test_build = excluded.test_build`,
+		r.Machine, r.Sender, r.Device, r.Account, r.Program, r.Interpreter, r.Venv, r.ApprovedAt, nowMS, r.TestBuild)
 	return err == nil, err
 }
 

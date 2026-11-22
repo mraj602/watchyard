@@ -1969,7 +1969,16 @@ paths:
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
-        "404": {$ref: "#/components/responses/NotFound"}
+        "404":
+          description: |
+            The hub has no trusted-sender record for that machine (its agent never reported one,
+            for example it is older than 1.3.0 or was offline since the approval). `code`
+            `not_found`, `error` "The hub has no trusted sender for this machine: its agent never
+            reported one. Revoke it on that machine with `wy peers trust doorbell --off`." The
+            board and the phone show this message (pwa.md 3.1).
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
 
   /v1/peers/audit:
     get:
@@ -3745,6 +3754,7 @@ components:
         interpreter: {type: string}
         venv: {type: string}
         approved_at: {type: string, format: date-time}
+        test_build: {type: boolean, description: "The record was made by a `trusttest` build (peers.md 15). It is honoured; the UI shows \"approved by a test build\"."}
         revoked_at: {type: [string, "null"], format: date-time}
         revoked_by: {type: [string, "null"], description: "A device id, or `cli` (wy peers trust doorbell --off)."}
         last_send_at: {type: [string, "null"], format: date-time}

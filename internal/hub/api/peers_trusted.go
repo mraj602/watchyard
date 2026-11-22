@@ -44,7 +44,7 @@ func (s *Server) trustedEntry(r *http.Request, t store.PeerTrustRow, labels map[
 	e := map[string]any{"sender": t.Sender, "machine": t.Machine, "machine_name": t.MachineName, "account": t.Account,
 		"account_label": nullable(labels[t.Account]), "program": t.Program, "interpreter": t.Interpreter, "venv": t.Venv,
 		"approved_at": msTime(t.ApprovedAt), "revoked_at": nil, "revoked_by": nullable(t.RevokedBy), "last_send_at": nil,
-		"sent_today": use.Since, "recent_tags": tags}
+		"sent_today": use.Since, "recent_tags": tags, "test_build": t.TestBuild}
 	if t.RevokedAt != 0 {
 		e["revoked_at"] = msTime(t.RevokedAt)
 	}
@@ -94,7 +94,7 @@ func (s *Server) trustedRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := s.Store().RevokePeerTrustOwner(r.Context(), body.Machine, body.Sender, caller.ID)
 	if errors.Is(err, store.ErrNotFound) {
-		auth.WriteError(w, http.StatusNotFound, "not_found", "that machine has no trusted sender")
+		auth.WriteError(w, http.StatusNotFound, "not_found", "The hub has no trusted sender for this machine: its agent never reported one. Revoke it on that machine with `wy peers trust doorbell --off`.")
 		return
 	}
 	if err != nil {

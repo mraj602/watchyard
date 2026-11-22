@@ -65,7 +65,7 @@ func TestTrustedSenders(t *testing.T) {
 	e := senders[0].(map[string]any)
 	if e["sender"] != "doorbell" || e["machine"] != trustMachineA || e["account"] != "acct-a" || e["account_label"] != "work" ||
 		e["program"] != "/v/bin/doorbell" || e["interpreter"] != "/py/bin/python3" || e["venv"] != "/v" ||
-		e["revoked_at"] != nil || e["revoked_by"] != nil || e["last_send_at"] == nil || e["approved_at"] == nil {
+		e["revoked_at"] != nil || e["revoked_by"] != nil || e["last_send_at"] == nil || e["approved_at"] == nil || e["test_build"] != false {
 		t.Fatalf("entry: %v", e)
 	}
 	if tags, _ := e["recent_tags"].([]any); len(tags) != 2 || tags[0].(map[string]any)["tag"] != "ci" || tags[1].(map[string]any)["tag"] != "deploy" {
@@ -123,8 +123,13 @@ func TestTrustedSenders(t *testing.T) {
 		t.Errorf("unknown machine: %d, want 404", st)
 	}
 	// A machine that exists but has no trusted sender is the same 404.
-	if st, _ := h.call("POST", "/v1/peers/trusted/revoke", h.owner, map[string]string{"machine": trustMachineB, "sender": "doorbell"}); st != 404 {
+	st, nf := h.call("POST", "/v1/peers/trusted/revoke", h.owner, map[string]string{"machine": trustMachineB, "sender": "doorbell"})
+	if st != 404 {
 		t.Errorf("machine without a row: %d, want 404", st)
+	}
+	const want404 = "The hub has no trusted sender for this machine: its agent never reported one. Revoke it on that machine with `wy peers trust doorbell --off`."
+	if nf["code"] != "not_found" || nf["error"] != want404 {
+		t.Errorf("404 body: %v", nf)
 	}
 
 	// The owner revokes: 200 with the entry; again: 200 and the first revocation stands.
@@ -170,5 +175,25 @@ func TestTrustedSenders(t *testing.T) {
 	if st, m := h.call("POST", "/v1/peers/trusted/revoke", phone.Token, map[string]string{"machine": trustMachineB, "sender": "doorbell"}); st != 200 ||
 		m["revoked_by"] != phone.Device.ID {
 		t.Errorf("phone revoke: %d %v", st, m)
+	}
+}
+
+// A row a trusttest build made reports test_build true in the list and in the revoke answer.
+func TestTrustedSenderTestBuild(t *testing.T) {
+	h := newResumeHub(t, true)
+	if err := h.st.Write(context.Background(), func(tx *store.Tx) error {
+		_, err := tx.PutPeerTrust(store.PeerTrustRow{Machine: trustMachineA, Sender: "doorbell", Device: h.machines[0], Account: "acct-a",
+			Program: "/v/bin/doorbell", Interpreter: "/py/bin/python3", Venv: "/v", ApprovedAt: 1000, TestBuild: true}, 2000)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, m := h.call("GET", "/v1/peers/trusted", h.owner, nil)
+	if e := m["senders"].([]any)[0].(map[string]any); e["test_build"] != true {
+		t.Errorf("list entry: %v", e)
+	}
+	st, e := h.call("POST", "/v1/peers/trusted/revoke", h.owner, map[string]string{"machine": trustMachineA, "sender": "doorbell"})
+	if st != 200 || e["test_build"] != true {
+		t.Errorf("revoke answer: %d %v", st, e)
 	}
 }

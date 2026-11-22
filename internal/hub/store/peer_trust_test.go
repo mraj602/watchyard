@@ -287,3 +287,49 @@ func TestAccountLabels(t *testing.T) {
 		t.Error("an unlabelled account is listed")
 	}
 }
+
+// test_build is stored and read back; a newer approval replaces it, and the same approval
+// with another test_build is a change while active.
+func TestPeerTrustTestBuild(t *testing.T) {
+	st, ctx, dev := trustStore(t)
+	r := trustRow(dev, "acct-a", 1000)
+	r.TestBuild = true
+	putTrust(t, st, ctx, r, 5000)
+	if !trustOf(t, st, ctx).TestBuild {
+		t.Fatal("test_build not stored")
+	}
+	all, err := st.PeerTrusts(ctx)
+	if err != nil || len(all) != 1 || !all[0].TestBuild {
+		t.Fatalf("PeerTrusts: %+v %v", all, err)
+	}
+	if !putTrust(t, st, ctx, trustRow(dev, "acct-a", 1000), 6000) || trustOf(t, st, ctx).TestBuild {
+		t.Fatal("the same approval without test_build did not replace it")
+	}
+	if !putTrust(t, st, ctx, func() store.PeerTrustRow { r := trustRow(dev, "acct-a", 2000); r.TestBuild = true; return r }(), 7000) ||
+		!trustOf(t, st, ctx).TestBuild {
+		t.Fatal("a newer approval did not set test_build")
+	}
+}
+
+// DeviceCaps reads client.caps from the last hello.
+func TestDeviceCaps(t *testing.T) {
+	st, ctx, dev := trustStore(t)
+	caps := func() []string {
+		var c []string
+		if err := st.Write(ctx, func(tx *store.Tx) (err error) { c, err = tx.DeviceCaps(dev); return }); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	if c := caps(); len(c) != 0 {
+		t.Fatalf("before a hello: %v", c)
+	}
+	for hello, want := range map[string]int{`{"client":{"kind":"agent"},"known":null}`: 0, `{"client":{"caps":["peer_service","x"]}}`: 2} {
+		if err := st.Write(ctx, func(tx *store.Tx) error { return tx.LinkConnected(dev, "ws", "", hello, 1) }); err != nil {
+			t.Fatal(err)
+		}
+		if c := caps(); len(c) != want {
+			t.Fatalf("hello %s: %v", hello, c)
+		}
+	}
+}

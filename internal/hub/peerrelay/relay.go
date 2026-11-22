@@ -286,7 +286,7 @@ func (r *Relay) trust(ctx context.Context, device string, m peers.PeerTrustUp) e
 		event := "trust"
 		if m.Op == "set" {
 			changed, err = tx.PutPeerTrust(store.PeerTrustRow{Machine: machine, Sender: m.Sender, Device: device, Account: m.Account,
-				Program: m.Program, Interpreter: m.Interpreter, Venv: m.Venv, ApprovedAt: approved.UnixMilli()}, now)
+				Program: m.Program, Interpreter: m.Interpreter, Venv: m.Venv, ApprovedAt: approved.UnixMilli(), TestBuild: m.TestBuild}, now)
 		} else {
 			event = "trust_off"
 			changed, err = tx.RevokePeerTrust(machine, m.Sender, "cli", now)
@@ -397,6 +397,11 @@ func (r *Relay) relay(ctx context.Context, device string, doc keys.Doc) (peers.P
 			if err != nil {
 				return err
 			}
+			if env.From.Machine != machine || env.From.Session != peers.ServiceSessionID(machine) {
+				r.Log.Printf("peers: trusted-sender message %s from machine %s refused: not_trusted", env.Msg, machine)
+				ack = refused(env.Msg, ReasonForbidden)
+				return nil
+			}
 			if !ok || !t.Active() || t.Account != env.From.Account {
 				r.Log.Printf("peers: trusted-sender message %s from machine %s refused: not_trusted", env.Msg, machine)
 				ack = refused(env.Msg, ReasonForbidden)
@@ -467,6 +472,15 @@ func (r *Relay) relay(ctx context.Context, device string, doc keys.Doc) (peers.P
 			}
 			if !slices.Contains(held, env.Tag) {
 				return refuse(peers.CodeUnknownTarget)
+			}
+			// Only an agent that announced it understands a trusted send takes one: an older
+			// agent would treat the envelope as a session's.
+			caps, err := tx.DeviceCaps(env.To.Device)
+			if err != nil {
+				return err
+			}
+			if !slices.Contains(caps, link.CapPeerService) {
+				return refuse(peers.ReasonReceiverTooOld)
 			}
 		}
 		// 3. accounts (the hub's view wins; a different claim is refused), matrix, loop

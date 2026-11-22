@@ -141,7 +141,11 @@ valid signature has used it.
   login to this hub's key, this device, this single-use nonce and its expiry; it carries no
   reusable secret.
 - `last`: the highest `seq` the device has processed (its own durable copy, 6.1).
-- `client.kind`: `android` or `agent`; `wy` sends `{"kind":"agent","wy":"0.9.0","os":"linux"}`. `client.ping_s` (optional): the device's own ping interval (2).
+- `client.kind`: `android` or `agent`; `wy` sends `{"kind":"agent","wy":"0.9.0","os":"linux","caps":["peer_service"]}`. `client.ping_s` (optional): the device's own ping interval (2).
+- `client.caps` (optional, a list of words; unknown words are ignored): what the device can take
+  beyond its version. `peer_service` (agents from 1.3.0): it understands a trusted sender's
+  `peer_msg` (`from.kind`, peers.md 4.1a, 8.4); the hub relays such a message only to an agent
+  whose last hello said so (peers.md 8.3). The hub keeps the hello in `link_state.hello`.
 - `known`: the newest matrix and revocation versions the device holds (machines only).
 
 The hub, in order:
@@ -378,7 +382,7 @@ re-pairing.
 | `peer_log` | `msg`, `thread`, `from_session`, `to_session`, `kind`, `status`, `detail?`, `size`, `at`, `from_kind?` and `tag?` (a trusted send, peers.md 4.1a); or `event`, `thread`, `detail`, `at` | Metadata of a same-machine delivery, for the audit (peers.md 10). With `event` it is instead this machine's event about a thread: `thread_resume_refused` (`detail` `hub_may_widen`): it refused a `peer_thread_resume` and keeps its stop (peers.md 6.3). The hub records it only when a session of the thread runs on this device's machine. |
 | `peers_list` | `id` | Ask for the session directory (peers.md 3); the hub answers `peers` with the same `id`. |
 | `peer_tag` | `id`, `session`, `op` (`add` or `rm`), `tag` | Add or remove one tag of a session on this device's machine (peers.md 3.4). The hub answers `peers` with the same `id`: the directory after the change, with `tag` set. |
-| `peer_trust` | `op` (`set` or `off`), `sender` (`doorbell`), and with `set`: `account`, `program`, `interpreter`, `venv`, `approved_at` | This machine's trusted-sender record (peers.md 4.1a): `set` on approval and whenever the hub's `trust` answer (6.3) lacks it or holds an older `approved_at`; `off` after `wy peers trust doorbell --off`. The hub keeps one `peer_trust` row per machine and sender (only a strictly newer `approved_at` replaces the row and clears a revocation, so a late report never undoes one) and answers nothing. From a phone, or a revoked device, it is dropped. |
+| `peer_trust` | `op` (`set` or `off`), `sender` (`doorbell`), and with `set`: `account`, `program`, `interpreter`, `venv`, `approved_at`, `test_build` (true when a `trusttest` build made the record, peers.md 15; omitted otherwise) | This machine's trusted-sender record (peers.md 4.1a): `set` on approval and whenever the hub's `trust` answer (6.3) lacks it or holds an older `approved_at`; `off` after `wy peers trust doorbell --off`. The hub keeps one `peer_trust` row per machine and sender (only a strictly newer `approved_at` replaces the row and clears a revocation, so a late report never undoes one) and answers nothing. From a phone, or a revoked device, it is dropped. |
 
 Unknown `t` → the hub answers `notice` `{"code":"unknown_type"}` and carries on (forward
 compatibility). A device→hub frame that names a session not on that device's machine is
