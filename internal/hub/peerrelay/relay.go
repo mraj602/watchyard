@@ -82,6 +82,19 @@ func (r *Relay) Up(ctx context.Context, device string, u link.Up) (string, any, 
 			return "", nil, err
 		}
 		return link.TypePeers, rep, nil
+	case link.TypePeerTag:
+		var q peers.PeerTagUp
+		_ = json.Unmarshal(u.Raw, &q)
+		ans, err := r.tag(ctx, device, q)
+		if err != nil {
+			return "", nil, err
+		}
+		rep, err := r.directory(ctx, device, q.ID)
+		if err != nil {
+			return "", nil, err
+		}
+		rep.Tag = &ans
+		return link.TypePeers, rep, nil
 	case link.TypePeerMsg:
 		var m peers.PeerMsgUp
 		if err := json.Unmarshal(u.Raw, &m); err != nil {
@@ -129,6 +142,10 @@ func (r *Relay) Directory(ctx context.Context) ([]peers.WireSession, error) {
 	if err != nil {
 		return nil, err
 	}
+	tags, err := r.Store.PeerTags(ctx)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]peers.WireSession, 0, len(ss))
 	count := map[string]int{}
 	for _, s := range ss {
@@ -161,6 +178,7 @@ func (r *Relay) Directory(ctx context.Context) ([]peers.WireSession, error) {
 		if d, ok := agents[s.MachineID]; ok {
 			w.Device = &d
 		}
+		w.Tags = tags[s.ID]
 		out = append(out, w)
 	}
 	return out, nil
@@ -209,6 +227,56 @@ func (r *Relay) directory(ctx context.Context, device, id string) (peers.PeersRe
 		}
 	}
 	return rep, nil
+}
+
+// ---- tags (peers.md 3.4) ----
+
+// tag applies one peer_tag: the session must be a live session of the asking device's machine
+// (a machine tags only its own sessions, as it reports only its own records), the tag a slug,
+// and a session holds at most peers.MaxTagsPerSession. A refusal is the answer's Error word;
+// err is only a store failure.
+func (r *Relay) tag(ctx context.Context, device string, q peers.PeerTagUp) (peers.TagAnswer, error) {
+	ans := peers.TagAnswer{Session: q.Session, Tags: []string{}}
+	if q.Op != peers.TagAdd && q.Op != peers.TagRm || !peers.ValidTag(q.Tag) {
+		ans.Error = peers.TagErrBadTag
+		return ans, nil
+	}
+	err := r.Store.Write(ctx, func(tx *store.Tx) error {
+		kind, machine, revoked, err := tx.DeviceMachine(device)
+		if err != nil || revoked || machine == "" || (kind != "machine" && kind != "desktop") {
+			ans.Error = peers.TagErrForbidden
+			return nil
+		}
+		s, ok, err := tx.PeerSession(q.Session)
+		if err != nil {
+			return err
+		}
+		switch {
+		case !ok || !s.Live:
+			ans.Error = peers.TagErrUnknown
+			return nil
+		case s.MachineID != machine:
+			ans.Error = peers.TagErrForbidden
+			return nil
+		}
+		if q.Op == peers.TagAdd {
+			ans.Changed, err = tx.AddPeerTag(q.Session, q.Tag, device, peers.MaxTagsPerSession, tx.NowMS())
+			if errors.Is(err, store.ErrTooManyTags) {
+				ans.Error, err = peers.TagErrTooMany, nil
+			}
+		} else {
+			ans.Changed, err = tx.RemovePeerTag(q.Session, q.Tag)
+		}
+		if err != nil {
+			return err
+		}
+		t, err := tx.SessionPeerTags(q.Session)
+		if t != nil {
+			ans.Tags = t
+		}
+		return err
+	})
+	return ans, err
 }
 
 // ---- relaying (peers.md 8.3) ----

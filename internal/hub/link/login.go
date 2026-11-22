@@ -253,7 +253,7 @@ func (h *Hub) up(ctx context.Context, s *session, u link.Up) (*link.Frame, error
 	switch u.T {
 	case link.TypeAction:
 		t, body = link.TypeActionResult, h.action(ctx, s.device, u)
-	case link.TypePeerMsg, link.TypePeerResult, link.TypePeerLog, link.TypePeersList:
+	case link.TypePeerMsg, link.TypePeerResult, link.TypePeerLog, link.TypePeersList, link.TypePeerTag:
 		switch {
 		case !isMachine(s.kind):
 			t, body = link.TypeNotice, link.Notice{V: 1, Code: link.NoticeForbidden, Message: "peer frames come from machines"}

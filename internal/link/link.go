@@ -60,6 +60,8 @@ const (
 	TypePeerResult = "peer_result"
 	TypePeerLog    = "peer_log"
 	TypePeersList  = "peers_list"
+	// TypePeerTag adds or removes a session's tag (peers.md 3.4); answered with `peers`.
+	TypePeerTag = "peer_tag"
 )
 
 // Queued and Ephemeral list the hub→device types (link.md 6.3, 6.4).

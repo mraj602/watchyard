@@ -146,6 +146,41 @@ func (r *Remote) directory() (*peers.PeersReply, error) {
 	}
 }
 
+// Tag is peers.Remote: one peer_tag to the hub (peers.md 3.4, link.md 6.2). The hub answers
+// with its directory after the change (a `peers` frame with the same id and `tag` set), which
+// replaces the cached one, so the holders the caller looks up next are current.
+func (r *Remote) Tag(session, op, tag string) (peers.TagAnswer, error) {
+	id := newID()
+	ch := make(chan *peers.PeersReply, 1)
+	r.mu.Lock()
+	r.lists[id] = ch
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		delete(r.lists, id)
+		r.mu.Unlock()
+	}()
+	if err := r.send(peers.PeerTagUp{T: link.TypePeerTag, ID: id, Session: session, Op: op, Tag: tag}); err != nil {
+		return peers.TagAnswer{}, err
+	}
+	wait := r.ListWait
+	if wait <= 0 {
+		wait = ListWait
+	}
+	select {
+	case rep := <-ch:
+		if rep == nil || rep.Tag == nil {
+			return peers.TagAnswer{}, errors.New("the hub does not take tags (it may be older than this wy; update it)")
+		}
+		r.mu.Lock()
+		r.cache.at, r.cache.reply = r.now(), rep
+		r.mu.Unlock()
+		return *rep.Tag, nil
+	case <-time.After(wait):
+		return peers.TagAnswer{}, errors.New("the hub did not answer")
+	}
+}
+
 // Sessions is peers.Remote: the other machines' sessions from the hub.
 func (r *Remote) Sessions() ([]peers.Session, error) {
 	rep, err := r.directory()
@@ -160,7 +195,8 @@ func (r *Remote) Sessions() ([]peers.Session, error) {
 		}
 		s := peers.Session{Entry: peers.RegistryEntry{SessionID: w.Session}, Account: w.Account,
 			AccountLabel: peers.CanonicalLabel(w.AccountLabel, w.Account), Handle: w.Handle, Aliases: append([]string(nil), w.Aliases...),
-			Name: w.Name, Project: w.Project, MachineName: w.Machine, Remote: true, State: w.State, Mode: peers.ModePrompting}
+			Name: w.Name, Project: w.Project, MachineName: w.Machine, Remote: true, State: w.State, Mode: peers.ModePrompting,
+			Tags: peers.NormTags(w.Tags)}
 		if w.Device != nil {
 			s.Device = *w.Device
 			if b := check(s.Device, w.Machine); b != nil {
@@ -185,7 +221,7 @@ func (r *Remote) Names() map[string]peers.HubName {
 	out := make(map[string]peers.HubName, len(rep.Sessions)+len(rep.Mine))
 	add := func(w peers.WireSession, mine bool) {
 		out[w.Session] = peers.HubName{Handle: w.Handle, Name: w.Name, Label: peers.CanonicalLabel(w.AccountLabel, w.Account),
-			Account: w.Account, Aliases: append([]string(nil), w.Aliases...), Mine: mine}
+			Account: w.Account, Aliases: append([]string(nil), w.Aliases...), Mine: mine, Tags: peers.NormTags(w.Tags)}
 	}
 	for _, w := range rep.Sessions {
 		add(w, w.MachineID == r.Env.Machine.ID)
