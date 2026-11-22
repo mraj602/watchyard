@@ -16,6 +16,7 @@ func TestNextKeys(t *testing.T) {
 		{"next.accounts.me@example.test.mode", "aggressive"},
 		{"next.accounts.me@example.test.cap_7d", "80"},
 		{"next.accounts.claude-7.mode", "conservative"},
+		{"next.accounts.claude-5.mode", "protected"},
 		{"next.accounts.work.hours", "09:00-18:00"},
 		{"next.accounts.work.days", "mon-fri"},
 		{"next.accounts.work.exclude", "true"},
@@ -47,6 +48,9 @@ func TestNextKeys(t *testing.T) {
 	if w := n.Accounts["work"]; !w.Exclude || w.Hours != "09:00-18:00" || w.Days != "mon-fri" {
 		t.Errorf("work %+v", w)
 	}
+	if n.Accounts["claude-5"].Mode != NextModeProtected {
+		t.Errorf("claude-5 %+v", n.Accounts["claude-5"])
+	}
 	if n.Accounts["~/.claude-3"].Priority != 1 {
 		t.Errorf("accounts %+v", n.Accounts)
 	}
@@ -55,6 +59,19 @@ func TestNextKeys(t *testing.T) {
 	}
 	if u := f.Unknown(); len(u) != 0 {
 		t.Errorf("unknown %v", u)
+	}
+}
+
+func TestNextDefaultsToLanes(t *testing.T) {
+	if s := Defaults().Next.Strategy; s != NextStrategyLanes {
+		t.Fatalf("default strategy %q, want lanes", s)
+	}
+	f, _ := Load(t.TempDir())
+	if err := f.Set("next.strategy", []string{"lanes"}); err != nil {
+		t.Fatal(err)
+	}
+	if !ValidNextStrategy(NextStrategyLanes) || NextStrategies[0] != NextStrategyLanes {
+		t.Fatalf("strategies %v", NextStrategies)
 	}
 }
 

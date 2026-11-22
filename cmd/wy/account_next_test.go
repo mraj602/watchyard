@@ -39,6 +39,7 @@ type nextFixture struct {
 	// folders with an oauthAccount are logged in.
 	loggedOut map[string]bool
 	authRuns  int
+	spawns    [][]string // background commands started (never run in tests)
 }
 
 func newNextFixture(t *testing.T) *nextFixture {
@@ -128,6 +129,27 @@ func (f *nextFixture) authStatus(_ context.Context, env []string, name string, a
 	return []byte(fmt.Sprintf(`{"loggedIn":%v}`, !f.loggedOut[folder])), nil
 }
 
+// set writes a config key (wy config set).
+func (f *nextFixture) set(key, value string) {
+	f.t.Helper()
+	cf, err := config.Load(f.dirs.Config.Path)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if err := cf.Set(key, []string{value}); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := cf.Save(); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// leaseFiles lists the lease ledger's day files.
+func (f *nextFixture) leaseFiles() []string {
+	m, _ := filepath.Glob(filepath.Join(f.dirs.State.Path, "next", "leases", "*.jsonl"))
+	return m
+}
+
 // machineToken writes the machine token wy connect leaves in the state folder.
 func (f *nextFixture) machineToken() {
 	if err := os.WriteFile(filepath.Join(f.dirs.State.Path, client.TokenFile), []byte("wy_m_test\n"), 0o600); err != nil {
@@ -163,7 +185,11 @@ func (f *nextFixture) run(args ...string) nextRun {
 			r.exec, r.env = append([]string{path}, argv...), env
 			return nil
 		},
-		authRun: f.authStatus}
+		authRun: f.authStatus,
+		spawn: func(args []string) error {
+			f.spawns = append(f.spawns, args)
+			return nil
+		}}
 	err := accountNext(e, args)
 	var ee *exitError
 	switch {
@@ -185,6 +211,7 @@ func TestAccountNextFromHub(t *testing.T) {
 		seat("seat_1", "a1", "o1", "one@example.test", "claude-1", 95, 20), // 5h nearly full
 		seat("seat_2", "a2", "o2", "two@example.test", "laptop-two", 10, 30),
 	}
+	f.set("next.strategy", "smart")
 	r := f.run("--no-reserve")
 	if r.code != 0 || !strings.HasPrefix(r.out, "claude-2  ~/.claude-2  (7d 30% → ") {
 		t.Fatalf("code %d out %q err %q", r.code, r.out, r.errOut)
@@ -192,8 +219,8 @@ func TestAccountNextFromHub(t *testing.T) {
 	if len(f.auth) == 0 || f.auth[0] != "Bearer wy_b_test" {
 		t.Errorf("auth %v", f.auth)
 	}
-	if _, err := os.Stat(filepath.Join(f.dirs.State.Path, "next", "picks.json")); err == nil {
-		t.Error("--no-reserve wrote the pick log")
+	if len(f.leaseFiles()) != 0 {
+		t.Error("--no-reserve wrote a lease")
 	}
 
 	r = f.run("--env")
@@ -241,6 +268,7 @@ func TestAccountNextExec(t *testing.T) {
 	f := newNextFixture(t)
 	f.seats = []map[string]any{seat("seat_1", "a1", "o1", "one@example.test", "", 85, 30),
 		seat("seat_2", "a2", "o2", "two@example.test", "", 10, 30)}
+	f.set("next.strategy", "smart")
 	r := f.run("--exec", "--", "claude", "--resume")
 	if r.code != 0 || strings.Join(r.exec, " ") != "/usr/bin/claude claude --resume" {
 		t.Fatalf("exec %v code %d err %s", r.exec, r.code, r.errOut)
@@ -279,6 +307,7 @@ func TestAccountNextNoneEligible(t *testing.T) {
 		seat("seat_1", "a1", "o1", "one@example.test", "", 95, 20),
 		seat("seat_2", "a2", "o2", "two@example.test", "", 20, 97),
 	}
+	f.set("next.strategy", "smart")
 	r := f.run()
 	if r.code != exitNoAccount || r.out != "" || !strings.Contains(r.errOut, "the earliest frees up") {
 		t.Fatalf("code %d out %q err %q", r.code, r.out, r.errOut)
@@ -292,8 +321,8 @@ func TestAccountNextNoneEligible(t *testing.T) {
 		doc.NextFree == nil || !doc.NextFree.Equal(nextNow.Add(3*time.Hour)) {
 		t.Errorf("json %s code %d err %v", r.out, r.code, err)
 	}
-	if _, err := os.Stat(filepath.Join(f.dirs.State.Path, "next", "picks.json")); err != nil {
-		t.Errorf("the pick log should exist (empty): %v", err)
+	if len(f.leaseFiles()) != 0 {
+		t.Errorf("no pick, yet a lease was written: %v", f.leaseFiles())
 	}
 }
 
@@ -315,6 +344,7 @@ func TestAccountNextHubUnreachable(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ob, nextNow.Format("2006-01-02")+".jsonl"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	f.set("next.strategy", "smart")
 	r := f.run("--no-reserve")
 	if r.code != 0 || !strings.HasPrefix(r.out, "claude-2  ~/.claude-2  (7d 40% → ") || !strings.Contains(r.out, "local data") ||
 		!strings.Contains(r.out, "[hub not read:") {
@@ -335,6 +365,7 @@ func TestAccountNextMachineTokenUsage(t *testing.T) {
 	s2 := seat("seat_2", "a2", "o2", "", "", 10, 30)
 	s2["places"] = []any{map[string]any{"slot": "~/.claude-2"}}
 	f.seats = []map[string]any{seat("seat_1", "a1", "o1", "", "", 95, 20), s2}
+	f.set("next.strategy", "smart")
 	r := f.run("--json", "--no-reserve")
 	var doc struct {
 		Data   string `json:"data"`

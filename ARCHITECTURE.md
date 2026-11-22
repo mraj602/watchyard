@@ -213,7 +213,7 @@ Client side (runs on every machine):
 | `internal/identity` | Machine id, slots, seats | paths, record |
 | `internal/clientenv` | Folders, config, machine, slot and cached login for one client call | paths, config, identity, record |
 | `internal/detach` | Detached background processes, debounce stamp files | — |
-| `internal/hook` | `wy hook` | clientenv, detach, record, outbox |
+| `internal/hook` | `wy hook` | clientenv, detach, leases, record, outbox |
 | `internal/statusline` | `wy statusline` | clientenv, record, outbox |
 | `internal/scan` | `wy scan`, `wy agents` | record, outbox, identity, paths |
 | `internal/status` | `wy status` | outbox, record, identity, hub/state (pure fold) |
@@ -226,7 +226,8 @@ Client side (runs on every machine):
 | `internal/update` | `wy update`: release manifest, verified download, replace and rollback, post-update steps, `--machines` | brand |
 | `internal/doctor` | `wy doctor` (reach, held records, frozen hub, direct push, forward port; on the hub also push and pull-target checks, reading `hub.db` read-only with the SQLite driver, no hub package) | paths, config, identity, outbox, client, directpush, setup/ledger, setup/backup, share |
 | `internal/timer` | OS timer running `wy tick --quiet` every minute | brand |
-| `internal/picker` | `wy account next`: seat matching, projections, strategies, reservations and the pick log, hub reads (`/v1/usage` with the machine token, or the board token), outbox limit samples | config, record, atomicfile |
+| `internal/picker` | `wy account next`: seat matching, the `lanes` ranker (readings, token meter, leases, burst caps, batches) and the projection strategies, hub reads (`/v1/usage` with the machine token, or the board token), one outbox pass for limit samples, token rows and hook events | config, record, leases |
+| `internal/leases` | The lease ledger of `wy account next`: append-only day files with an fsync per line, the ledger lock, the hook's `launched`/`ended` marks | — (leaf) |
 
 Setup side (`wy setup`, `wy account`, `wy uninstall`, `wy tick`):
 

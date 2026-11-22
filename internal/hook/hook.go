@@ -5,13 +5,14 @@
 //
 // Contract: docs/spec/record.md 4.1, docs/spec/states.md section 2.
 //
-// Depends on: record, outbox, identity, config, paths.
+// Depends on: record, outbox, identity, config, paths, leases.
 package hook
 
 import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/mraj602/watchyard/internal/clientenv"
 	"github.com/mraj602/watchyard/internal/detach"
+	"github.com/mraj602/watchyard/internal/leases"
 	"github.com/mraj602/watchyard/internal/outbox"
 	"github.com/mraj602/watchyard/internal/record"
 )
@@ -95,6 +97,7 @@ func Run(args []string, stdin io.Reader, getenv func(string) string) {
 		logError(env, getenv, event, err)
 		// Still try the background work: a flush may drain what is already queued.
 	}
+	markLease(env, getenv, eventName(in), in, time.Now())
 	maybeSlotInfo(env, getenv, eventName(in), time.Now())
 
 	if authStale(env, eventName(in)) {
@@ -102,6 +105,30 @@ func Run(args []string, stdin io.Reader, getenv func(string) string) {
 	}
 	startFlush(env)
 	recordPeers(env, in, getenv, event)
+}
+
+// markLease appends a launched or ended line to the lease ledger of `wy account next` when
+// the session has a lease there (setup.md 8.5). It takes no lock and never fails the hook.
+func markLease(env *clientenv.Env, getenv func(string) string, event string, in []byte, now time.Time) {
+	op := ""
+	switch event {
+	case "SessionStart":
+		op = leases.OpLaunched
+	case "SessionEnd":
+		op = leases.OpEnded
+	default:
+		return
+	}
+	var p struct {
+		SessionID string `json:"session_id"`
+	}
+	if json.Unmarshal(in, &p) != nil || p.SessionID == "" {
+		return
+	}
+	g := leases.Ledger{Dir: filepath.Join(env.Dirs.State.Path, "next")}
+	if _, err := g.Mark(p.SessionID, op, now); err != nil {
+		logError(env, getenv, event, fmt.Errorf("lease ledger: %w", err))
+	}
 }
 
 // readStdin reads the whole payload, giving up after a few seconds so a caller that never

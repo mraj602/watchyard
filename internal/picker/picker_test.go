@@ -3,12 +3,11 @@ package picker
 import (
 	"math"
 	"os"
-	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/mraj602/watchyard/internal/config"
+	"github.com/mraj602/watchyard/internal/leases"
 )
 
 // A fixed clock: Wednesday 2026-11-18 12:00 UTC. Text times are written in time.Local, so
@@ -238,16 +237,16 @@ func TestBurstReservationsSpread(t *testing.T) {
 		cand("c", win("five_hour", 10, 3*time.Hour, time.Minute), win("seven_day", 30, 72*time.Hour, time.Minute)),
 	}
 	s := defaults()
-	var l Ledger
+	var l []leases.Lease
 	counts := map[string]int{}
 	for i := 0; i < 9; i++ {
 		now := t0.Add(time.Duration(i) * 5 * time.Second)
-		res := Rank(Input{Now: now, Settings: s, Candidates: cs, Pending: l.Pending(now), LastPicked: l.Last, LastKey: l.LastKey})
-		if res.Pick == nil {
-			t.Fatalf("pick %d: none", i)
+		res, err := Decide(Input{Now: now, Strategy: config.NextStrategySmart, Settings: s, Candidates: cs, Leases: l})
+		if err != nil || res.Pick == nil {
+			t.Fatalf("pick %d: none (%v)", i, err)
 		}
 		counts[res.Pick.Label]++
-		l.Record(res.Pick.Key(), res.Pick.Folder, now, s.ReserveTTL)
+		l = append(l, leases.Lease{Line: leases.Line{Op: leases.OpLease, At: now, Key: res.Pick.Key()}})
 	}
 	for _, k := range []string{"a", "b", "c"} {
 		if counts[k] != 3 {
@@ -257,22 +256,22 @@ func TestBurstReservationsSpread(t *testing.T) {
 	}
 	// One account at 50% 5h: 50 + 15 per session fits twice under 90, then nothing.
 	one := []Candidate{cand("x", win("five_hour", 50, 3*time.Hour, time.Minute))}
-	var l2 Ledger
+	var l2 []leases.Lease
 	picks := 0
 	var last Result
 	for i := 0; i < 5; i++ {
-		last = Rank(Input{Now: t0, Settings: s, Candidates: one, Pending: l2.Pending(t0)})
+		last, _ = Decide(Input{Now: t0, Strategy: config.NextStrategySmart, Settings: s, Candidates: one, Leases: l2})
 		if last.Pick == nil {
 			break
 		}
 		picks++
-		l2.Record(last.Pick.Key(), last.Pick.Folder, t0, s.ReserveTTL)
+		l2 = append(l2, leases.Lease{Line: leases.Line{Op: leases.OpLease, At: t0, Key: last.Pick.Key()}})
 	}
-	if picks != 2 || last.NextFree == nil || !last.NextFree.Equal(t0.Add(3*time.Hour)) {
-		t.Errorf("picks %d next free %v", picks, last.NextFree)
+	if picks != 2 || last.NextFree == nil || !last.NextFree.Equal(t0.Add(3*time.Hour)) || last.Waiting != 1 {
+		t.Errorf("picks %d next free %v waiting %d", picks, last.NextFree, last.Waiting)
 	}
-	// Reservations expire after the TTL.
-	if p := l2.Pending(t0.Add(s.ReserveTTL + time.Second)); len(p) != 0 {
+	// Leases stop counting as pending after next.reserve_min.
+	if p := leases.Pending(l2, t0.Add(s.ReserveTTL+time.Second), s.ReserveTTL); len(p) != 0 {
 		t.Errorf("pending after ttl: %v", p)
 	}
 }
@@ -452,38 +451,6 @@ func TestReason(t *testing.T) {
 	res.Pick.Default = true
 	if EnvArgs(*res.Pick) != "-u CLAUDE_CONFIG_DIR" {
 		t.Errorf("default view env %q", EnvArgs(*res.Pick))
-	}
-}
-
-// Concurrent `wy account next` runs each see the others' reservations.
-func TestStoreConcurrentUpdates(t *testing.T) {
-	st := Store{Dir: filepath.Join(t.TempDir(), "next")}
-	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			if err := st.Update(t0, func(l *Ledger) error {
-				l.Record("k", "~/.claude", t0, 10*time.Minute)
-				return nil
-			}); err != nil {
-				t.Error(err)
-			}
-		}(i)
-	}
-	wg.Wait()
-	l, err := st.Read(t0)
-	if err != nil || l.Pending(t0)["k"] != 20 {
-		t.Errorf("pending %v err %v", l.Pending(t0), err)
-	}
-	if l, _ := st.Read(t0.Add(11 * time.Minute)); len(l.Reservations) != 0 || l.LastKey != "k" {
-		t.Errorf("after the ttl: %+v", l)
-	}
-	if err := os.WriteFile(filepath.Join(st.Dir, "picks.json"), []byte("{bad"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if l, err := st.Read(t0); err != nil || len(l.Reservations) != 0 {
-		t.Errorf("damaged file: %+v %v", l, err)
 	}
 }
 

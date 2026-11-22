@@ -1,13 +1,13 @@
 // Package picker implements `wy account next`: it recommends the account (config folder)
 // to start the next Claude Code session on, from each folder's login on this machine and
 // the usage limits of the seat it is logged in to, with pluggable strategies, per-account
-// settings and short-lived local reservations so bursts of launches spread out.
+// settings and a lease per pick (internal/leases) so bursts of launches spread out.
 //
 // It only recommends. It never switches a running session and never changes a login.
 //
 // Contract: docs/spec/setup.md 8.5.
 //
-// Depends on: config, record, atomicfile.
+// Depends on: config, record, leases.
 package picker
 
 import (
@@ -19,6 +19,10 @@ import (
 type Sample struct {
 	At  time.Time
 	Pct float64
+	// ResetsAt is the window end the reading named (zero: none). Source is the hub's sample
+	// source ("statusline", "web") or "local" for this machine's outbox.
+	ResetsAt time.Time
+	Source   string
 }
 
 // Window is the newest reading of one limit window of a seat, with its recent history.
@@ -58,10 +62,12 @@ type Candidate struct {
 	Windows []Window
 	// Source of the usage data: "hub", "hub+local", "local" or "none".
 	Source string
+	// RemoteLeases are other machines' leases of the seat, from the hub (lanes).
+	RemoteLeases []HubLease
 }
 
-// Key is the identity used for reservations and the pick log: the seat (account and org)
-// when known, so two folders logged in to one seat share their reservations; else the
+// Key is the identity used for leases, burst caps and the round robin: the seat (account and
+// org) when known, so two folders logged in to one seat share their leases; else the
 // hub seat id; else the folder.
 func (c Candidate) Key() string {
 	switch {

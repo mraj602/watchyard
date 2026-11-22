@@ -63,10 +63,14 @@ for `wy setup`.
 ## Starting Claude Code sessions yourself
 
 If your task launches other Claude Code sessions (subagents in a terminal, a batch of
-workers), ask Watchyard which account to use for each one: `env $(wy account next --env)
-claude …`, or `wy account next --exec -- claude …`. Each call holds its pick for a few minutes,
-so a burst of launches spreads over the accounts. When it exits 4, no account has room:
-report the time it prints instead of starting the session. Never log in, log out or edit a
+workers), ask Watchyard which account to use, once for the batch: make a UUID per session and
+run `wy account next --n <K> --session-id <uuid> ...` (one `--session-id` per session), then
+start each printed folder with `CLAUDE_CONFIG_DIR=<folder> claude --session-id <its uuid> …`;
+for a single session `wy account next --exec --session-id <uuid> -- claude …` does both. Each
+pick is recorded, so launches spread over the accounts and stop at their limits. Start only
+the sessions it printed: when it exits 4, the rest have no room; report the time it prints
+instead of starting them. Exit 3 means a session id was already used: make new ones. Leave
+`--urgent` to the person. Never log in, log out or edit a
 folder to make room; that stays with the person.
 
 ## Done when

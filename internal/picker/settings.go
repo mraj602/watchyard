@@ -42,7 +42,7 @@ func SettingsFrom(n config.Next) Settings {
 		Accounts:     n.Accounts,
 	}
 	if !config.ValidNextStrategy(s.Strategy) {
-		s.Strategy = config.NextStrategySmart
+		s.Strategy = config.NextStrategyLanes
 	}
 	if s.Accounts == nil {
 		s.Accounts = map[string]config.NextAccount{}
@@ -61,6 +61,7 @@ type Preset struct {
 // Presets are the modes of next.accounts.<key>.mode.
 var Presets = map[string]Preset{
 	config.NextModeConservative: {Cap5h: 60, Cap7d: 70, CapModel: 70, Pref: 0.6},
+	config.NextModeProtected:    {Cap5h: 60, Cap7d: 70, CapModel: 70, Pref: 0.6},
 	config.NextModeNormal:       {Cap5h: 90, Cap7d: 90, CapModel: 90, Pref: 1},
 	config.NextModeAggressive:   {Cap5h: 98, Cap7d: 98, CapModel: 98, Pref: 1.4},
 }
@@ -78,6 +79,15 @@ type Policy struct {
 	Pref        float64
 	Exclude     bool
 	Hours, Days string
+	// SetCap5h and SetCap7d are the explicit cap_5h and cap_7d (0 = not set): the lanes
+	// strategy reads them instead of the mode's caps.
+	SetCap5h, SetCap7d float64
+}
+
+// Protected reports whether the lanes strategy keeps the account for its owner: mode
+// protected or conservative. Every other mode, and none, is aggressive.
+func (p Policy) Protected() bool {
+	return p.Mode == config.NextModeProtected || p.Mode == config.NextModeConservative
 }
 
 // PolicyFor finds the account's settings: the next.accounts key equal to its hub seat id,
@@ -114,11 +124,17 @@ func (s Settings) PolicyFor(c Candidate) (Policy, []string) {
 	}
 	pre, ok := Presets[mode]
 	if !ok {
-		warn = append(warn, fmt.Sprintf("next.accounts.%s.mode %q is not conservative, normal or aggressive; using normal", key, a.Mode))
+		warn = append(warn, fmt.Sprintf("next.accounts.%s.mode %q is not protected, conservative, normal or aggressive; using normal", key, a.Mode))
 		mode, pre = config.NextModeNormal, Presets[config.NextModeNormal]
 	}
 	p := Policy{Key: key, Mode: mode, Cap5h: pre.Cap5h, Cap7d: pre.Cap7d, CapModel: pre.CapModel, Pref: pre.Pref,
 		Priority: a.Priority, Weight: 1, Exclude: a.Exclude, Hours: a.Hours, Days: a.Days, Reserve: a.ReservePct}
+	if a.Cap5h > 0 {
+		p.SetCap5h = min(a.Cap5h, 100)
+	}
+	if a.Cap7d > 0 {
+		p.SetCap7d = min(a.Cap7d, 100)
+	}
 	if a.Cap5h > 0 {
 		p.Cap5h = min(a.Cap5h, 100)
 	}

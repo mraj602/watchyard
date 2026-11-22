@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mraj602/watchyard/internal/config"
+	"github.com/mraj602/watchyard/internal/leases"
 )
 
 // Input is everything one ranking needs. It is pure data: tests build it by hand.
@@ -18,11 +19,22 @@ type Input struct {
 	Model      string // "" = Settings.Model
 	Settings   Settings
 	Candidates []Candidate
-	// Pending counts live reservations per Candidate.Key.
+	// Pending counts live reservations per Candidate.Key (Decide fills it from Leases).
 	Pending map[string]int
 	// LastPicked is when each Candidate.Key was last picked; LastKey is the newest pick.
 	LastPicked map[string]time.Time
 	LastKey    string
+
+	// Leases is this machine's lease ledger, oldest first (internal/leases).
+	Leases []leases.Lease
+	// Outbox is this machine's token rows and hook events: the lanes token meter.
+	Outbox Outbox
+	// N is the number of picks (lanes; 0 means 1), SIDs their session ids, Urgent --urgent.
+	N      int
+	SIDs   []string
+	Urgent bool
+	// Params are the lanes parameters; nil means DefaultLaneParams.
+	Params *LaneParams
 }
 
 // Ranked is one account in the result.
@@ -49,6 +61,9 @@ type Ranked struct {
 	// FreeAt is when an account that is over a cap or outside its hours can next be used.
 	FreeAt *time.Time `json:"free_at,omitempty"`
 	Reason string     `json:"reason"`
+	// Kind and Lanes are set by the lanes strategy only.
+	Kind  string    `json:"kind,omitempty"`
+	Lanes *LaneView `json:"lanes,omitempty"`
 
 	key      string
 	priority float64
@@ -56,8 +71,21 @@ type Ranked struct {
 	cand     Candidate
 }
 
-// Key is the reservation key of the account (Candidate.Key).
+// Key is the lease key of the account (Candidate.Key).
 func (r Ranked) Key() string { return r.key }
+
+// Account and Org are the uuids of the account's login ("" when unknown).
+func (r Ranked) Account() string { return r.cand.Account }
+func (r Ranked) Org() string     { return r.cand.Org }
+
+// Pick is one placed pick: the account, the session id it is for, and its lease.
+type Pick struct {
+	Ranked
+	SessionID string
+	Urgent    bool   // --urgent passed a burst cap for it
+	LaneKind  string // aggressive or protected
+	C5, CF    float64
+}
 
 // Result is the ranking.
 type Result struct {
@@ -65,6 +93,10 @@ type Result struct {
 	Strategy string    `json:"strategy"`
 	Model    string    `json:"model,omitempty"`
 	Pick     *Ranked   `json:"-"`
+	// Picks are every placed pick in order (Pick is the first); Waiting is how many of the
+	// N asked for were not placed.
+	Picks   []Pick `json:"-"`
+	Waiting int    `json:"-"`
 	// Ranked has the eligible accounts best first, then the others.
 	Ranked []Ranked `json:"accounts"`
 	// NextFree is the earliest time an account that is not eligible now can be used.
@@ -79,8 +111,8 @@ func Rank(in Input) Result {
 	if strategy == "" {
 		strategy = s.Strategy
 	}
-	if !config.ValidNextStrategy(strategy) {
-		strategy = config.NextStrategySmart
+	if !config.ValidNextStrategy(strategy) || strategy == config.NextStrategyLanes {
+		strategy = config.NextStrategySmart // Rank is the projection ranker; Decide runs lanes
 	}
 	model := in.Model
 	if model == "" {
@@ -229,34 +261,7 @@ func windowOrder(p Projection) int {
 
 // judge sets Eligible, Excluded and FreeAt.
 func judge(r *Ranked, now time.Time) {
-	c, pol := r.cand, r.policy
-	switch {
-	case !c.LoggedIn:
-		r.Excluded = "not logged in on this machine"
-		return
-	case c.SignedOut != nil:
-		r.Excluded = "the hub saw it signed out on this machine since " + c.SignedOut.Local().Format("2006-01-02 15:04")
-		return
-	case pol.Exclude:
-		r.Excluded = "excluded in settings (next.accounts." + pol.Key + ".exclude)"
-		return
-	}
-	ok, next, err := pol.allowedAt(now)
-	if err != nil {
-		r.Excluded = "bad hours or days in settings: " + err.Error()
-		return
-	}
-	if !ok {
-		r.Excluded = "outside its hours"
-		if pol.Hours != "" {
-			r.Excluded += " " + pol.Hours
-		}
-		if pol.Days != "" {
-			r.Excluded += " " + pol.Days
-		}
-		if !next.IsZero() {
-			r.FreeAt = &next
-		}
+	if !gate(r, now) {
 		return
 	}
 	var over []string
@@ -281,6 +286,43 @@ func judge(r *Ranked, now time.Time) {
 		return
 	}
 	r.Eligible = true
+}
+
+// gate applies the rules every strategy applies first (logged in on this machine, not signed
+// out on the hub, not excluded, inside its hours and days). It sets Excluded and FreeAt and
+// reports false when one of them rules the account out.
+func gate(r *Ranked, now time.Time) bool {
+	c, pol := r.cand, r.policy
+	switch {
+	case !c.LoggedIn:
+		r.Excluded = "not logged in on this machine"
+		return false
+	case c.SignedOut != nil:
+		r.Excluded = "the hub saw it signed out on this machine since " + c.SignedOut.Local().Format("2006-01-02 15:04")
+		return false
+	case pol.Exclude:
+		r.Excluded = "excluded in settings (next.accounts." + pol.Key + ".exclude)"
+		return false
+	}
+	ok, next, err := pol.allowedAt(now)
+	if err != nil {
+		r.Excluded = "bad hours or days in settings: " + err.Error()
+		return false
+	}
+	if !ok {
+		r.Excluded = "outside its hours"
+		if pol.Hours != "" {
+			r.Excluded += " " + pol.Hours
+		}
+		if pol.Days != "" {
+			r.Excluded += " " + pol.Days
+		}
+		if !next.IsZero() {
+			r.FreeAt = &next
+		}
+		return false
+	}
+	return true
 }
 
 // score sets Score on the eligible accounts for the strategy (higher is better).

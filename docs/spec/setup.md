@@ -904,8 +904,12 @@ does not `chcp`, which would change the person's console) or contains `"` or `^`
 
 Recommends the folder to start the next Claude Code session on, for a person or for an agent
 that launches other agents. It **recommends only**: it never switches a running session, never
-changes or moves a login, and never starts anything unless `--exec` is given. Implemented in
-`internal/picker` and `cmd/wy/account_next.go`.
+changes or moves a login, and never starts anything unless `--exec` is given. Each pick is
+recorded as a **lease** in an append-only ledger on this machine (mirrored to the hub without
+waiting for it), so the sessions of a burst spread over the accounts and stop at their limits.
+An agent that launches several sessions asks for them in one call (`--n`) and names each one
+with the session id it will pass to `claude --session-id` (`--session-id`). Implemented in
+`internal/picker`, `internal/leases` and `cmd/wy/account_next.go`.
 
 **Folders and logins.** The folders of identity.md 3 (`CLAUDE_CONFIG_DIR` of the calling
 session is ignored, so `~/.claude` is always its default view). A folder is logged in by the
@@ -919,15 +923,17 @@ eligible.
 
 **Hub data.** When `hub.url` is set, `wy` reads `GET /v1/usage?since=<now − 26 h>` with
 this machine's token (`<state>/token`, `wy connect`; tokens.md 3): per seat its ids, label,
-limit windows, samples since then, live sessions, and this machine's places and signed-out
-folders. Without a machine token, or when the hub answers 404 (a hub older than this `wy`)
-and `<state>/board/token.json` holds a read token (`wy board connect`), it reads
+limit windows, samples since then (with their source and `resets_at`), live sessions, the
+leases other machines recorded in the last 7 days (below), and this machine's places and
+signed-out folders. Without a machine token, or when the hub answers 404 (a hub older than
+this `wy`) and `<state>/board/token.json` holds a read token (`wy board connect`), it reads
 `GET /v1/accounts` and, for each seat a local folder matches,
 `GET /v1/accounts/{seat}/windows` with `since` = now − 26 h, `samples=true` and the limit keys
-of that seat. A 404 with no board token is "hub not read: the hub has no /v1/usage (it is
-older than this wy); upgrade the hub to give this machine hub data", and local data is used
-(below): **upgrade the hub before the machines** to give them hub data. All hub reads share
-a 5-second budget.
+of that seat (no leases of other machines then). A 404 with no board token is "hub not read:
+the hub has no /v1/usage (it is older than this wy); upgrade the hub to give this machine hub
+data", and local data is used (below): **upgrade the hub before the machines** to give them
+hub data. All hub reads share a 5-second budget. The hub is never waited for beyond it, and
+nothing the command writes goes to the hub directly.
 
 **Matching folders to seats** is by login, never by label (a seat labelled `claude-1` on the
 hub may be `claude` on this machine): (1) the seat with the folder's account and org uuids;
@@ -935,7 +941,11 @@ hub may be `claude` on this machine): (1) the seat with the folder's account and
 the only seat with the folder's email (two seats with that email: no match; `/v1/usage`
 carries no email, so this step applies to the board-token read only). A folder the hub
 lists in any seat's `signed_out` for this machine is not eligible, unless its matched seat
-lists it as a place again.
+lists it as a place again. Everything per account (state, leases, burst caps, the round
+robin) is keyed by the seat's account and org uuids (`acct:<account>/<org>`), never by label;
+two folders logged in to one seat share it. `lanes` ranks such an account once, as the first of
+its folders in label order that passes the rules every strategy applies; the others are listed
+as "same account as <label> (<folder>), ranked once".
 
 **Local data.** Every `limit_sample` in the outbox from the last 7 days (record.md 4.2; the
 outbox keeps sent records for `outbox.keep_days`) is read too. For `five_hour` and
@@ -943,7 +953,200 @@ outbox keeps sent records for `outbox.keep_days`) is read too. For `five_hour` a
 than the hub's replaces it, and local readings newer than the hub's newest sample are added
 to the history. Without a hub, or when the hub cannot be read, local readings are all there
 is: the output says `local data` and, in `--explain`, that other machines' use is missing.
-Live sessions are known only from the hub.
+Live sessions and claude.ai (web) readings are known only from the hub. The `lanes` strategy
+also reads the outbox's `token_rows` and `hook_event` records (record.md 4.1, 4.4) of the same
+7 days, in the same pass: the token meter below. Token rows are merged per `key` over their
+streaming snapshots (the largest value of each counter), as the hub does.
+
+**Strategies** (`--strategy`, default `next.strategy`): `lanes` (the default) and the
+projection strategies `smart`, `expiring`, `most-room`, `spread`, `fill` and `sticky`
+(below). They share the folders, logins, hub and local data above, the per-account settings,
+the ledger and the output; `lanes` decides eligibility and order by its own rules.
+
+#### Strategy `lanes`
+
+Built for launching agent sessions ("lanes") in bursts. Each account is **aggressive** (its
+room is there to be used up) or **protected** (kept for its owner: lanes may use only what
+its weekly pace and a 5-hour floor leave over, and nothing ever falls back onto it). It
+decides from the current state only (the newest readings, the token meter since them and the
+live leases), never from a forecast of past use.
+
+*Kind.* `next.accounts.<key>.mode`: `aggressive` and `normal`, and an account with no mode,
+are aggressive; `protected` and `conservative` are protected. It is a setting, never derived
+from a label.
+
+*Parameters.* Fixed in this version (per-account calibration from measured use comes later):
+
+| Parameter | Value | Meaning |
+| --- | --- | --- |
+| aggressive limit | 98 | An aggressive account takes no new lane at weekly or 5-hour ≥ this (`cap_7d`, `cap_5h` override). |
+| protected target `T` | 85 | Weekly level a protected account must stay under, lanes included (`cap_7d` overrides). |
+| head start | 10 | Points the pace line allows above the even share of the week. |
+| protected 5-hour floor | 45 | A protected account takes no new lane at 5-hour ≥ this: its 80 % 5-hour cap less one lane's 35-point budget (`cap_5h` overrides). |
+| burst cap | 6 aggressive, 2 protected | New leases one account may get in any 60 minutes. |
+| lane charge `c` | 8 | 5-hour points a new lane is charged for its first 5 hours (4 points, times a safety factor of 2), one price for every model. Its expected full cost `cf` is the same. |
+| ratio `ρ` | 7.2 | 5-hour points per weekly point. |
+| meter factor `f` | 1.4 | 5-hour points per million weighted token units. |
+| lease life | 5 h | How long a launched lease charges its account. |
+| settle | 10 min | A reading this long after a lease shows the lane's start. |
+| stale guard | 60 min | Age of the newest reading after which an account that ran is stale. |
+| stale lease | 6 h | Age after which an account with a lease since its reading is stale. |
+| unlaunched | 10 min | A lease whose session never started is dropped after this. |
+| expiring | 48 h, 5-hour < 30 | An aggressive account whose weekly window resets this soon goes first. |
+| web gap | 15 min | Age of the newest reading after which claude.ai use the meter cannot see is added. |
+
+`cap_5h`, `cap_7d` and `reserve_pct` (taken off both) are the only per-account caps `lanes`
+reads; `cap_model`, `priority`, `weight` and `--model`'s model windows are not used by it
+(`--model` is recorded on the lease).
+
+*Readings.* For `five_hour` and `seven_day` separately, from every reading of the seat (hub
+samples of every machine and source, and this machine's outbox): a reading whose `used_pct`
+is not a number from 0 to 100, or whose time is before 2020 or more than a day ahead, is
+dropped; a time after now counts as now. The reading used is the newest of those whose
+`resets_at` is within 5 minutes of the newest `resets_at` seen (store `ResetTolerance`): a
+session that sat idle through a reset keeps sending its old window's value with the old
+`resets_at`, and must not undo the reset. An idle reading (0 % with no `resets_at`) newer than
+it replaces it: the window has not started. When no reading has a `resets_at`, the newest
+reading is used. The account's reading time `ts` is that of its `five_hour` reading, else of
+its `seven_day` reading; an account with neither has no reading time.
+
+*Effective state*, per account, at `now`:
+
+1. *Base.* `w` = the weekly reading, `h` = the 5-hour reading. A weekly window whose
+   `resets_at` has passed gives `w = 0` and its reset moves on by whole weeks; an unknown
+   weekly reset counts as a week away. A 5-hour window whose `resets_at` has passed, or a
+   5-hour reading over 5 hours old, gives `h = 0`; no 5-hour reading gives `h = 0`. No weekly
+   reading leaves the weekly level **unknown**.
+2. *Token meter.* Weighted units `u = input + 5 × output + 1.25 × cache_5m + 2 × cache_1h +
+   0.1 × cache_read` of this machine's token rows (outbox) of the sessions of that seat. A
+   session's seat is that of its lease, else that of its hook events, else the login of the
+   row's `slot`. `m5` = units since the later of `ts` and the start of the current 5-hour
+   window: while the reading's window is open that is `resets_at − 5 h`; when it has ended,
+   the next window starts at the first token after its reset (and so on, 5 hours each), and
+   the reading's `h` no longer counts. `m7` = units since the later of the weekly reading's
+   time and the last weekly reset. `h += f × m5`, `w += f × m7 / ρ`.
+3. *Leases* (the ledger, below, and other machines' leases from the hub). For each lease of
+   this machine, `b = f ×` the units its session used since the lease (0 for a lease without
+   a session id). Other machines' leases have `b = 0`: their sessions' tokens are not in this
+   machine's meter, so their leases keep their full charge while active. A lease counts as
+   launched when the ledger has its `launched` line, or this machine's hook events or token
+   rows show its session since the pick. A lease younger than 5 hours whose session has not
+   ended is *active*: it adds `max(0, c − b)` to `h`, the same divided by `ρ` to `w`, and
+   `max(0, cf − b)` to the reserve. A lease that is no longer active and whose session the
+   meter (or, for another machine's lease, the hub) never saw keeps its weekly charge
+   `max(0, c − b) / ρ` until there is a reading at least 10 minutes after it or a weekly reset
+   after it. A session that never sends a token stays charged in full until its lease ends: a
+   deliberate double count on the safe side.
+4. *Unexplained use* (only for an account with claude.ai readings, source `web`, in the hub's
+   history). The rate `r` = the rise of the web `five_hour` readings of the current window over
+   the last 60 minutes of web readings (at least two readings 10 minutes apart), less the
+   meter's points over the same interval, per hour, at least 0; it is kept for 5 hours after
+   the last web reading. When the newest reading (any source) is older than 15 minutes, `h +=
+   r ×` its age (at most 5 h) and `w` gets that divided by `ρ`. A **protected** account with
+   web readings whose newest reading is older than 15 minutes and that has no rate is stale.
+5. *Stale.* The newest reading is older than 60 minutes and the account ran since it (a live
+   session: the hub's `live_sessions`, or a hook event on this machine in the last 10 minutes
+   of a session of the seat that has not ended; a token row since the reading; or a lease
+   since it); or it is older than 6 hours with a lease since it; or there is no reading time.
+6. `w` and `h` are kept within 0–100. The *reserve level* is `w` before the active leases'
+   5-hour charges plus the active leases' reserve divided by `ρ`.
+
+*Eligibility*, after the rules every strategy applies first (logged in on this machine, not
+signed out on the hub, not `exclude`d, inside its `hours` and `days`):
+
+- **aggressive**: not when `w ≥ 98` or `h ≥ 98`. An unknown weekly level does not exclude it:
+  it is ranked after every known account. A stale aggressive account keeps its estimate
+  (accounts used only by `claude -p` never send readings).
+- **protected**: not when `w ≥ min(T, T × (1 − hours_to_reset / 168) + 10)` (the pace line),
+  `h ≥ 45`, the reserve level `≥ T` (the running lanes' expected cost would take it over its
+  target), it is stale, or its weekly level is unknown (no valid reading).
+- **both**: not when it got burst-cap leases or more in the last 60 minutes.
+
+There is **no fallback onto a protected account**, ever: with no eligible account nothing is
+picked (exit 4).
+
+*Order* (`rr_exp`). Eligible aggressive accounts whose weekly window resets within 48 hours
+and whose `h < 30` come first: their unused weekly room is about to expire; they take turns
+among themselves (newest lease oldest first, then the sooner reset). Then every other
+eligible account, round robin: the one whose newest lease is oldest first, never leased
+first. Ties by label in natural order. Aggressive accounts with an unknown weekly level come
+after all others. `score` is shown but does not order: `(1 − h/100) × (100 − w) / max(hours,
+0.5)` for aggressive, `(1 − h/100) × 0.85 × (T − w) / max(hours, 24)` for protected.
+
+*Batches.* `--n K` makes K picks one after another under the ledger lock; each adds its lease
+before the next is ranked, so the burst fills the accounts evenly and stops at their limits
+and burst caps. It stops at the first lane no account can take; the picks made before it are
+leased and printed (exit 4).
+
+*`--urgent`.* When no account is eligible, it may pick an aggressive account whose **only**
+reason is its burst cap: the one with the lowest `h`, then `w`. It never passes a weekly or
+5-hour limit, never picks a protected account and has no rate limit. The lease is marked
+urgent (in the ledger and on the hub) and stderr names the cap it passed.
+
+*When an account frees up* (`free_at`, and `next_free` = the earliest): the latest of: when
+the burst cap is reached, the oldest lease in the window plus 60 minutes; when `h` is over its
+limit, the 5-hour reset (or 5 hours from now when unknown); a protected account at or over
+`T` (or its reserve level at or over `T`), the weekly reset; a protected account over its
+pace line, the time the line reaches `w`; an aggressive account at its weekly limit, the
+weekly reset. A stale account or one with an unknown level frees up at no known time.
+
+#### Leases and the ledger
+
+A lease is one pick. The **ledger** is the record of them, and the marker of what this
+machine launched: day files `<state>/next/leases/<YYYY-MM-DD>.jsonl` (UTC day of the line,
+mode 0600, folder 0700), **append-only**, one JSON object per line, each line written with a
+single write and flushed to disk (`fsync`, and the folder when a day file is created) before
+the next. Lines:
+
+- `{"v": 1, "op": "lease", "id", "at", "key", "account", "org", "folder", "label", "kind",
+  "session_id", "c5", "cf", "model", "strategy", "urgent", "batch"}`: `id` a ULID, `at` the
+  pick time (RFC 3339 UTC), `key` the seat key, `kind` `aggressive` or `protected`,
+  `session_id` from `--session-id` (absent without it), `c5` and `cf` the lane charge and full
+  cost in 5-hour points, `model` from `--model` (absent without it), `strategy` the strategy
+  that picked, `urgent` true when `--urgent` passed a burst cap, `batch` the id shared by the
+  picks of one call.
+- `{"v": 1, "op": "launched", "at", "session_id"}`: written by `wy hook` on `SessionStart`.
+- `{"v": 1, "op": "ended", "at", "session_id"}`: written by `wy hook` on `SessionEnd`.
+
+The files of the last 8 days are read. A line that cannot be read (bad JSON, unknown `op`,
+no time, a lease without `key`, a `launched` or `ended` line without `session_id`, a `v`
+other than 1) is skipped and counted (`skipped_ledger_lines`). A crash in the middle of a write
+can leave a torn last line: the next write to that file starts a new line first, so only the
+torn line is lost. When a pick is
+written, day files older than 8 days are deleted. Ranking reads the ledger, ranks and appends
+the new leases while holding the advisory lock `<state>/next/leases.lock`, so pickers on the
+machine see each other's leases. A session id already leased (by a lease that has not been
+dropped) or given twice is refused before anything is written (exit 3).
+
+**`wy hook`** on `SessionStart` and `SessionEnd`: when the payload's `session_id` has a lease
+line in the day files of today and yesterday (UTC) and no line of the same `op` yet, it
+appends a `launched` or `ended` line. It takes no lock (a line is one write, and readers skip a
+torn last line), stays inside the hook's time budget and never fails the hook. `SessionStart`
+of a resumed or cleared session finds `launched` already there and writes nothing.
+
+A lease **with no `launched` line** older than 10 minutes is dropped: its launch never
+happened (a crashed launcher, or a pick without `--session-id`, which therefore counts for 10
+minutes like a short reservation); its session id may be leased again. A lease ends when its
+session ends (`ended`) or 5 hours after the pick; its weekly charge may stay longer (above).
+
+**Mirror to the hub.** Every lease written for a folder whose login (account and org) is
+known is also appended to the outbox as an `account_lease` record (record.md 4.10) and, when
+`hub.url` is set, a background `wy flush` is started (debounced like the hook's);
+`wy account next` never waits for it, and works the same with the hub down.
+The hub returns other machines' leases in `/v1/usage` (api.yaml `UsageLease`: time, urgent,
+charges, whether the session started or ended, and the weighted units its token rows used
+since the lease; no session id and no machine), and `lanes` counts them like its own (with
+`b = 0`, above), so two
+machines launching at once spread over the accounts once their records arrive.
+
+**The other strategies** read the same ledger: the pending reservations `p` of an account are
+its leases younger than `next.reserve_min`, `spread` uses each account's newest lease and
+`sticky` the account of the newest lease. They write a lease per pick too (its `kind` from
+the account's mode as `lanes` reads it, `c5` and `cf` the lane charge; without a session
+id). `--n` above 1, `--session-id` and `--urgent` are for `lanes` only (exit 2 with another
+strategy). `--no-reserve` reads the ledger and writes nothing, with any strategy.
+
+#### The projection strategies
 
 **Windows considered.** `five_hour` and `seven_day` always. With `--model <m>` (or
 `next.model`), also the model-scoped windows whose model part matches `m` in either
@@ -989,17 +1192,36 @@ machine; not signed out on the hub; not `exclude`d; inside its `hours` and `days
 `resets_at` of its over-cap windows (unknown if any has none); an account outside its hours
 gets the next allowed minute. With no eligible account, `next_free` is the earliest `free_at`.
 
-**Settings** (paths.md 4, `[next]`; `wy config set next.<key> <value>`):
+**Scores** (higher first among the eligible, ties by label in natural
+order):
+
+- `smart`: `weight × preference × safety × confidence × (urgency + 0.02 × headroom)`.
+  `urgency` = `U_w / max(h, 1)` of the binding weekly window (the weekly window considered with
+  the least unused room): weekly room that would be lost at the reset, per hour left, so room
+  that expires soonest unused comes first. `headroom` = the least `cap − E` over the windows.
+  `safety` = `clamp((cap − E) / 20, 0.2, 1)` over five-hour windows: an account about to fill
+  its 5 hours is ranked down. `confidence` = 0.75 for an account with no usage data at all,
+  else 1.
+- `expiring`: `urgency` only (ties by headroom): pure use-it-or-lose-it.
+- `most-room`: the lowest `max(n + σ + p × S)` over the windows.
+- `spread`: the account picked longest ago (never picked first), from the ledger.
+- `fill`: the lowest `priority`.
+- `sticky`: the last pick while it is eligible with `E ≤ cap − next.sticky_margin` on every
+  window; otherwise `smart`.
+
+#### Settings
+
+`wy config set next.<key> <value>` (paths.md 4, `[next]`):
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `next.strategy` | `smart` | Default strategy. |
+| `next.strategy` | `lanes` | Default strategy. |
 | `next.model` | `""` | Default `--model`. |
-| `next.session_5h` | `15` | `S` for five-hour windows, in points. |
-| `next.session_7d` | `2` | `S` for weekly windows, in points. |
-| `next.session_min` | `120` | `T`, minutes. |
-| `next.stale_min` | `30` | Staleness threshold, minutes. |
-| `next.reserve_min` | `12` | How long a pick counts as a pending session, minutes. |
+| `next.session_5h` | `15` | Projection strategies: `S` for five-hour windows, in points. |
+| `next.session_7d` | `2` | Projection strategies: `S` for weekly windows, in points. |
+| `next.session_min` | `120` | Projection strategies: `T`, minutes. |
+| `next.stale_min` | `30` | Projection strategies: staleness threshold, minutes. |
+| `next.reserve_min` | `12` | Projection strategies: how long a lease counts as a pending session, minutes. |
 | `next.sticky_margin` | `10` | `sticky`: points under each cap that end stickiness. |
 
 Per account: `next.accounts.<key>.<field>`, where `<key>` is matched against, in order, the
@@ -1010,8 +1232,8 @@ aggressive`). The field is the part after the last dot, so emails with dots work
 
 | Field | Meaning |
 | --- | --- |
-| `mode` | `conservative` (caps 5 h 60, 7 d 70, model 70; preference 0.6), `normal` (90, 90, 90; 1), `aggressive` (98, 98, 98; 1.4). Default `normal`. |
-| `cap_5h`, `cap_7d`, `cap_model` | Explicit caps (0 < cap ≤ 100) over the mode's; `cap_model` defaults to `cap_7d` when only that is set. |
+| `mode` | `lanes`: `protected` or `conservative` make the account protected; `aggressive`, `normal` or no mode make it aggressive. Projection strategies: `conservative` and `protected` (caps 5 h 60, 7 d 70, model 70; preference 0.6), `normal` (90, 90, 90; 1), `aggressive` (98, 98, 98; 1.4). Default `normal`. |
+| `cap_5h`, `cap_7d`, `cap_model` | Explicit caps (0 < cap ≤ 100) over the mode's; `cap_model` defaults to `cap_7d` when only that is set. `lanes`: `cap_7d` is the aggressive weekly limit or the protected target `T`, `cap_5h` the aggressive 5-hour limit or the protected 5-hour floor. |
 | `reserve_pct` | Taken off every cap (room kept for something else). |
 | `priority` | `fill` order, lowest first; unset is after every set one. |
 | `weight` | Multiplies the `smart` score (default 1). |
@@ -1020,59 +1242,61 @@ aggressive`). The field is the part after the last dot, so emails with dots work
 
 Unknown fields are reported by `wy doctor` as unknown keys.
 
-**Strategies** (`--strategy`; higher score first among the eligible, ties by label in natural
-order):
+#### Flags, output and exit codes
 
-- `smart` (default): `weight × preference × safety × confidence × (urgency + 0.02 × headroom)`.
-  `urgency` = `U_w / max(h, 1)` of the binding weekly window (the weekly window considered with
-  the least unused room): weekly room that would be lost at the reset, per hour left, so room
-  that expires soonest unused comes first. `headroom` = the least `cap − E` over the windows.
-  `safety` = `clamp((cap − E) / 20, 0.2, 1)` over five-hour windows: an account about to fill
-  its 5 hours is ranked down. `confidence` = 0.75 for an account with no usage data at all,
-  else 1.
-- `expiring`: `urgency` only (ties by headroom): pure use-it-or-lose-it.
-- `most-room`: the lowest `max(n + σ + p × S)` over the windows.
-- `spread`: the account picked longest ago (never picked first), from the pick log.
-- `fill`: the lowest `priority`.
-- `sticky`: the last pick while it is eligible with `E ≤ cap − next.sticky_margin` on every
-  window; otherwise `smart`.
+`wy account next [--strategy <s>] [--model <m>] [--n <K>] [--session-id <uuid>]...
+[--urgent] [--env | --json | --explain] [--no-reserve] [--no-hub] [--exec [-- <cmd>
+[args...]]]`
 
-**Reservations and the pick log.** `<state>/next/picks.json` (mode 0600, written atomically
-under the advisory lock `<state>/next/picks.lock`) holds `{"v": 1, "reservations": [{"key",
-"folder", "at", "until"}], "last": {key: time}, "last_key"}`. The key is the seat (`acct:<account
-uuid>/<org uuid>`, else `seat:<id>`, else `slot:<folder>`), so folders logged in to one seat
-share it. Ranking and recording happen under the lock: each pick adds a reservation valid for
-`next.reserve_min`, and live reservations count as `p` above, so agents launched in a burst
-spread over the accounts and stop at the caps. Expired reservations and log entries older
-than 30 days are dropped on each write. A reservation keeps counting after the session shows
-up in `live_sessions` until it expires (conservative). `--no-reserve` reads the file and writes
-nothing. A file that cannot be parsed is started again empty.
+- `--n K` (1 to 50): picks for K sessions. Default: the number of `--session-id` values, else 1.
+- `--session-id <uuid>`, repeatable: the id each session will get (`claude --session-id`),
+  in pick order; given at all, there must be exactly K. Each must be a UUID (exit 2).
+- `--urgent`: above.
+- `--env` and `--exec` need K = 1 (exit 2). With `--exec` and `--session-id`, a `claude`
+  command that has no `--session-id`, `--resume`, `-r`, `--continue` or `-c` argument gets
+  `--session-id <uuid>` added, so the lease is marked launched.
 
 **Output.**
 
-- Default: one line, `<label>  <folder>  (<reason>)`, e.g. `claude-3  ~/.claude-3  (7d 23% →
-  ~41% at reset Wed 10:00; 5h fresh; aggressive)`. The reason names the weekly windows
-  (`n` → `R` at the reset), the five-hour windows (`fresh` under 1 %), `unknown` for a window
-  with no reading, a mode other than
-  normal, `+N reserved`, `local data` or `no usage data`, and `data <age> old` when stale.
-  When the hub could not be read, `  [hub not read: <why>]` follows.
+- Default: one line per pick, `<label>  <folder>  (<reason>)`. For `lanes`, e.g.
+  `claude-3  ~/.claude-3  (aggressive; 7d 23%, resets Wed 10:00; 5h 12%; 2 leases in 60 min)`:
+  the kind, the weekly and 5-hour levels the pick was judged on, `unknown` for a weekly level
+  with no reading, `expiring` for an account taking the expiring turn, `urgent` for a pick
+  past its burst cap, `local data` or `no usage data`, `data <age> old` when the newest reading
+  is over 60 minutes old, and `session <uuid>` when given. For the projection strategies, e.g.
+  `claude-3  ~/.claude-3  (7d 23% → ~41% at reset Wed 10:00; 5h fresh; aggressive)`: the
+  weekly windows (`n` → `R` at the reset), the five-hour windows (`fresh` under 1 %),
+  `unknown` for a window with no reading, a mode other than normal, `+N reserved`, `local data`
+  or `no usage data`, and `data <age> old` when stale. When the hub could not be read,
+  `  [hub not read: <why>]` follows.
 - `--env`: only `CLAUDE_CONFIG_DIR=<absolute folder>`, or `-u CLAUDE_CONFIG_DIR` for the
   default view of `~/.claude` (with the variable set to `~/.claude`, Claude Code reads
   `~/.claude/.claude.json`, which may be another login: identity.md 3). For
   `env $(wy account next --env) claude`; a folder with spaces needs `--exec`.
 - `--json`: `{"v": 1, "time", "strategy", "model", "data": "hub"|"local", "hub_error",
-  "reserved", "picked": {"label", "folder", "dir", "env", "reason"} | null, "next_free",
-  "accounts": [...], "warnings"}`; each account has `label`, `folder`, `dir`, `default_view`,
-  `seat`, `email`, `seat_matched_by`, `logged_in`, `eligible`, `excluded_reason`, `score`,
-  `mode`, `settings_key`, `live_sessions`, `pending_reservations`, `data_source`
-  (`hub`, `hub+local`, `local`, `none`), `data_at`, `data_stale`, `free_at`, `reason` and
-  `windows` (each: `key`, `kind`, `cap_pct`, `used_pct`, `reading_at`, `age_min`, `stale`,
-  `now_pct`, `uncertainty_pct`, `at_session_end_pct`, `at_reset_pct`, `resets_at`,
-  `hours_to_reset`, `rate_pct_per_hour`, `rate_from` (`history`, `window`, `global`,
-  `live_sessions`, `none`), `unused_at_reset_pct`, `over_cap`, `source`). Eligible accounts
-  come first, best first. Times are RFC 3339 UTC.
-- `--explain`: the same as a table (5 h now→end/cap, 7 d now→reset/cap, other windows, data
-  source and age, why), then the pick line.
+  "reserved", "picked": {"label", "folder", "dir", "env", "reason", "session_id", "urgent"} |
+  null, "picks": [<as picked>...], "waiting", "next_free", "skipped_ledger_lines",
+  "accounts": [...], "warnings"}`. `picked` is the first pick, `picks` every pick in order,
+  `waiting` the number of the K sessions not placed. Each account has `label`, `folder`,
+  `dir`, `default_view`, `seat`, `email`, `seat_matched_by`, `logged_in`, `eligible`,
+  `excluded_reason`, `score`, `mode`, `settings_key`, `live_sessions`,
+  `pending_reservations`, `data_source` (`hub`, `hub+local`, `local`, `none`), `data_at`,
+  `data_stale`, `free_at`, `reason` and `windows` (each: `key`, `kind`, `cap_pct`,
+  `used_pct`, `reading_at`, `age_min`, `stale`, `now_pct`, `uncertainty_pct`,
+  `at_session_end_pct`, `at_reset_pct`, `resets_at`, `hours_to_reset`, `rate_pct_per_hour`,
+  `rate_from` (`history`, `window`, `global`, `live_sessions`, `none`),
+  `unused_at_reset_pct`, `over_cap`, `source`; empty for `lanes`). For `lanes` each account
+  also has `kind` and `lanes`: `{"weekly_pct", "five_hour_pct", "weekly_reserve_pct",
+  "hours_to_reset", "reading_at", "reading_age_min", "five_hour_resets_at", "meter_5h_pct",
+  "meter_7d_pct", "unexplained_5h_pct", "leases", "burst", "burst_cap", "capped",
+  "last_lease", "expiring", "stale", "unknown": [...], "skip_level"}` (`leases` = active
+  leases, `burst` = leases in the last 60 minutes, `meter_*` the token meter's points,
+  `skip_level` 0 for a burst cap only, 1 stale, 2 a protected rule, 3 a hard limit). Eligible
+  accounts come first, in pick order for the first pick. Times are RFC 3339 UTC.
+- `--explain`: the same as a table, then the pick lines. For `lanes`: kind, weekly level
+  (reserve level for protected) and reset, 5-hour level, leases and burst, data source and
+  age, why. For the projection strategies: 5 h now→end/cap, 7 d now→reset/cap, other windows,
+  data source and age, why.
 - `--exec [-- <cmd> [args...]]`: runs `<cmd>` (default `claude`) found on `PATH` with the
   pick's `CLAUDE_CONFIG_DIR` (unset for the default view of `~/.claude`), replacing `wy` (on
   Windows, waiting for it and exiting with its code). It prints the pick line on stderr first.
@@ -1081,10 +1305,15 @@ nothing. A file that cannot be parsed is started again empty.
 
 `--env`, `--json`, `--explain` and `--exec` do not mix (exit 2).
 
-**Exit codes.** 0: an account was picked. 4: no account is eligible; the line on stderr says
-when the earliest one frees up (or that none does at a known time) and points to
-`--explain`; `--json` and `--explain` still print their document on stdout. 2: usage. 1:
-another error (a hub that cannot be read is not one: the command falls back to local data).
+**Exit codes.** 0: every session asked for was placed. 4: fewer than K were placed (none,
+for K = 1): no account can take the rest now. The picks that were placed are printed and
+leased (launch only those); the line on stderr says when the earliest account frees up
+(`next_free`, or that none does at a known time; after a partial batch, `lanes` ranks once more
+with the placed picks leased to find it) and points to `--explain`; `--json` and
+`--explain` still print their document on stdout. 3: a `--session-id` is already leased or
+given twice; nothing was written (make new ids and ask again). 2: usage. 1: another error (a
+hub that cannot be read is not one: the command falls back to local data; a ledger that
+cannot be written is one, since the pick could not be recorded).
 
 ## 9. Status line, ledger, doctor, uninstall
 

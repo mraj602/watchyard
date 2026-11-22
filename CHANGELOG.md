@@ -12,11 +12,21 @@ All notable changes to Watchyard are recorded here. The format follows
   session on, from each folder's login on this machine and the limits of its seat (hub, or
   this machine's status line), with strategies (`smart`, `expiring`, `most-room`, `spread`,
   `fill`, `sticky`), per-account modes, caps, hours and priorities under `[next]` in
-  `config.toml`, short reservations so bursts of launches spread out, and `--env`, `--json`,
+  `config.toml`, a lease per pick so bursts of launches spread out, and `--env`, `--json`,
   `--explain` and `--exec` output. It only recommends.
+- `wy account next` strategy `lanes`, the new default: protected and aggressive accounts
+  (`next.accounts.<key>.mode protected`), the state from the newest readings plus this
+  machine's token use since them, burst caps of 6 (aggressive) and 2 (protected) new sessions
+  an hour, turns with expiring weekly room first, `--n` for several sessions in one call,
+  `--session-id` to tie each pick to its session, and `--urgent`. Exit 3 for a session id
+  already used; exit 4 also when only some of the sessions asked for were placed.
+- A lease ledger for `wy account next` (`<state>/next/leases/`, append-only, one file per
+  day): every pick is a lease, which `wy hook` marks launched and ended on `SessionStart` and
+  `SessionEnd`, and which goes to the hub as an `account_lease` record.
 - Hub: `GET /v1/usage`, readable with a machine token: each seat's limit percentages, reset
-  times and recent samples, plus the calling machine's own folders, and nothing else.
-  `wy account next` reads it, so upgrade the hub before the machines.
+  times and recent samples, other machines' recent leases (no session ids), plus the calling
+  machine's own folders, and nothing else. `wy account next` reads it, so upgrade the hub
+  before the machines. Schema version 15 adds `account_lease`.
 
 ### Changed
 

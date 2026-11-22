@@ -50,10 +50,25 @@ type HubSeat struct {
 
 // HubSample is api.yaml LimitSample.
 type HubSample struct {
-	TS      time.Time `json:"ts"`
-	Key     string    `json:"key"`
-	Source  string    `json:"source"`
-	UsedPct *float64  `json:"used_pct"`
+	TS       time.Time  `json:"ts"`
+	Key      string     `json:"key"`
+	Source   string     `json:"source"`
+	UsedPct  *float64   `json:"used_pct"`
+	ResetsAt *time.Time `json:"resets_at"`
+}
+
+// HubLease is api.yaml UsageLease: another machine's lease of a seat.
+type HubLease struct {
+	At          time.Time `json:"at"`
+	Kind        string    `json:"kind"`
+	C5          float64   `json:"c5"`
+	CF          float64   `json:"cf"`
+	Urgent      bool      `json:"urgent"`
+	HasSession  bool      `json:"has_session"`
+	Launched    bool      `json:"launched"`
+	Ended       bool      `json:"ended"`
+	BurnedUnits float64   `json:"burned_units"`
+	Seen        bool      `json:"seen"`
 }
 
 // HubData is what the picker reads from the hub.
@@ -61,6 +76,8 @@ type HubData struct {
 	Seats []HubSeat
 	// Samples per seat id, any order.
 	Samples map[string][]HubSample
+	// Leases per seat id: other machines' leases (only from /v1/usage).
+	Leases map[string][]HubLease
 }
 
 // HubClient reads the hub: /v1/usage with the machine token (or any read token), or
@@ -131,6 +148,7 @@ func (h HubClient) FetchUsage(ctx context.Context, now time.Time) (HubData, erro
 			Label        *string     `json:"label"`
 			Windows      []HubWindow `json:"windows"`
 			Samples      []HubSample `json:"samples"`
+			Leases       []HubLease  `json:"leases"`
 			LiveSessions int         `json:"live_sessions"`
 			Places       []struct {
 				Slot string `json:"slot"`
@@ -149,7 +167,7 @@ func (h HubClient) FetchUsage(ctx context.Context, now time.Time) (HubData, erro
 	if doc.Machine != nil {
 		machine = *doc.Machine
 	}
-	d := HubData{Samples: map[string][]HubSample{}}
+	d := HubData{Samples: map[string][]HubSample{}, Leases: map[string][]HubLease{}}
 	for _, x := range doc.Seats {
 		s := HubSeat{ID: x.ID, Account: x.Account, Org: x.Org, Label: x.Label, Windows: x.Windows, LiveSessions: x.LiveSessions}
 		for _, p := range x.Places {
@@ -168,6 +186,7 @@ func (h HubClient) FetchUsage(ctx context.Context, now time.Time) (HubData, erro
 		}
 		d.Seats = append(d.Seats, s)
 		d.Samples[x.ID] = x.Samples
+		d.Leases[x.ID] = x.Leases
 	}
 	return d, nil
 }

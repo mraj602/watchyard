@@ -132,8 +132,9 @@ one folder.
   hub.sock                     forward mode with --forward-socket only (machines.md 3.3)
   pull/                        hub host only: id_ed25519(.pub), generated ssh_config and known_hosts (machines.md 3.4)
   board/token.json             read-only board token for wy board, the pane and wy account next (older hubs), mode 0600 (terminal.md T3)
-  next/picks.json              wy account next: reservations and pick log, mode 0600 (setup.md 8.5)
-  next/picks.lock              held while wy account next ranks and records a pick
+  next/leases/<YYYY-MM-DD>.jsonl  wy account next: the lease ledger, append-only day files (UTC),
+                               mode 0600, kept 8 days (setup.md 8.5); wy hook appends launched/ended
+  next/leases.lock             held while wy account next reads the ledger, ranks and appends
   board/last-view.json         last board view shown, mode 0600 (terminal.md T3)
   term/title-<session>.json    last tab title per session, pruned after 7 days by wy tick (terminal.md T6)
   keys/                        mode 0700: device.json, owner.sealed (owner machine), owner.pub, hub.pub,
@@ -227,17 +228,17 @@ enabled = false                              # wy hook writes the session files;
 delivery = "honest"                          # honest | accept | courier (peers.md 8.5)
 
 [next]                                       # wy account next (setup.md 8.5)
-strategy = "smart"                           # smart | expiring | most-room | spread | fill | sticky
+strategy = "lanes"                           # lanes | smart | expiring | most-room | spread | fill | sticky
 model = ""                                   # default --model
 session_5h = 15                              # points of a 5-hour window one new session uses
 session_7d = 2                               # points of a weekly window one new session uses
 session_min = 120                            # how long a session burns, minutes
 stale_min = 30                               # readings older than this are uncertain
-reserve_min = 12                             # how long a pick counts as a pending session
+reserve_min = 12                             # how long a lease counts as a pending session
 sticky_margin = 10                           # sticky: points under each cap that end it
 
 [next.accounts."me@example.com"]             # per account: email (recommended), seat id, folder or label
-mode = "aggressive"                          # conservative | normal | aggressive
+mode = "aggressive"                          # protected | conservative | normal | aggressive
 # cap_5h, cap_7d, cap_model, reserve_pct, priority, weight, exclude, hours = "09:00-18:00", days = "mon-fri"
 
 [terminal]                                   # (terminal.md T12)

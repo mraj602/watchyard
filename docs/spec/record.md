@@ -167,6 +167,9 @@ events are installed).
 - `payload` is the JSON object Claude Code wrote to the hook's stdin, with every field
   kept, except the content fields in the table below.
 - `slot` and `seat` are required (seat when logged in).
+- On `SessionStart` and `SessionEnd`, `wy hook` also appends a `launched` or `ended` line to
+  the lease ledger when the session has a lease there (setup.md 8.5, "Leases and the
+  ledger"). Nothing about it goes into the record.
 
 Content fields (the closed list, checked against the captured payloads in `testdata/hooks/`).
 Each is removed on **every** event, whether or not it is listed against that event below

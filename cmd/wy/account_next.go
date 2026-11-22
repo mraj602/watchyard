@@ -1,7 +1,8 @@
 package main
 
 // `wy account next` (docs/spec/setup.md 8.5): recommends the account to start the next
-// Claude Code session on. It reads, ranks and records a short reservation; it never
+// Claude Code session on (or K of them with --n). It reads, ranks and records a lease per
+// pick in the ledger (internal/leases), mirrored to the hub through the outbox; it never
 // switches a running session and never changes a login. --exec starts the command the
 // caller names, with CLAUDE_CONFIG_DIR set for the pick: an explicit action of the caller.
 
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -22,13 +24,30 @@ import (
 	"github.com/mraj602/watchyard/internal/board"
 	"github.com/mraj602/watchyard/internal/client"
 	"github.com/mraj602/watchyard/internal/config"
+	"github.com/mraj602/watchyard/internal/detach"
 	"github.com/mraj602/watchyard/internal/identity"
+	"github.com/mraj602/watchyard/internal/leases"
+	"github.com/mraj602/watchyard/internal/outbox"
 	"github.com/mraj602/watchyard/internal/paths"
 	"github.com/mraj602/watchyard/internal/picker"
+	"github.com/mraj602/watchyard/internal/record"
+	"github.com/mraj602/watchyard/internal/version"
 )
 
-// exitNoAccount: no account can take a new session now (setup.md 8.5).
-const exitNoAccount = 4
+// Exit codes of setup.md 8.5: 4 when fewer sessions than asked for were placed, 3 when a
+// --session-id is already leased or given twice.
+const (
+	exitNoAccount        = 4
+	exitDuplicateSession = 3
+)
+
+// nextMaxN bounds --n.
+const nextMaxN = 50
+
+// nextFlushEvery debounces the background flush that sends the lease records (the hook's).
+const nextFlushEvery = 2 * time.Second
+
+var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // nextHubTimeout bounds all hub reads of one run.
 const nextHubTimeout = 5 * time.Second
@@ -50,6 +69,9 @@ type nextEnv struct {
 	environ  func() []string
 	// authRun runs `claude auth status --json`; nil means identity.ExecRunner.
 	authRun identity.Runner
+	// spawn starts `wy <args>` in the background; nil means a detached copy of this binary
+	// (none with WY_NO_SPAWN=1).
+	spawn func(args []string) error
 }
 
 // nextAuthFresh: a cached `claude auth status` younger than this is reused, so a burst of
@@ -57,10 +79,13 @@ type nextEnv struct {
 const nextAuthFresh = time.Minute
 
 func nextUsage(w io.Writer) {
-	fmt.Fprint(w, `usage: wy account next [--strategy smart|expiring|most-room|spread|fill|sticky] [--model <m>]
+	fmt.Fprint(w, `usage: wy account next [--strategy lanes|smart|expiring|most-room|spread|fill|sticky] [--model <m>]
+                       [--n <K>] [--session-id <uuid>]... [--urgent]
                        [--env | --json | --explain] [--no-reserve] [--no-hub]
        wy account next [flags] --exec [-- <command> [args...]]     (default command: claude)
-Exit 0: an account was picked. Exit 4: no account can take a new session now.
+--n, --session-id and --urgent are for the lanes strategy (the default).
+Exit 0: every session asked for was placed. Exit 4: fewer were placed (none for one);
+launch only the printed picks. Exit 3: a --session-id is already leased or given twice.
 `)
 }
 
@@ -91,19 +116,30 @@ func accountNext(e nextEnv, args []string) error {
 	fs := flag.NewFlagSet("account next", flag.ContinueOnError)
 	fs.SetOutput(e.stderr)
 	fs.Usage = func() { nextUsage(e.stderr) }
-	strategy := fs.String("strategy", "", "smart, expiring, most-room, spread, fill or sticky (default next.strategy)")
-	model := fs.String("model", "", "the model the session will use, e.g. opus (adds that model's weekly limit)")
+	strategy := fs.String("strategy", "", "lanes, smart, expiring, most-room, spread, fill or sticky (default next.strategy)")
+	model := fs.String("model", "", "the model the session will use, e.g. opus (recorded on the lease)")
 	envOut := fs.Bool("env", false, "print only CLAUDE_CONFIG_DIR=<folder> (for env $(...) claude)")
 	asJSON := fs.Bool("json", false, "every account ranked, as JSON")
 	explain := fs.Bool("explain", false, "every account ranked, as a table")
-	noReserve := fs.Bool("no-reserve", false, "a dry query: record no reservation and no pick")
+	noReserve := fs.Bool("no-reserve", false, "a dry query: record no lease")
 	noHub := fs.Bool("no-hub", false, "use only this machine's data")
 	doExec := fs.Bool("exec", false, "start the command after -- (default claude) with the pick's CLAUDE_CONFIG_DIR")
+	n := fs.Int("n", 0, "picks for this many sessions, 1 to 50 (default: the number of --session-id, else 1)")
+	urgent := fs.Bool("urgent", false, "lanes: may pass an aggressive account's burst cap when nothing else is free")
+	var sids []string
+	fs.Func("session-id", "the session id (a UUID) each session will get, repeatable, in pick order", func(v string) error {
+		sids = append(sids, v)
+		return nil
+	})
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
 	if fs.NArg() > 0 {
 		nextUsage(e.stderr)
+		return errUsage
+	}
+	bad := func(msg string) error {
+		fmt.Fprintln(e.stderr, "wy account next: "+msg)
 		return errUsage
 	}
 	outs := 0
@@ -113,16 +149,31 @@ func accountNext(e nextEnv, args []string) error {
 		}
 	}
 	if outs > 1 {
-		fmt.Fprintln(e.stderr, "wy account next: --env, --json, --explain and --exec do not mix")
-		return errUsage
+		return bad("--env, --json, --explain and --exec do not mix")
 	}
 	if len(cmdArgs) > 0 && !*doExec {
-		fmt.Fprintln(e.stderr, "wy account next: a command after -- needs --exec")
-		return errUsage
+		return bad("a command after -- needs --exec")
 	}
 	if *strategy != "" && !config.ValidNextStrategy(*strategy) {
-		fmt.Fprintf(e.stderr, "wy account next: unknown strategy %q (want %s)\n", *strategy, strings.Join(config.NextStrategies, ", "))
-		return errUsage
+		return bad(fmt.Sprintf("unknown strategy %q (want %s)", *strategy, strings.Join(config.NextStrategies, ", ")))
+	}
+	k := *n
+	if k == 0 {
+		k = max(1, len(sids))
+	}
+	if k < 1 || k > nextMaxN {
+		return bad(fmt.Sprintf("--n must be 1 to %d", nextMaxN))
+	}
+	if len(sids) > 0 && len(sids) != k {
+		return bad(fmt.Sprintf("--n %d needs exactly %d --session-id values, got %d", k, k, len(sids)))
+	}
+	for _, sid := range sids {
+		if !uuidRe.MatchString(sid) {
+			return bad(fmt.Sprintf("--session-id %q is not a UUID", sid))
+		}
+	}
+	if k > 1 && (*envOut || *doExec) {
+		return bad("--env and --exec start one session: use them without --n or with --n 1")
 	}
 
 	cfg := config.Defaults()
@@ -137,6 +188,14 @@ func accountNext(e nextEnv, args []string) error {
 		warns = append(warns, err.Error())
 	}
 	settings := picker.SettingsFrom(cfg.Next)
+	strat := *strategy
+	if strat == "" {
+		strat = settings.Strategy
+	}
+	lanes := strat == config.NextStrategyLanes
+	if !lanes && (k > 1 || len(sids) > 0 || *urgent) {
+		return bad("--n above 1, --session-id and --urgent are for the lanes strategy (strategy is " + strat + ")")
+	}
 	now := e.now()
 
 	slots, err := nextSlots(e, cfg)
@@ -158,74 +217,201 @@ func accountNext(e nextEnv, args []string) error {
 			src.Hub, data = hd, "hub"
 		}
 	}
-	local, lerr := picker.ReadLocal(filepath.Join(e.dirs.State.Path, "outbox"), now.Add(-7*24*time.Hour))
+	ob, lerr := picker.ReadOutbox(filepath.Join(e.dirs.State.Path, "outbox"), now.Add(-7*24*time.Hour), lanes)
 	if lerr != nil {
 		warns = append(warns, "outbox: "+lerr.Error())
 	}
-	src.Local = local
-	in := picker.Input{Now: now, Strategy: *strategy, Model: *model, Settings: settings, Candidates: picker.Candidates(slots, src)}
+	src.Local = ob.Samples
+	in := picker.Input{Now: now, Strategy: strat, Model: *model, Settings: settings, Candidates: picker.Candidates(slots, src),
+		Outbox: ob, N: k, SIDs: sids, Urgent: *urgent}
 
-	store := picker.Store{Dir: filepath.Join(e.dirs.State.Path, "next")}
+	ledger := leases.Ledger{Dir: filepath.Join(e.dirs.State.Path, "next")}
 	var res picker.Result
-	rank := func(l picker.Ledger) {
-		in.Pending, in.LastPicked, in.LastKey = l.Pending(now), l.Last, l.LastKey
-		res = picker.Rank(in)
-	}
-	reserved := false
+	var lines []leases.Line
+	skipped := 0
 	if *noReserve {
-		l, err := store.Read(now)
+		ls, sk, err := ledger.Read(now)
 		if err != nil {
-			warns = append(warns, "pick log: "+err.Error())
+			warns = append(warns, "lease ledger: "+err.Error())
 		}
-		rank(l)
+		in.Leases, skipped = ls, sk
+		res, err = picker.Decide(in)
+		if err != nil {
+			return nextDuplicate(e, err)
+		}
 	} else {
-		err := store.Update(now, func(l *picker.Ledger) error {
-			rank(*l)
-			if res.Pick != nil {
-				l.Record(res.Pick.Key(), res.Pick.Folder, now, settings.ReserveTTL)
-				reserved = true
-			}
-			return nil
-		})
-		if err != nil { // the pick still stands; it is just not reserved
-			warns = append(warns, "reservation not recorded: "+err.Error())
-			if !reserved {
-				l, _ := store.Read(now)
-				rank(l)
-			}
+		unlock, err := ledger.Lock()
+		if err != nil {
+			return err
 		}
+		ls, sk, err := ledger.Read(now)
+		if err != nil {
+			unlock()
+			return fmt.Errorf("read the lease ledger: %w", err)
+		}
+		in.Leases, skipped = ls, sk
+		res, err = picker.Decide(in)
+		if err != nil {
+			unlock()
+			return nextDuplicate(e, err)
+		}
+		lines = leaseLines(res, *model, now)
+		err = ledger.Append(lines...)
+		if err == nil {
+			err = ledger.Prune(now)
+		}
+		unlock()
+		if err != nil {
+			return fmt.Errorf("record the lease: %w", err)
+		}
+		if w := mirrorLeases(e, cfg, m.ID, res, lines); w != "" {
+			warns = append(warns, w)
+		}
+	}
+	if skipped > 0 {
+		warns = append(warns, fmt.Sprintf("lease ledger: %d unreadable lines skipped", skipped))
 	}
 	res.Warnings = append(warns, res.Warnings...)
 
 	switch {
 	case *asJSON:
-		if err := picker.WriteJSON(e.stdout, picker.NewDoc(res, data, hubErr, reserved)); err != nil {
+		if err := picker.WriteJSON(e.stdout, picker.NewDoc(res, data, hubErr, len(lines) > 0, skipped)); err != nil {
 			return err
 		}
 	case *explain:
 		if err := picker.Explain(e.stdout, res, data, hubErr); err != nil {
 			return err
 		}
-	case res.Pick == nil:
+	case len(res.Picks) == 0:
 		// below
 	case *envOut:
-		fmt.Fprintln(e.stdout, picker.EnvArgs(*res.Pick))
+		fmt.Fprintln(e.stdout, picker.EnvArgs(res.Picks[0].Ranked))
 	case *doExec:
-		return nextExec(e, *res.Pick, cmdArgs)
-	default:
-		line := picker.Line(*res.Pick)
-		if data == "local" && hubErr != "" {
-			line += "  [hub not read: " + hubErr + "]"
+		p := res.Picks[0]
+		if p.Urgent {
+			fmt.Fprintln(e.stderr, "wy account next: urgent: "+p.Label+" passed its burst cap")
 		}
-		fmt.Fprintln(e.stdout, line)
+		return nextExec(e, p.Ranked, withSessionID(cmdArgs, p.SessionID))
+	default:
+		for _, p := range res.Picks {
+			line := picker.Line(p.Ranked)
+			if data == "local" && hubErr != "" {
+				line += "  [hub not read: " + hubErr + "]"
+			}
+			fmt.Fprintln(e.stdout, line)
+		}
 	}
-	if res.Pick == nil {
+	for _, p := range res.Picks {
+		if p.Urgent && !*doExec {
+			fmt.Fprintln(e.stderr, "wy account next: urgent: "+p.Label+" passed its burst cap")
+		}
+	}
+	if len(res.Picks) == 0 || res.Waiting > 0 {
 		if !*asJSON && !*explain {
 			fmt.Fprintln(e.stderr, picker.NoneLine(res))
 		}
 		return exitWith(exitNoAccount, nil)
 	}
 	return nil
+}
+
+// nextDuplicate reports a --session-id that is already leased or given twice (exit 3).
+func nextDuplicate(e nextEnv, err error) error {
+	if !errors.Is(err, picker.ErrDuplicateSession) {
+		return err
+	}
+	fmt.Fprintln(e.stderr, "wy account next: "+err.Error()+"; nothing was recorded (make new session ids and ask again)")
+	return exitWith(exitDuplicateSession, nil)
+}
+
+// leaseLines are the ledger lines of the picks: one lease each, sharing a batch id.
+func leaseLines(res picker.Result, model string, now time.Time) []leases.Line {
+	if len(res.Picks) == 0 {
+		return nil
+	}
+	batch := record.NewID(now)
+	var out []leases.Line
+	for _, p := range res.Picks {
+		c5, cf := p.C5, p.CF
+		out = append(out, leases.Line{V: 1, Op: leases.OpLease, ID: record.NewID(now), At: now.UTC(), Key: p.Key(),
+			Account: p.Account(), Org: p.Org(), Folder: p.Folder, Label: p.Label, Kind: p.LaneKind,
+			SessionID: p.SessionID, C5: &c5, CF: &cf, Model: model, Strategy: res.Strategy, Urgent: p.Urgent, Batch: batch})
+	}
+	return out
+}
+
+// mirrorLeases appends an account_lease record per lease to the outbox and starts a
+// background flush; it never waits for the hub. It returns a warning, or "".
+func mirrorLeases(e nextEnv, cfg config.Config, machine string, res picker.Result, lines []leases.Line) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	ob := outbox.New(filepath.Join(e.dirs.State.Path, "outbox"))
+	ob.NoFsync = !cfg.Outbox.Fsync
+	wrote := false
+	var problems []string
+	for _, l := range lines {
+		if l.Account == "" || l.Org == "" {
+			continue // a folder whose login is unknown: the hub could not place it
+		}
+		r, err := record.NewAccountLease(record.Meta{Machine: machine, Client: "wy/" + version.Version, Now: l.At,
+			Seat: &record.Seat{Account: l.Account, Org: l.Org, Src: "claude_json"}},
+			record.AccountLeasePayload{LeaseID: l.ID, SessionID: l.SessionID, Kind: l.Kind, C5: *l.C5, CF: *l.CF,
+				Strategy: l.Strategy, Urgent: l.Urgent, Model: l.Model, Folder: l.Folder, Batch: l.Batch})
+		if err == nil {
+			_, err = ob.Append(r)
+		}
+		if err != nil {
+			problems = append(problems, err.Error())
+			continue
+		}
+		wrote = true
+	}
+	if wrote && cfg.Hub.URL != "" && detach.Debounce(filepath.Join(ob.Dir, "flush.stamp"), nextFlushEvery, time.Now()) {
+		spawn := e.spawn
+		if spawn == nil {
+			spawn = func(args []string) error {
+				if e.getenv("WY_NO_SPAWN") == "1" {
+					return nil
+				}
+				exe, err := os.Executable()
+				if err != nil {
+					return err
+				}
+				return detach.Start(exe, args, nil)
+			}
+		}
+		if err := spawn([]string{"flush", "--quiet"}); err != nil {
+			problems = append(problems, "background flush: "+err.Error())
+		}
+	}
+	if len(problems) > 0 {
+		return "lease not sent to the hub: " + strings.Join(problems, "; ")
+	}
+	return ""
+}
+
+// withSessionID adds --session-id to a claude command that names no session of its own, so
+// the session starts with the leased id and the hook marks the lease launched.
+func withSessionID(argv []string, sid string) []string {
+	if sid == "" {
+		return argv
+	}
+	if len(argv) == 0 {
+		argv = []string{"claude"}
+	}
+	if !strings.EqualFold(strings.TrimSuffix(filepath.Base(argv[0]), ".exe"), "claude") {
+		return argv
+	}
+	for _, a := range argv[1:] {
+		switch {
+		case a == "--session-id", strings.HasPrefix(a, "--session-id="), a == "--resume", strings.HasPrefix(a, "--resume="),
+			a == "-r", a == "--continue", a == "-c":
+			return argv
+		}
+	}
+	out := append([]string{}, argv[0], "--session-id", sid)
+	return append(out, argv[1:]...)
 }
 
 // nextSlots lists this machine's folders and their logins, decided by identity.Login.LoggedIn

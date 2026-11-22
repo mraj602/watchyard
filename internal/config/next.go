@@ -11,6 +11,7 @@ import (
 
 // Strategies of `wy account next` (docs/spec/setup.md 8.5).
 const (
+	NextStrategyLanes    = "lanes"
 	NextStrategySmart    = "smart"
 	NextStrategyExpiring = "expiring"
 	NextStrategyMostRoom = "most-room"
@@ -20,7 +21,7 @@ const (
 )
 
 // NextStrategies lists the strategies in the order the help text names them.
-var NextStrategies = []string{NextStrategySmart, NextStrategyExpiring, NextStrategyMostRoom, NextStrategySpread,
+var NextStrategies = []string{NextStrategyLanes, NextStrategySmart, NextStrategyExpiring, NextStrategyMostRoom, NextStrategySpread,
 	NextStrategyFill, NextStrategySticky}
 
 // ValidNextStrategy reports whether s names a strategy.
@@ -38,6 +39,9 @@ const (
 	NextModeConservative = "conservative"
 	NextModeNormal       = "normal"
 	NextModeAggressive   = "aggressive"
+	// NextModeProtected: kept for its owner (lanes); like conservative for the projection
+	// strategies.
+	NextModeProtected = "protected"
 )
 
 // nextAccountsPrefix starts the free-form per-account keys: next.accounts.<key>.<field>,
@@ -89,10 +93,10 @@ func parseNextAccountField(key, field, v string) (any, error) {
 	switch field {
 	case "mode":
 		switch v {
-		case NextModeConservative, NextModeNormal, NextModeAggressive:
+		case NextModeConservative, NextModeNormal, NextModeAggressive, NextModeProtected:
 			return v, nil
 		}
-		return nil, fmt.Errorf("%s: want conservative, normal or aggressive, got %q", key, v)
+		return nil, fmt.Errorf("%s: want protected, conservative, normal or aggressive, got %q", key, v)
 	case "hours":
 		if _, _, err := ParseNextHours(v); err != nil {
 			return nil, fmt.Errorf("%s: %w", key, err)

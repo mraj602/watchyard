@@ -183,7 +183,7 @@ func Defaults() Config {
 	c.Peers.Delivery = "honest"
 	c.Peers.HubMayWiden = true
 	c.Update.VerifyAttestation = true
-	c.Next = Next{Strategy: NextStrategySmart, Session5h: 15, Session7d: 2, SessionMin: 120, StaleMin: 30,
+	c.Next = Next{Strategy: NextStrategyLanes, Session5h: 15, Session7d: 2, SessionMin: 120, StaleMin: 30,
 		ReserveMin: 12, StickyMargin: 10, Accounts: map[string]NextAccount{}}
 	return c
 }
@@ -241,7 +241,7 @@ var known = map[string]spec{
 	"peers.enabled":             {kind: kBool, def: false},
 	"peers.delivery":            {kind: kString, def: "honest"},
 	"peers.hub_may_widen":       {kind: kBool, def: true},
-	"next.strategy":             {kind: kString, def: NextStrategySmart},
+	"next.strategy":             {kind: kString, def: NextStrategyLanes},
 	"next.model":                {kind: kString, def: ""},
 	"next.session_5h":           {kind: kFloat, def: float64(15)},
 	"next.session_7d":           {kind: kFloat, def: float64(2)},

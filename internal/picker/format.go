@@ -7,6 +7,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/mraj602/watchyard/internal/config"
 )
 
 // EnvArgs is what `--env` prints for a pick: `CLAUDE_CONFIG_DIR=<dir>`, or for the default
@@ -25,9 +27,13 @@ func Line(r Ranked) string {
 	return fmt.Sprintf("%s  %s  (%s)", r.Label, r.Folder, r.Reason)
 }
 
-// NoneLine says that no account can be used now and when the earliest one frees up.
+// NoneLine says that no account can be used now (or how many of the sessions asked for
+// could not be placed) and when the earliest one frees up.
 func NoneLine(res Result) string {
 	s := "No account can take a new session now"
+	if len(res.Picks) > 0 && res.Waiting > 0 {
+		s = fmt.Sprintf("%d of %d sessions placed; no account can take the other %d now", len(res.Picks), len(res.Picks)+res.Waiting, res.Waiting)
+	}
 	if res.NextFree != nil {
 		s += "; the earliest frees up " + when(*res.NextFree, res.Now) + " (" + res.NextFree.Local().Format("2006-01-02 15:04 MST") + ")"
 	} else {
@@ -46,29 +52,41 @@ type Doc struct {
 	HubError string     `json:"hub_error,omitempty"`
 	Reserved bool       `json:"reserved"`
 	Picked   *Picked    `json:"picked"`
+	Picks    []Picked   `json:"picks"`
+	Waiting  int        `json:"waiting"`
 	NextFree *time.Time `json:"next_free"`
-	Accounts []Ranked   `json:"accounts"`
-	Warnings []string   `json:"warnings,omitempty"`
+	// SkippedLedgerLines counts the ledger lines that could not be read.
+	SkippedLedgerLines int      `json:"skipped_ledger_lines"`
+	Accounts           []Ranked `json:"accounts"`
+	Warnings           []string `json:"warnings,omitempty"`
 }
 
-// Picked names the pick in Doc.
+// Picked names a pick in Doc.
 type Picked struct {
-	Label  string `json:"label"`
-	Folder string `json:"folder"`
-	Dir    string `json:"dir"`
-	Env    string `json:"env"`
-	Reason string `json:"reason"`
+	Label     string `json:"label"`
+	Folder    string `json:"folder"`
+	Dir       string `json:"dir"`
+	Env       string `json:"env"`
+	Reason    string `json:"reason"`
+	SessionID string `json:"session_id,omitempty"`
+	Urgent    bool   `json:"urgent"`
 }
 
-// NewDoc builds the `--json` document of a result.
-func NewDoc(res Result, data, hubErr string, reserved bool) Doc {
+// NewDoc builds the `--json` document of a result; skipped is the ledger's unreadable lines.
+func NewDoc(res Result, data, hubErr string, reserved bool, skipped int) Doc {
 	d := Doc{V: 1, Time: res.Now.UTC(), Strategy: res.Strategy, Model: res.Model, Data: data, HubError: hubErr,
-		Reserved: reserved && res.Pick != nil, NextFree: res.NextFree, Accounts: res.Ranked, Warnings: res.Warnings}
+		Reserved: reserved && len(res.Picks) > 0, NextFree: res.NextFree, Accounts: res.Ranked, Warnings: res.Warnings,
+		Picks: []Picked{}, Waiting: res.Waiting, SkippedLedgerLines: skipped}
 	if d.Accounts == nil {
 		d.Accounts = []Ranked{}
 	}
-	if res.Pick != nil {
-		d.Picked = &Picked{Label: res.Pick.Label, Folder: res.Pick.Folder, Dir: res.Pick.Dir, Env: EnvArgs(*res.Pick), Reason: res.Pick.Reason}
+	for _, p := range res.Picks {
+		d.Picks = append(d.Picks, Picked{Label: p.Label, Folder: p.Folder, Dir: p.Dir, Env: EnvArgs(p.Ranked), Reason: p.Reason,
+			SessionID: p.SessionID, Urgent: p.Urgent})
+	}
+	if len(d.Picks) > 0 {
+		first := d.Picks[0]
+		d.Picked = &first
 	}
 	return d
 }
@@ -102,6 +120,9 @@ func Explain(w io.Writer, res Result, data, hubErr string) error {
 		head += "; data from the hub"
 	}
 	fmt.Fprintln(w, head+".")
+	if res.Strategy == config.NextStrategyLanes {
+		return explainLanes(w, res)
+	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "#\tACCOUNT\tFOLDER\tOK\tSCORE\t5H NOW→END/CAP\t7D NOW→RESET/CAP\tOTHER\tDATA\tWHY")
 	for i, r := range res.Ranked {
@@ -152,6 +173,62 @@ func Explain(w io.Writer, res Result, data, hubErr string) error {
 	if res.Pick != nil {
 		fmt.Fprintln(w, "Pick: "+Line(*res.Pick))
 	} else {
+		fmt.Fprintln(w, NoneLine(res))
+	}
+	for _, x := range res.Warnings {
+		fmt.Fprintln(w, "note: "+x)
+	}
+	return nil
+}
+
+// explainLanes is the lanes table: kind, weekly level (reserve level for protected) and
+// reset, 5-hour level, leases and burst, data, why.
+func explainLanes(w io.Writer, res Result) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "#\tACCOUNT\tFOLDER\tKIND\tOK\t7D (RESERVE) RESET\t5H\tLEASES BURST\tDATA\tWHY")
+	for i, r := range res.Ranked {
+		n, ok := "-", "no"
+		if r.Eligible {
+			n, ok = fmt.Sprint(i+1), "yes"
+		}
+		seven, five, ls := "-", "-", "-"
+		if v := r.Lanes; v != nil {
+			seven = fmt.Sprintf("%.0f", v.WeeklyPct)
+			if len(v.Unknown) > 0 {
+				seven = "?"
+			}
+			if r.Kind == "protected" {
+				seven += fmt.Sprintf(" (%.0f)", v.WeeklyReservePct)
+			}
+			if v.HoursToReset > 0 {
+				seven += " " + when(res.Now.Add(hoursDur(v.HoursToReset)), res.Now)
+			}
+			five = fmt.Sprintf("%.0f", v.FiveHourPct)
+			ls = fmt.Sprintf("%d %d/%d", v.Leases, v.Burst, v.BurstCap)
+		}
+		dataCol := r.Source
+		if r.Freshest != nil {
+			dataCol += " " + age(res.Now.Sub(*r.Freshest))
+		}
+		if r.Stale {
+			dataCol += " stale"
+		}
+		why := r.Reason
+		if r.Eligible {
+			why = "eligible"
+			if r.Lanes != nil && r.Lanes.Expiring {
+				why += ", expiring first"
+			}
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n, r.Label, r.Folder, r.Kind, ok, seven, five, ls, dataCol, why)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	for _, p := range res.Picks {
+		fmt.Fprintln(w, "Pick: "+Line(p.Ranked))
+	}
+	if len(res.Picks) == 0 || res.Waiting > 0 {
 		fmt.Fprintln(w, NoneLine(res))
 	}
 	for _, x := range res.Warnings {

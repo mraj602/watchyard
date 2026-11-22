@@ -48,6 +48,7 @@ func Candidates(slots []Slot, src Sources) []Candidate {
 					c.Account, c.Org = seat.Account, seat.Org
 				}
 				c.Windows = hubWindows(*seat, src.Hub.Samples[seat.ID])
+				c.RemoteLeases = src.Hub.Leases[seat.ID]
 			}
 			c.SignedOut = signedOut(s.Folder, src.Machine, c.SeatID, src.Hub.Seats)
 		}
@@ -134,7 +135,11 @@ func hubWindows(seat HubSeat, samples []HubSample) []Window {
 		}
 		for _, s := range samples {
 			if s.Key == hw.Key && s.UsedPct != nil {
-				w.Samples = append(w.Samples, Sample{At: s.TS, Pct: *s.UsedPct})
+				x := Sample{At: s.TS, Pct: *s.UsedPct, Source: s.Source}
+				if s.ResetsAt != nil {
+					x.ResetsAt = *s.ResetsAt
+				}
+				w.Samples = append(w.Samples, x)
 			}
 		}
 		ws = append(ws, w)
@@ -160,11 +165,15 @@ func overlayLocal(c *Candidate, local []LocalSample) {
 			if !mine(s) {
 				continue
 			}
-			pct, _ := pick(s, k)
+			pct, reset := pick(s, k)
 			if pct == nil {
 				continue
 			}
-			hist = append(hist, Sample{At: s.At, Pct: *pct})
+			x := Sample{At: s.At, Pct: *pct, Source: "local"}
+			if reset != nil {
+				x.ResetsAt = *reset
+			}
+			hist = append(hist, x)
 			if newest == nil || s.At.After(newest.At) {
 				newest = &local[i]
 			}
