@@ -62,6 +62,8 @@ const (
 	TypePeersList  = "peers_list"
 	// TypePeerTag adds or removes a session's tag (peers.md 3.4); answered with `peers`.
 	TypePeerTag = "peer_tag"
+	// TypePeerTrust reports this machine's trusted-sender record (peers.md 4.1a); no answer.
+	TypePeerTrust = "peer_trust"
 )
 
 // Queued and Ephemeral list the hub→device types (link.md 6.3, 6.4).

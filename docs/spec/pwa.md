@@ -321,9 +321,17 @@ the board, desktop.md C7) and the Android app (phone.md P4) behave the same way.
   because it may hold text from a message. On the phone it is the Sessions screen's state: kept
   while the screen stays mounted, and a deep link that opens the Sessions screen starts empty.
   **Clear** (the × in the box) and, on the board, Escape in the box clear it.
+- **Tags.** Each row shows the session's tags (`Session.tags`, peers.md 3.4) as small chips
+  after its title line, in tag order. The search also matches tags: a plain term matches a tag
+  that contains it, like any other field (an excerpt line "Tag: " is not added: the chip is on the
+  row and is highlighted), and a term `tag:<name>` (the prefix in any case) matches only a
+  session holding exactly that tag; it is never matched against other fields. `tag:` with
+  nothing after it matches nothing. **Clicking a chip** puts `tag:<name>` in the search box
+  (replacing what was there) and so filters the list to that tag; on the phone a tap does the
+  same. The chip is a button labelled "Show sessions tagged <name>".
 - **Code.** The folding, matching, highlight ranges and excerpts are one pure module,
   `webui/static/components/search-fmt.js`, ported to `phone/src/lib/format/search.ts`; the
-  phone's tests run both on one case table.
+  phone's tests run both on one case table (tags included).
 
 ### 3.1 Peers (`#/more/peers`)
 
@@ -361,6 +369,27 @@ the board, desktop.md C7) and the Android app (phone.md P4) behave the same way.
   detail (version, widened, pairs, size, status) and the age. **Messages** (when served): who to
   whom by account, kind, size and outcome. Never message text: the page shows only the keys it
   knows and ignores the rest.
+- **Trusted senders** (peers.md 4.1a; `GET /v1/peers/trusted`): one row per machine that
+  approved Doorbell: "Doorbell on <machine>", the program path, "sends as <account>", "approved
+  <age>", "last sent <age>" (or "has not sent yet") and "<n> messages today"; a record a test
+  build made (`test_build`) adds "approved by a test build" (it is honoured all the same). A
+  revoked one says "Revoked <age>" and how to approve it again. **Revoke** (danger button, `confirm()` first:
+  "Stop Doorbell on <machine> from sending to sessions? It can be approved again only from that
+  machine's terminal.") is `POST /v1/peers/trusted/revoke`; it is shown to an owner session (on
+  the phone: to the paired phone) and hidden for a read-only sign-in. When Revoke answers 404
+  (the hub has no record for that machine: its agent never reported one) the row shows the
+  hub's message, which says to run `wy peers trust doorbell --off` on that machine. With no row
+  the section says "Doorbell is not approved on any machine. To let it wake sessions by tag, run
+  `wy peers trust doorbell` in a terminal on the machine it runs on (Linux)." and, below it, "A
+  machine whose agent has not reported its approval is not listed here; to revoke it, run `wy
+  peers trust doorbell --off` on that machine." A hub without the endpoint (404 on the `GET`)
+  hides the section.
+- **Tags** (`GET /v1/peers` and `GET /v1/peers/trusted`): every tag a live session holds,
+  sorted, each with its holders (name, account, machine, state) and "Sent to recently by
+  Doorbell on <machine>" when a trusted sender sent to it in the last 7 days (a tag only a
+  trusted sender used, with no holder now, is listed too, with "No session holds it now.").
+  Clicking a holder opens that session (`#/sessions/<id>`). With no tag: "No session has a tag. A
+  session gives itself one with `wy peers tag add <tag>`."
 - Desktop: the app's Hub view (desktop.md C7) is this page; the app adds nothing of its own.
 
 ### 3.2 Keys (`#/more/keys`)

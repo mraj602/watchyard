@@ -252,7 +252,7 @@ func TestPeersDirectoryAndMessages(t *testing.T) {
 	msg := ms[0].(map[string]any)
 	for k := range msg {
 		switch k {
-		case "id", "thread", "from", "to", "kind", "size", "local", "status", "detail", "created_at", "final_at":
+		case "id", "thread", "from", "to", "kind", "size", "local", "status", "detail", "created_at", "final_at", "from_kind", "via_tag":
 		default:
 			t.Errorf("unexpected message field %q (metadata only)", k)
 		}

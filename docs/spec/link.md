@@ -141,7 +141,11 @@ valid signature has used it.
   login to this hub's key, this device, this single-use nonce and its expiry; it carries no
   reusable secret.
 - `last`: the highest `seq` the device has processed (its own durable copy, 6.1).
-- `client.kind`: `android` or `agent`; `wy` sends `{"kind":"agent","wy":"0.9.0","os":"linux"}`. `client.ping_s` (optional): the device's own ping interval (2).
+- `client.kind`: `android` or `agent`; `wy` sends `{"kind":"agent","wy":"0.9.0","os":"linux","caps":["peer_service"]}`. `client.ping_s` (optional): the device's own ping interval (2).
+- `client.caps` (optional, a list of words; unknown words are ignored): what the device can take
+  beyond its version. `peer_service` (agents from 1.3.0): it understands a trusted sender's
+  `peer_msg` (`from.kind`, peers.md 4.1a, 8.4); the hub relays such a message only to an agent
+  whose last hello said so (peers.md 8.3). The hub keeps the hello in `link_state.hello`.
 - `known`: the newest matrix and revocation versions the device holds (machines only).
 
 The hub, in order:
@@ -375,9 +379,10 @@ re-pairing.
 | `action` | `id`, `token` | A notification action tapped on the phone: `token` is the action token from the alert (push.md 8). The hub applies it exactly as `POST /v1/actions/{token}` (same checks, same rate limit) and answers `action_result` with the same `id`. |
 | `peer_msg` | `doc` (peers.md 8.2) | A signed envelope, body sealed to the target machine, from a session on this machine to a session on another machine; the hub answers `peer_ack`. |
 | `peer_result` | `msg`, `status`, `detail?`, `human_at?` | The receiving agent's verdict on a `peer_msg` it got (peers.md 8.4). |
-| `peer_log` | `msg`, `thread`, `from_session`, `to_session`, `kind`, `status`, `detail?`, `size`, `at`; or `event`, `thread`, `detail`, `at` | Metadata of a same-machine delivery, for the audit (peers.md 10). With `event` it is instead this machine's event about a thread: `thread_resume_refused` (`detail` `hub_may_widen`): it refused a `peer_thread_resume` and keeps its stop (peers.md 6.3). The hub records it only when a session of the thread runs on this device's machine. |
+| `peer_log` | `msg`, `thread`, `from_session`, `to_session`, `kind`, `status`, `detail?`, `size`, `at`, `from_kind?` and `tag?` (a trusted send, peers.md 4.1a); or `event`, `thread`, `detail`, `at` | Metadata of a same-machine delivery, for the audit (peers.md 10). With `event` it is instead this machine's event about a thread: `thread_resume_refused` (`detail` `hub_may_widen`): it refused a `peer_thread_resume` and keeps its stop (peers.md 6.3). The hub records it only when a session of the thread runs on this device's machine. |
 | `peers_list` | `id` | Ask for the session directory (peers.md 3); the hub answers `peers` with the same `id`. |
 | `peer_tag` | `id`, `session`, `op` (`add` or `rm`), `tag` | Add or remove one tag of a session on this device's machine (peers.md 3.4). The hub answers `peers` with the same `id`: the directory after the change, with `tag` set. |
+| `peer_trust` | `op` (`set` or `off`), `sender` (`doorbell`), and with `set`: `account`, `program`, `interpreter`, `venv`, `approved_at`, `test_build` (true when a `trusttest` build made the record, peers.md 15; omitted otherwise) | This machine's trusted-sender record (peers.md 4.1a): `set` on approval and whenever the hub's `trust` answer (6.3) lacks it or holds an older `approved_at`; `off` after `wy peers trust doorbell --off`. The hub keeps one `peer_trust` row per machine and sender (only a strictly newer `approved_at` replaces the row and clears a revocation, so a late report never undoes one) and answers nothing. From a phone, or a revoked device, it is dropped. |
 
 Unknown `t` → the hub answers `notice` `{"code":"unknown_type"}` and carries on (forward
 compatibility). A device→hub frame that names a session not on that device's machine is
@@ -392,7 +397,7 @@ The fields below are the JSON object inside `body` (4.1), each with `"v":1`.
 | `challenge` | 3.1 (the one frame not in the 4.1 shape: it comes before the device is known) |
 | `welcome` | 3.3 |
 | `action_result` | `id`, `status` (HTTP-like: 200, 400, 401, 404, 410, 429), `applied`, `alert` (AlertBrief) |
-| `peers` | `id`, `sessions` (the other machines' sessions, peers.md 3.2 without `can`, with `machine_id`; each with its canonical `handle` and, when it has any, `aliases`), `mine` (the asking machine's own sessions in the same form, so its agent shows and signs the canonical handles; omitted when none), `certs` (device id → `device_cert` document of each machine's agent that a listed session runs on, and of the asking device itself, so its agent can tell that receivers will refuse it while its certificate has no owner signature; peers.md 3.2 `blocked`, 8.2). Each session may carry `tags` (peers.md 3.4, omitted when none). The answer to a `peer_tag` also carries `tag`: `{"session","tags","changed","error?"}`, the session's tags after the change, whether it changed anything, and a refusal word (`bad_tag`, `too_many_tags`, `forbidden`: not a session of the asking machine, `unknown_session`: not a live session the hub knows) |
+| `peers` | `id`, `sessions` (the other machines' sessions, peers.md 3.2 without `can`, with `machine_id`; each with its canonical `handle` and, when it has any, `aliases`), `mine` (the asking machine's own sessions in the same form, so its agent shows and signs the canonical handles; omitted when none), `certs` (device id → `device_cert` document of each machine's agent that a listed session runs on, and of the asking device itself, so its agent can tell that receivers will refuse it while its certificate has no owner signature; peers.md 3.2 `blocked`, 8.2). Each session may carry `tags` (peers.md 3.4, omitted when none). `trust` (omitted when the hub has no row): `{"doorbell":{"approved_at","revoked_at?"}}`, the asking machine's trusted-sender rows (peers.md 4.1a); the agent deletes its record when the row is revoked and its `approved_at` is the record's or newer, and reports a record the hub lacks or holds an older approval of. The answer to a `peer_tag` also carries `tag`: `{"session","tags","changed","error?"}`, the session's tags after the change, whether it changed anything, and a refusal word (`bad_tag`, `too_many_tags`, `forbidden`: not a session of the asking machine, `unknown_session`: not a live session the hub knows) |
 | `peer_ack` | `msg`, `status` (`queued` or `refused`), `detail?` (the reason word, or `offline`), `exp?` (peers.md 8.2, 8.3) |
 | `notice` | `code`, `message`: `unknown_type`, `forbidden`, `rate_limited`, `queue_full`, `draining` (hub shutting down; reconnect in 5–15 s) |
 

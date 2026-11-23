@@ -624,6 +624,23 @@ type localAuditLine struct {
 	Size   int    `json:"size"`
 	Local  bool   `json:"local"`
 	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+	// FromKind and Tag mark a trusted sender's line (peers.md 4.1a, 10).
+	FromKind string `json:"from_kind,omitempty"`
+	Tag      string `json:"tag,omitempty"`
+}
+
+// sender is the FROM cell of the local audit table: a session's short id, or the trusted
+// sender by name with the tag it sent to (peers.md 7.1).
+func (l localAuditLine) sender() string {
+	if l.FromKind == peerspkg.ServiceDoorbell {
+		s := "doorbell (service)"
+		if l.Tag != "" {
+			s += " tag:" + l.Tag
+		}
+		return s
+	}
+	return shortID(l.From)
 }
 
 func readLocalAudit(e peerspkg.Env, since time.Time) []localAuditLine {
@@ -802,7 +819,11 @@ func peersAudit(args []string, stdout, stderr io.Writer) error {
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "WHEN\tSTATUS\tFROM → TO\tSIZE")
 	for _, l := range local {
-		fmt.Fprintf(tw, "%s\t%s\t%s → %s\t%d\n", localtime.String(l.TS), l.Status, shortID(l.From), shortID(l.To), l.Size)
+		status := l.Status
+		if l.Detail != "" {
+			status += " (" + l.Detail + ")"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s → %s\t%d\n", localtime.String(l.TS), status, l.sender(), shortID(l.To), l.Size)
 	}
 	return tw.Flush()
 }

@@ -256,13 +256,24 @@ every pair in `deny` and `same_account: false` (`blockAllEdit`); Allow all is no
 (owner-only; the screen says "Allow pairs from a computer (board, Peers)"). The turn limit
 (`max_turns`) is shown read-only as "Replies between two sessions without you: N" ("No limit" for 0)
 with the loop-guard explanation and the no-limit line (peers.md 6.3, 5.4).
+Below the audit, as on the board (pwa.md 3.1): **Trusted senders** (`trustedSenders`, `GET
+/v1/peers/trusted`; each row as the board words it, with **Revoke**, which narrows and so is
+offered to the paired phone: confirm first, `revokeTrustedSender`, `POST
+/v1/peers/trusted/revoke`, whose 404 shows the hub's message (run `wy peers trust doorbell
+--off` on that machine); "approved by a test build" for a `test_build` record; a 404 on the list
+from an older hub hides the section) and **Tags** (`peers`,
+`GET /v1/peers`, plus the trusted senders' recent tags; a tapped holder opens
+`/sessions/[id]`). The words come from `src/lib/format/peers.ts` (`trustedSenderLines`,
+`tagGroups`), ported from `webui/static/components/peers-fmt.js` on a shared case table.
 
 **Session search** (`SessionsScreen`) is the board's (pwa.md 3.0b): a `TextInput` above the
 chips (`testID` `session-search`, clear button `session-search-clear`), matched on the device
 over `data.sessions` with `src/lib/format/search.ts`, the port of
 `webui/static/components/search-fmt.js`. The query is the screen's state, so the 15 s polls
 keep it. Found terms are tinted spans inside the row's `Text`; a term found only in a field the
-row does not show adds the "Name: …" / "Message: …" line.
+row does not show adds the "Name: …" / "Message: …" line. Each row shows its tags as chips
+(`testID` `session-tag-<tag>`); tapping one sets the query to `tag:<tag>` (pwa.md 3.0b), which
+matches only that exact tag.
 
 Owner-only PWA screens (Devices, Add phone, rule editing) are not in the app. Analytics (More, Analytics; `GET /v1/analytics/{report}`, analytics.md) is: a range (7, 30, 90 days), a seat filter, totals, daily cost bars, a compact weekday by hour heatmap, models, projects, the five dearest sessions, limit windows (peak and final percent as bars) and limit hits.
 Wording, ages and state words come from `src/lib/format` and match `webui/static/format.js`

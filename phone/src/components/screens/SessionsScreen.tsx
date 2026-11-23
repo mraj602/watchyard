@@ -4,7 +4,7 @@ import { Pressable, Text, TextInput, View } from 'react-native';
 import type { Session } from '../../contract/api';
 import type { SessionFilter } from '../../contract/routes';
 import {
-  ago, alertText, highlight, isLive, MAX_QUERY, pct, plural, projectOf, searchFolder, searchSession, searchTerms, seatIndex, sessionSeat,
+  ago, alertText, highlight, isLive, MAX_QUERY, pct, plural, projectOf, searchFolder, searchSession, searchTerms, seatIndex, sessionSeat, tagTerms,
   type ExtraMatch, type Segment,
 } from '../../lib/format';
 import { useHubApi } from '../hub-api';
@@ -133,7 +133,7 @@ export default function SessionsScreen({ filter: filterParam, by, machine }: { f
               </Text>
             </View>
             {g.rows.map((s) => (
-              <SessionRow key={s.id} s={s} now={api.now} terms={terms} extra={found.get(s.id) ?? null} />
+              <SessionRow key={s.id} s={s} now={api.now} terms={terms} extra={found.get(s.id) ?? null} onTag={(tag) => setQuery(`tag:${tag}`)} />
             ))}
           </View>
         ))
@@ -158,7 +158,7 @@ function Marked({ segs, testID }: { segs: Segment[]; testID?: string }) {
   );
 }
 
-function SessionRow({ s, now, terms, extra }: { s: Session; now: number; terms: string[]; extra: ExtraMatch | null }) {
+function SessionRow({ s, now, terms, extra, onTag }: { s: Session; now: number; terms: string[]; extra: ExtraMatch | null; onTag: (tag: string) => void }) {
   const t = useTheme();
   const last = lastOf(s);
   const sub = subOf(s);
@@ -177,6 +177,25 @@ function SessionRow({ s, now, terms, extra }: { s: Session; now: number; terms: 
           </Text>
         ) : null}
       </Text>
+      {s.tags?.length ? (
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+          {s.tags.map((tag) => (
+            <Pressable
+              key={tag}
+              testID={`session-tag-${tag}`}
+              accessibilityRole="button"
+              accessibilityLabel={`Show sessions tagged ${tag}`}
+              onPress={() => onTag(tag)}
+              hitSlop={6}
+              style={{ borderWidth: 1, borderColor: t.line, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2, backgroundColor: t.card }}
+            >
+              <Text style={{ color: t.muted, fontSize: 12 }}>
+                <Marked segs={highlight(tag, tagTerms(tag, terms))} testID="search-hit" />
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
       {last ? (
         <Text numberOfLines={2} style={{ color: t.muted, fontSize: 13 }}>
           <Marked segs={highlight(last, terms)} testID="search-hit" />

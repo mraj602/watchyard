@@ -33,6 +33,9 @@ type EnvFrom struct {
 	Handle  string `json:"handle"`
 	Mode    Mode   `json:"mode"`
 	HumanAt string `json:"human_at,omitempty"`
+	// Kind is "service:doorbell" for the trusted sender (peers.md 4.1a, 8.2); absent for a
+	// session.
+	Kind string `json:"kind,omitempty"`
 }
 
 // EnvTo is the receiving side of an envelope.
@@ -58,7 +61,12 @@ type Envelope struct {
 	Exp       int64   `json:"exp"`
 	Size      int     `json:"size"`
 	Sealed    string  `json:"sealed"`
+	// Tag is the tag a trusted send went to (peers.md 4.1a, 8.2); absent otherwise.
+	Tag string `json:"tag,omitempty"`
 }
+
+// Service reports whether the envelope is from the trusted sender (peers.md 4.1a).
+func (e Envelope) Service() bool { return e.From.Kind != "" }
 
 // PeerSealInfo is HPKE's info for a peer body: "wy-peer-v1\n" ‖ msg ‖ "\n" ‖ from.device ‖
 // "\n" ‖ to.device (peers.md 8.2). The label must not change: machines that are
@@ -187,6 +195,14 @@ func ParseEnvelope(raw []byte) (Envelope, error) {
 		e.From.Session == "" || e.From.Device == "" || e.To.Session == "" || e.To.Device == "" || e.Sealed == "" ||
 		e.From.Session == e.To.Session || !safeID.MatchString(e.From.Session) || !safeID.MatchString(e.To.Session) {
 		return Envelope{}, errors.New("malformed envelope")
+	}
+	if e.From.Kind != "" || e.Tag != "" {
+		// The trusted sender (peers.md 4.1a, 8.2): its own pseudo-session on its machine, never
+		// bypass, never a reply, always to a tag. Any other kind is not understood.
+		if e.From.Kind != ServiceDoorbell || e.From.Session != ServiceSessionID(e.From.Machine) || e.From.Mode != ModePrompting ||
+			e.Kind != KindStart || !ValidTag(e.Tag) || e.From.HumanAt != "" {
+			return Envelope{}, errors.New("malformed trusted-sender envelope")
+		}
 	}
 	created, err := time.Parse(time.RFC3339Nano, e.CreatedAt)
 	if err != nil {

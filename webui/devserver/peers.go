@@ -31,6 +31,7 @@ type peersState struct {
 	audit       []M // newest first
 	nextAudit   int
 	threads     map[string]bool // thread id -> open
+	trusted     []M             // the trusted senders (Doorbell), one per machine (peers.md 4.1a)
 }
 
 // mockThread is the thread the mock's loop guard stopped (peers.md 6.3).
@@ -39,6 +40,16 @@ const mockThread = "t_3a9e5c7d1b2f4a60"
 func newPeersState(d *Data, now time.Time) *peersState {
 	p := &peersState{version: 1, sameAccount: true, maxTurns: 0, allow: [][]string{}, signer: "hub", madeBy: "hub", at: now.Add(-48 * time.Hour), nextAudit: 1,
 		threads: map[string]bool{mockThread: true}}
+	p.trusted = []M{
+		{"sender": "doorbell", "machine": "m_laptop", "machine_name": "laptop", "account": "3f1c6a2e-0000-4000-8000-000000000001", "account_label": "personal",
+			"program": "/home/me/.local/share/doorbell/venv/bin/doorbell", "interpreter": "/usr/bin/python3.12", "venv": "/home/me/.local/share/doorbell/venv",
+			"approved_at": ts(now.Add(-6 * 24 * time.Hour)), "revoked_at": nil, "revoked_by": nil, "last_send_at": ts(now.Add(-20 * time.Minute)), "sent_today": 4,
+			"recent_tags": []M{{"tag": "deploy", "at": ts(now.Add(-20 * time.Minute))}, {"tag": "review", "at": ts(now.Add(-2 * time.Hour))}, {"tag": "nightly", "at": ts(now.Add(-30 * time.Hour))}}},
+		{"sender": "doorbell", "machine": "m_vps", "machine_name": "old-vps", "account": "3f1c6a2e-0000-4000-8000-000000000001", "account_label": "personal",
+			"program": "/opt/doorbell/bin/doorbell", "interpreter": "/usr/bin/python3.11", "venv": "/opt/doorbell",
+			"approved_at": ts(now.Add(-20 * 24 * time.Hour)), "revoked_at": ts(now.Add(-3 * 24 * time.Hour)), "revoked_by": "cli", "last_send_at": nil, "sent_today": 0,
+			"recent_tags": []M{}},
+	}
 	p.log(now.Add(-48*time.Hour), "hub", "matrix", M{"version": 1, "signer": "hub", "widens": false, "paused": false, "same_account": true, "max_turns": 0, "pairs": 0})
 	p.logThread(now.Add(-30*time.Minute), "hub", "loop_guard", mockThread, M{})
 	return p
@@ -56,6 +67,9 @@ func (p *peersState) logThread(at time.Time, actor, event, thread string, detail
 
 func (s *Server) peersRoutes() {
 	m := s.mux.HandleFunc
+	m("GET /v1/peers", s.guard(s.listPeers, "owner", "read"))
+	m("GET /v1/peers/trusted", s.guard(s.listTrusted, "owner", "read"))
+	m("POST /v1/peers/trusted/revoke", s.guard(s.revokeTrusted, "owner", "push"))
 	m("GET /v1/peers/matrix", s.guard(s.getMatrix, "owner", "read", "push", "write"))
 	m("PUT /v1/peers/matrix", s.guard(s.putMatrix, "owner", "push", "write"))
 	m("POST /v1/peers/pause", s.guard(s.pausePeers, "owner", "push", "write"))
@@ -270,4 +284,77 @@ func (s *Server) peerAudit(w http.ResponseWriter, r *http.Request, c *caller) {
 		entries = entries[:100]
 	}
 	writeJSON(w, 200, M{"entries": entries})
+}
+
+// listPeers is the directory (peers.md 3): the live sessions of an account, with their tags.
+func (s *Server) listPeers(w http.ResponseWriter, r *http.Request, c *caller) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	accounts := map[string]string{}
+	for _, seat := range s.data.Seats {
+		id, _ := seat["id"].(string)
+		a, _ := seat["account"].(string)
+		accounts[id] = a
+	}
+	out := []M{}
+	for _, x := range s.data.Sessions {
+		st, _ := x["state"].(string)
+		seat, _ := x["seat"].(string)
+		if st == "ended" || st == "gone" || accounts[seat] == "" {
+			continue
+		}
+		project, _ := x["project"].(string)
+		name := project
+		if n, ok := x["name"].(string); ok && n != "" {
+			name = n
+		}
+		label, _ := x["seat_label"].(string)
+		machine, _ := x["machine_name"].(string)
+		tags, _ := x["tags"].([]string)
+		if tags == nil {
+			tags = []string{}
+		}
+		out = append(out, M{"session": x["id"], "handle": name + "@" + label + "." + machine, "name": name, "account": accounts[seat], "account_label": label,
+			"machine": x["machine"], "machine_name": machine, "project": nilIfEmpty(project), "state": st, "agent": true, "tags": tags})
+	}
+	writeJSON(w, 200, M{"sessions": out})
+}
+
+// listTrusted lists the trusted senders, revoked ones included (peers.md 4.1a, 10).
+func (s *Server) listTrusted(w http.ResponseWriter, r *http.Request, c *caller) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	writeJSON(w, 200, M{"senders": s.peers().trusted})
+}
+
+// revokeTrusted narrows: it sets revoked_at once (a second call keeps the first time), writes a
+// trust_revoke audit row and answers the entry. 404 for a machine with no entry.
+func (s *Server) revokeTrusted(w http.ResponseWriter, r *http.Request, c *caller) {
+	var in struct {
+		Machine string `json:"machine"`
+		Sender  string `json:"sender"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.Machine == "" || in.Sender != "doorbell" {
+		writeErr(w, 400, "bad_request", "machine and sender (doorbell) are required")
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.peers()
+	for _, t := range p.trusted {
+		if t["machine"] != in.Machine {
+			continue
+		}
+		if t["revoked_at"] == nil {
+			now := s.opts.Now()
+			t["revoked_at"], t["revoked_by"] = ts(now), "dev_"+c.kind
+			p.log(now, c.kind, "trust_revoke", M{"machine": in.Machine, "sender": in.Sender})
+		}
+		writeJSON(w, 200, t)
+		return
+	}
+	writeErr(w, 404, "not_found", "no trusted sender on that machine")
 }

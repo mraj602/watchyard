@@ -27,6 +27,7 @@ const ses = {
   last_message: 'I pushed the Café menu change.\n\nShould I deploy?',
   question: 'Should I deploy?',
 };
+const tagged = { ...ses, tags: ['deploy-bot', 'review'] };
 const shown = { folder: 'api', sub: 'Fix the login', last: 'Claude needs your permission to use Bash' };
 
 // [function, arguments]
@@ -74,6 +75,24 @@ const CASES: [string, unknown[]][] = [
   ['searchSession', [ses, shown, ['deploy']]],
   ['searchSession', [ses, shown, ['api', 'nowhere']]],
   ['searchSession', [{}, { folder: '' }, ['project']]],
+  // Tags (pwa.md 3.0b): a plain term by substring, tag:<name> by equality and only tags.
+  ['matches', [['deploy'], ['deploy'], ['ops']]],
+  ['matches', [['deploy'], ['tag:ops'], ['ops', 'web']]],
+  ['matches', [['deploy'], ['tag:op'], ['ops']]],
+  ['matches', [['tag:ops'], ['tag:ops'], []]],
+  ['matches', [['deploy'], ['tag:'], ['ops']]],
+  ['hitRanges', ['tag:ops here', ['tag:ops']]],
+  ['tagTerms', ['deploy-bot', ['deploy']]],
+  ['tagTerms', ['deploy-bot', ['tag:deploy-bot', 'x']]],
+  ['tagTerms', ['review', ['tag:deploy-bot']]],
+  ['searchSession', [tagged, shown, ['web']]],
+  ['searchSession', [tagged, shown, ['api', 'view']]],
+  ['searchSession', [tagged, shown, ['tag:review']]],
+  ['searchSession', [tagged, shown, ['tag:rev']]],
+  ['searchSession', [tagged, shown, ['tag:']]],
+  ['searchSession', [tagged, shown, ['tag:review', 'menu']]],
+  ['searchSession', [{ ...tagged, tags: [] }, shown, ['tag:review']]],
+  ['searchSession', [{ ...tagged, title: 'tag:other', tags: ['x'] }, { ...shown, sub: 'tag:other' }, ['tag:other']]],
 ];
 
 describe('search port equals the board module', () => {
@@ -114,5 +133,52 @@ describe('search, pinned', () => {
     const text = e.map((g) => g.text).join('');
     expect(text.startsWith('…') && text.endsWith('…')).toBe(true);
     expect(text.length).toBeLessThanOrEqual(84);
+  });
+});
+
+describe('search, tags (pwa.md 3.0b)', () => {
+  const held = { ...ses, tags: ['deploy', 'web-api'] };
+  const find = (q: string, x: typeof held | typeof ses = held) => port.searchSession(x, shown, port.searchTerms(q));
+
+  it('a plain term also matches a tag by substring, and adds no extra line', () => {
+    expect(find('web')).toEqual({ extra: null });
+    expect(find('WEB-A')).toEqual({ extra: null });
+    expect(find('zzz')).toBeNull();
+    // Together with another field: every term still has to be found somewhere.
+    expect(find('web login')).toEqual({ extra: null });
+    expect(find('web nowhere')).toBeNull();
+    // Without tags nothing changes.
+    expect(find('web', ses)).toBeNull();
+  });
+
+  it('tag:<name> matches exactly that tag, in any case', () => {
+    expect(find('tag:deploy')).toEqual({ extra: null });
+    expect(find('TAG:Deploy')).toEqual({ extra: null });
+    expect(find('tag:web-api')).toEqual({ extra: null });
+    expect(find('tag:web')).toBeNull(); // not a substring match
+    expect(find('tag:dep')).toBeNull();
+  });
+
+  it('tag:<name> is only ever matched against tags', () => {
+    // "deploy" is in the question and the last message, but this session holds no such tag.
+    expect(find('tag:deploy', ses)).toBeNull();
+    expect(find('tag:api', { ...ses, tags: [] })).toBeNull();
+    // A tag-looking text is not a hit in other fields.
+    expect(port.hitRanges('tag:deploy is here', ['tag:deploy'])).toEqual([]);
+  });
+
+  it('an empty tag: matches nothing', () => {
+    expect(find('tag:')).toBeNull();
+    expect(find('TAG:')).toBeNull();
+    expect(find('tag: ')).toBeNull();
+  });
+
+  it('tag terms combine with plain terms', () => {
+    expect(find('tag:deploy login')).toEqual({ extra: null });
+    expect(find('tag:deploy nowhere')).toBeNull();
+    expect(find('tag:deploy tag:web-api')).toEqual({ extra: null });
+    expect(find('tag:deploy tag:other')).toBeNull();
+    // A plain term in a hidden field still adds its line next to a tag term.
+    expect(find('tag:deploy menu')?.extra?.label).toBe('Message');
   });
 });

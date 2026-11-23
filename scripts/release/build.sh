@@ -57,6 +57,12 @@ PY
 	esac
 }
 
+# No build flag comes in from outside (peers.md 15: a test build never ships): GOFLAGS is
+# cleared for every build below, and one set with `go env -w`, which an empty variable does
+# not override, stops the release.
+goflags_cfg=$(cd "$root" && GOFLAGS= $GO env GOFLAGS)
+[ -z "$goflags_cfg" ] || die "go env sets GOFLAGS to $goflags_cfg; a release build takes no extra flags (go env -u GOFLAGS)"
+
 rm -rf "$out"
 mkdir -p "$out"
 work=$(mktemp -d)
@@ -71,7 +77,7 @@ for t in $targets; do
 	stage=$work/$t
 	mkdir -p "$stage"
 	echo "build $t"
-	(cd "$root" && CGO_ENABLED=0 GOOS=$os GOARCH=$arch \
+	(cd "$root" && CGO_ENABLED=0 GOFLAGS= GOOS=$os GOARCH=$arch \
 		$GO build -trimpath -ldflags "$ldflags" -o "$stage/$bin" ./cmd/wy)
 	set -- "$bin"
 	for f in LICENSE README.md; do

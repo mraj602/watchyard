@@ -43,7 +43,14 @@ type Client struct {
 	Wy    string `json:"wy,omitempty"`
 	OS    string `json:"os,omitempty"`
 	PingS int    `json:"ping_s,omitempty"`
+	// Caps are what the device can take beyond its version (link.md 3.2); unknown words are
+	// ignored.
+	Caps []string `json:"caps,omitempty"`
 }
+
+// CapPeerService: the agent understands a trusted sender's peer_msg (from.kind, peers.md 4.1a,
+// 8.3); the hub relays one only to an agent whose last hello carried it.
+const CapPeerService = "peer_service"
 
 // Known is hello.known: the newest matrix and revocation versions a machine holds.
 type Known struct {

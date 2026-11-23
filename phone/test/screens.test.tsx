@@ -581,4 +581,112 @@ describe('Peers', () => {
     expect(await screen.findByText('personal → work')).toBeTruthy();
     expect(screen.getByText('start · 2.4 KB · delivered')).toBeTruthy();
   });
+
+  describe('Trusted senders and Tags', () => {
+    const sender = (over: object = {}) => ({
+      sender: 'doorbell' as const, machine: 'm1', machine_name: 'laptop', account: P, account_label: 'personal', program: '/home/me/.venv/bin/doorbell',
+      approved_at: '2026-10-13T05:00:00.000Z', revoked_at: null, last_send_at: null, sent_today: 2, recent_tags: [{ tag: 'ops', at: '2026-10-13T06:00:00.000Z' }], ...over,
+    });
+    const withSenders = (senders: object[], over: object = {}) =>
+      fakeClient({
+        trustedSenders: jest.fn(async () => ({ senders })),
+        peers: jest.fn(async () => ({
+          sessions: [{ session: 'c41e-1', handle: 'h1', name: 'api-work', account: P, account_label: 'personal', machine: 'm1', machine_name: 'laptop', state: 'working', tags: ['api'] }],
+        })),
+        ...over,
+      });
+    const confirmWith = (press: boolean) =>
+      jest.spyOn(RNAlert, 'alert').mockImplementation((_t, _m, buttons) => {
+        if (press) buttons?.find((b) => b.style === 'destructive')?.onPress?.();
+      });
+
+    it('a 404 from an older hub hides the Trusted senders section', async () => {
+      await show(<PeersScreen />);
+      expect(await screen.findByText('Audit')).toBeTruthy();
+      expect(screen.queryByText('Trusted senders')).toBeNull();
+    });
+
+    it('says so when no machine approved Doorbell, and when no session has a tag', async () => {
+      await show(<PeersScreen />, { client: withSenders([], { peers: jest.fn(async () => ({ sessions: [] })) }) });
+      expect(await screen.findByText(/^Doorbell is not approved on any machine\./)).toBeTruthy();
+      expect(screen.getByText('No session has a tag. A session gives itself one with `wy peers tag add <tag>`.')).toBeTruthy();
+    });
+
+    it('shows a sender, and Revoke asks first and sends the machine', async () => {
+      const client = withSenders([sender()]);
+      const alert = confirmWith(false);
+      await show(<PeersScreen />, { client });
+      expect(await screen.findByText('Doorbell on laptop')).toBeTruthy();
+      expect(screen.getByText('sends as personal')).toBeTruthy();
+      expect(screen.getByText('has not sent yet')).toBeTruthy();
+      expect(screen.getByText('2 messages today')).toBeTruthy();
+      await fireEvent.press(screen.getByTestId('revoke-m1'));
+      expect(alert).toHaveBeenCalledWith('Revoke?', "Stop Doorbell on laptop from sending to sessions? It can be approved again only from that machine's terminal.", expect.any(Array));
+      expect(client.revokeTrustedSender).not.toHaveBeenCalled(); // Cancel: nothing sent
+      alert.mockRestore();
+
+      const yes = confirmWith(true);
+      const after = sender({ revoked_at: '2026-10-13T06:25:00.000Z', revoked_by: 'dev_phone' });
+      client.revokeTrustedSender.mockResolvedValue(after);
+      client.trustedSenders.mockResolvedValue({ senders: [after] }); // what the reload reads
+      await fireEvent.press(screen.getByTestId('revoke-m1'));
+      await waitFor(() => expect(client.revokeTrustedSender).toHaveBeenCalledWith('m1'));
+      expect(await screen.findByText(/^Revoked .* To approve it again, run `wy peers trust doorbell` in a terminal on that machine\.$/)).toBeTruthy();
+      expect(screen.queryByTestId('revoke-m1')).toBeNull();
+      yes.mockRestore();
+    });
+
+    it('a revoked sender has no Revoke', async () => {
+      await show(<PeersScreen />, { client: withSenders([sender({ revoked_at: '2026-10-13T06:00:00.000Z' })]) });
+      expect(await screen.findByText('Doorbell on laptop')).toBeTruthy();
+      expect(screen.queryByTestId('revoke-m1')).toBeNull();
+    });
+
+    it('a read-only sign-in is not offered Revoke', async () => {
+      const readOnly = { ...fx.me, device: { ...fx.me.device, scopes: ['read'] } };
+      await show(<PeersScreen />, { client: withSenders([sender()]), api: { me: readOnly as never } });
+      expect(await screen.findByText('Doorbell on laptop')).toBeTruthy();
+      expect(screen.queryByTestId('revoke-m1')).toBeNull();
+    });
+
+    it('a revoke the hub answers 404 shows the hub message on the row', async () => {
+      const msg = 'The hub has no trusted sender for this machine: its agent never reported one. Revoke it on that machine with `wy peers trust doorbell --off`.';
+      const client = withSenders([sender()], {
+        revokeTrustedSender: jest.fn(async () => { throw new HubError('/v1/peers/trusted/revoke', 404, 'not_found', 'POST: 404', msg); }),
+      });
+      const alert = confirmWith(true);
+      await show(<PeersScreen />, { client });
+      await fireEvent.press(await screen.findByTestId('revoke-m1'));
+      expect((await screen.findByTestId('revoke-error-m1')).props.children).toBe(msg);
+      expect(screen.getByText('Doorbell on laptop')).toBeTruthy();
+      alert.mockRestore();
+    });
+
+    it('a 404 without a message falls back to the fixed sentence', async () => {
+      const client = withSenders([sender()], {
+        revokeTrustedSender: jest.fn(async () => { throw new HubError('/v1/peers/trusted/revoke', 404, 'not_found', 'POST: 404'); }),
+      });
+      const alert = confirmWith(true);
+      await show(<PeersScreen />, { client });
+      await fireEvent.press(await screen.findByTestId('revoke-m1'));
+      expect(await screen.findByText("The hub has no record of this machine's approval. Revoke it on that machine with `wy peers trust doorbell --off`.")).toBeTruthy();
+      alert.mockRestore();
+    });
+
+    it('the empty state adds the unreported-approval note', async () => {
+      await show(<PeersScreen />, { client: withSenders([]) });
+      expect(await screen.findByText(/A machine whose agent has not reported its approval is not listed here/)).toBeTruthy();
+    });
+
+    it('lists tags with holders and recent Doorbell sends; a holder opens its session', async () => {
+      await show(<PeersScreen />, { client: withSenders([sender()]) });
+      expect(await screen.findByTestId('tag-api')).toBeTruthy();
+      expect(screen.getByText('personal · laptop · Working')).toBeTruthy();
+      // ops: only Doorbell used it.
+      expect(within(screen.getByTestId('tag-ops')).getByText('No session holds it now.')).toBeTruthy();
+      expect(within(screen.getByTestId('tag-ops')).getByText('Sent to recently by Doorbell on laptop')).toBeTruthy();
+      await fireEvent.press(screen.getByTestId('tag-api-holder-c41e-1'));
+      expect(routerMock.router.push).toHaveBeenCalledWith('/sessions/c41e-1');
+    });
+  });
 });

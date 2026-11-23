@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -406,4 +407,26 @@ func (tx *Tx) LinkDismissTargets(alertID string) ([][2]string, error) {
 		out = append(out, [2]string{a, b})
 	}
 	return out, rows.Err()
+}
+
+// DeviceCaps reads client.caps from the device's last hello; none when it has not connected
+// or its hello carried none.
+func (tx *Tx) DeviceCaps(device string) ([]string, error) {
+	var hello string
+	err := tx.queryRow(`SELECT coalesce(hello, '') FROM link_state WHERE device_id = ?`, device).Scan(&hello)
+	if errors.Is(err, sql.ErrNoRows) || hello == "" {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var h struct {
+		Client struct {
+			Caps []string `json:"caps"`
+		} `json:"client"`
+	}
+	if json.Unmarshal([]byte(hello), &h) != nil {
+		return nil, nil
+	}
+	return h.Client.Caps, nil
 }

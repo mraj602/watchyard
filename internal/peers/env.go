@@ -22,9 +22,13 @@ type Env struct {
 
 	Proc     Proc
 	StartPID int // where the ancestor walk starts: os.Getppid()
-	FS       identity.FS
-	Matrix   Matrix
-	Now      func() time.Time
+	// PeerAlive, when set, reports whether the process that connected to the agent's socket
+	// is still alive (its pidfd, SO_PEERPIDFD): the trusted sender's checks call it last, so
+	// a pid reused while /proc was read does not pass (peers.md 2.3, 4.1a).
+	PeerAlive func() bool
+	FS        identity.FS
+	Matrix    Matrix
+	Now       func() time.Time
 	// Alive reports whether a registry's socket accepts a connection (default: the 250 ms
 	// connect of peers.md 3.1).
 	Alive func(sock string) bool

@@ -154,6 +154,9 @@ const EVENTS = {
   rejected: 'Message rejected by a machine',
   off: 'Peers turned off on a machine',
   on: 'Peers turned on on a machine',
+  trust: 'Doorbell approved as a trusted sender on a machine',
+  trust_off: 'Doorbell turned off as a trusted sender at a machine',
+  trust_revoke: 'Doorbell revoked as a trusted sender',
 };
 
 // The label of an audit event; detail names the machine of a thread_resume_refused (a machine
@@ -232,3 +235,73 @@ const OUTCOME = {
   expired: 'expired', target_gone: 'target gone', failed: 'failed',
 };
 export const outcomeLabel = (s) => OUTCOME[s] || String(s || '');
+
+// ---- trusted senders and tags (peers.md 3.4, 4.1a; pwa.md 3.1) ------------------------------
+
+export const TRUSTED_EMPTY = 'Doorbell is not approved on any machine. To let it wake sessions by tag, run `wy peers trust doorbell` in a terminal on the machine it runs on (Linux).';
+export const TRUSTED_UNREPORTED = 'A machine whose agent has not reported its approval is not listed here; to revoke it, run `wy peers trust doorbell --off` on that machine.';
+// Shown when Revoke answers 404 without a message of its own.
+export const REVOKE_NOT_FOUND = "The hub has no record of this machine's approval. Revoke it on that machine with `wy peers trust doorbell --off`.";
+export const NO_TAGS = 'No session has a tag. A session gives itself one with `wy peers tag add <tag>`.';
+export const NO_HOLDER = 'No session holds it now.';
+export const TRUSTED_INTRO = 'A trusted sender may message sessions by tag without a pair in the matrix. Metadata only: never the text.';
+export const TAGS_INTRO = 'The tags sessions gave themselves, and who sent to them recently.';
+
+export const revokeConfirm = (machine) => `Stop Doorbell on ${machine} from sending to sessions? It can be approved again only from that machine's terminal.`;
+
+// The machine's name, else its id.
+export const senderMachine = (t) => (t && (t.machine_name || t.machine)) || '';
+
+export const trustedTitle = (t) => `Doorbell on ${senderMachine(t)}`;
+
+// "sends as work", "approved 3 h ago", "last sent 5 min ago" (or "has not sent yet") and
+// "4 messages today". `account` names the account (the board's seat name), `age` turns a
+// time into "3 h ago".
+export function trustedFacts(t, account, age) {
+  const n = Number.isFinite(t.sent_today) ? t.sent_today : 0;
+  const facts = [
+    `sends as ${account}`,
+    `approved ${age(t.approved_at)}`,
+    t.last_send_at ? `last sent ${age(t.last_send_at)}` : 'has not sent yet',
+    `${n} ${n === 1 ? 'message' : 'messages'} today`,
+  ];
+  if (t.test_build) facts.push('approved by a test build');
+  return facts;
+}
+
+// What a 404 from Revoke shows on the row: the hub's own message, else the fallback.
+export const revokeNotFoundText = (ex) => (ex && typeof ex.message === 'string' && ex.message.trim() && ex.message !== 'Hub answered 404' ? ex.message : REVOKE_NOT_FOUND);
+
+// A revoked sender says when, and how to approve it again.
+export const revokedText = (t, age) => `Revoked ${age(t.revoked_at)}. To approve it again, run \`wy peers trust doorbell\` in a terminal on that machine.`;
+
+export const isRevoked = (t) => !!(t && t.revoked_at);
+
+// The body of POST /v1/peers/trusted/revoke.
+export const revokeBody = (t) => ({ machine: t.machine, sender: 'doorbell' });
+
+// Every tag a live session holds, sorted, with its holders (GET /v1/peers) and the trusted
+// senders that sent to it in the last 7 days (TrustedSender.recent_tags); a tag only a trusted
+// sender used is listed with no holder.
+export function tagIndex(peers, trusted) {
+  const byTag = new Map();
+  const entry = (tag) => {
+    if (!byTag.has(tag)) byTag.set(tag, { tag, holders: [], senders: [] });
+    return byTag.get(tag);
+  };
+  for (const p of peers || []) for (const tag of (p && p.tags) || []) entry(tag).holders.push(p);
+  for (const t of trusted || []) {
+    const seen = new Set();
+    for (const r of t.recent_tags || []) {
+      if (!r || typeof r.tag !== 'string' || seen.has(r.tag)) continue;
+      seen.add(r.tag);
+      entry(r.tag).senders.push({ machine: t.machine, name: senderMachine(t), at: r.at });
+    }
+  }
+  const text = (p) => `${p.name || ''}\u0000${p.machine_name || p.machine || ''}\u0000${p.session || ''}`;
+  const out = [...byTag.values()].sort((a, b) => (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
+  for (const e of out) e.holders.sort((a, b) => (text(a) < text(b) ? -1 : text(a) > text(b) ? 1 : 0));
+  return out;
+}
+
+export const sentRecently = (s) => `Sent to recently by Doorbell on ${s.name}`;

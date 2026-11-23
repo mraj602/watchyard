@@ -56,6 +56,20 @@ func ReadSessionFile(state, session string) (SessionFile, bool) {
 	return f, true
 }
 
+// ModeKnown reports whether a live session's file names a permission mode Watchyard knows,
+// so ModeClass is its real class rather than the prompting default (peers.md 4.1a: the
+// trusted sender is framed in the receiving class and needs it known).
+func ModeKnown(f SessionFile, ok bool) bool {
+	if !ok || f.EndedAt != nil {
+		return false
+	}
+	switch f.Mode {
+	case "bypassPermissions", "default", "acceptEdits", "plan", "auto", "dontAsk":
+		return true
+	}
+	return false
+}
+
 // ModeClass is the sender's real permission class (peers.md 8.2): bypass when the session
 // file says bypassPermissions, otherwise prompting (default, acceptEdits, plan, auto,
 // dontAsk, anything unknown, or no file).
