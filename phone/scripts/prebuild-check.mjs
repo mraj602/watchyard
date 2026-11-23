@@ -55,6 +55,7 @@ try {
     check(manifest.includes('android.permission.POST_NOTIFICATIONS'), 'POST_NOTIFICATIONS permission');
     check(manifest.includes('android.permission.CAMERA'), 'CAMERA permission');
     check(manifest.includes('android.permission.RECORD_AUDIO'), 'RECORD_AUDIO permission (claude.ai mic in a tab, P17.5)');
+    check(manifest.includes('android.permission.MODIFY_AUDIO_SETTINGS'), 'MODIFY_AUDIO_SETTINGS permission (the WebView needs it for the mic, P17.5)');
     for (const p of ['SYSTEM_ALERT_WINDOW']) {
       const re = new RegExp(`<uses-permission[^>]*android\\.permission\\.${p}"(?![^>]*tools:node="remove")[^>]*>`);
       check(!re.test(manifest), `no ${p} (or removed with tools:node="remove")`);

@@ -8,6 +8,9 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- Phone: the microphone in a claude.ai tab works. The app asked for `RECORD_AUDIO` but did not
+  declare `MODIFY_AUDIO_SETTINGS`, which Android's WebView also needs, so the page saw no
+  microphone ("your microphone isn't available") even after the permission was granted.
 - `make phone-apk-release` checks the keystore password before it builds. Before, a wrong
   password passed the check (keytool's error text was hashed as if it were the certificate)
   and the build failed only at signing, about 20 minutes later. The check now also unlocks the
