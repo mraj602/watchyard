@@ -1,4 +1,4 @@
--- Watchyard hub schema, version 19.
+-- Watchyard hub schema, version 21.
 --
 -- One SQLite file (WAL mode). Applied by the hub at start inside one transaction
 -- after `PRAGMA foreign_keys = ON`. Later versions add numbered migrations
@@ -29,6 +29,8 @@
 --   v18 seat_calibration (setup.md 8.5, Calibration).
 --   v19 seat_watch, seat_verdict and the usage-notice base rules (setup.md 8.5, Usage relation;
 --       push.md 3.9; record.md 4.11).
+--   v20 seat.pick_mode, seat.pick_mode_src (setup.md 8.5, Kind).
+--   v21 peer_trust; peer_message.from_kind/via_tag (peers.md 4.1a, 10).
 --
 -- Conventions
 --   * Times are INTEGER milliseconds since the Unix epoch, UTC (`*_at`, `ts`).
@@ -53,7 +55,7 @@ CREATE TABLE schema_version (
 ) STRICT;
 
 INSERT INTO schema_version (version, applied_at, wy_version)
-VALUES (20, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
+VALUES (21, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
 
 -- Hub-wide settings that are not secrets (retention days, last-message policy, …).
 CREATE TABLE setting (
@@ -777,9 +779,13 @@ CREATE TABLE peer_message (
   created_at    INTEGER NOT NULL,
   expires_at    INTEGER NOT NULL,
   final_at      INTEGER
-) STRICT;
+, from_kind TEXT CHECK (from_kind IS NULL OR from_kind IN ('service:doorbell')), via_tag TEXT) STRICT;
+-- from_kind, via_tag: v21 (peers.md 4.1a). from_kind: 'service:doorbell' for a trusted send, NULL for a
+-- session's; via_tag: the tag it went to. Added by migration 0021 (ALTER TABLE ADD COLUMN), so the
+-- columns sit on the final_at line, as SQLite writes them.
 CREATE INDEX peer_message_thread ON peer_message(thread_id, created_at);
 CREATE INDEX peer_message_created ON peer_message(created_at);
+CREATE INDEX peer_message_from_kind ON peer_message(from_kind, created_at) WHERE from_kind IS NOT NULL;
 
 -- Everything else worth a line: matrix versions, pause, loop guard, refusals at a machine.
 CREATE TABLE peer_audit (
@@ -792,6 +798,7 @@ CREATE TABLE peer_audit (
   detail        TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(detail))
 ) STRICT;
 CREATE INDEX peer_audit_at ON peer_audit(at);
+-- event also: trust, trust_off, trust_revoke (v21, the trusted sender, peers.md 4.1a).
 
 -- The tags a session gave itself (peers.md 3.4), held per session so every machine's directory
 -- shows them. Cleared when the session ends or goes away (its state becomes ended or gone).
@@ -803,3 +810,21 @@ CREATE TABLE peer_tag (
   PRIMARY KEY (session_id, tag)
 ) STRICT;
 CREATE INDEX peer_tag_tag ON peer_tag(tag);
+
+-- Each machine's trusted sender (peers.md 4.1a): the approved Doorbell as the machine's agent
+-- reported it (link.md 6.2 peer_trust), and the owner's revocation.
+CREATE TABLE peer_trust (
+  machine_id    TEXT    NOT NULL REFERENCES machine(id) ON DELETE CASCADE,
+  sender        TEXT    NOT NULL CHECK (sender IN ('doorbell')),
+  device_id     TEXT    NOT NULL,                  -- the agent device that reported it
+  account       TEXT    NOT NULL,                  -- account uuid it sends as
+  program       TEXT    NOT NULL,
+  interpreter   TEXT    NOT NULL,
+  venv          TEXT    NOT NULL,
+  approved_at   INTEGER NOT NULL,
+  test_build    INTEGER NOT NULL DEFAULT 0 CHECK (test_build IN (0, 1)), -- made by a trusttest build (peers.md 15)
+  revoked_at    INTEGER,
+  revoked_by    TEXT,                              -- a device id, or 'cli' (wy peers trust doorbell --off)
+  updated_at    INTEGER NOT NULL,
+  PRIMARY KEY (machine_id, sender)
+) STRICT;

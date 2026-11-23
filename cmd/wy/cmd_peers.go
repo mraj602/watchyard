@@ -25,6 +25,7 @@ const peersUsage = `usage: wy peers list [--all] [--json] [--tag <tag>]
        wy peers tag add|rm <tag>
        wy peers tags
        wy peers off | on
+       wy peers trust [doorbell [--off | --account <a>] [--program <path>] [--yes]]
        wy peers enable | disable | status | audit
        wy peers matrix | allow | deny | same-account | max-turns | pause | resume
 
@@ -102,6 +103,8 @@ func runPeers(args []string, stdout, stderr io.Writer) error {
 		return peersTagCmd(rest[0], rest[1:], stdout, stderr)
 	case "tags":
 		return peersTagCmd(peerspkg.TagList, rest, stdout, stderr)
+	case "trust":
+		return peersTrust(rest, stdout, stderr)
 	}
 	if handled, err := peersMatrixCmd(sub, rest, stdout, stderr); handled {
 		return err
@@ -282,6 +285,11 @@ func peersSend(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	caller, rf := pe.Env.Whoami()
 	if rf != nil {
+		if rf.Code == peerspkg.CodeNotASession {
+			// Outside any session: only the approved Doorbell may send (peers.md 4.1a), which
+			// the agent decides from this process's ancestry.
+			return peersSendService(pe, rf, to, text, *useStdin, *one, *sameHost, *ttl, *wait, stdout, stderr)
+		}
 		return peersExit(peerspkg.ExitCode(rf.Code), errors.New(rf.Detail))
 	}
 	if isTag {

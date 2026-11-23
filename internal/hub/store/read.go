@@ -142,6 +142,9 @@ type SessionView struct {
 	Activity Time `json:"activity_at"`
 	// Alert is the open alert of this session's current episode, or null.
 	Alert *model.AlertBrief `json:"alert"`
+	// Tags are the tags the session gave itself (peers.md 3.4), sorted; none for an ended or
+	// gone session.
+	Tags []string `json:"tags,omitempty"`
 
 	// FocusTarget/FocusLink: the terminal's focus URL and the machine allowed to see it
 	// (record.md 3.3). The API copies FocusLink into FocusURL for that machine's desktop.
@@ -355,7 +358,45 @@ func (s *Store) Sessions(ctx context.Context, f SessionFilter, now time.Time) (o
 	if len(out) > limit {
 		out, more = out[:limit], true
 	}
-	return out, more, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	rows.Close()
+	return out, more, s.addTags(ctx, out)
+}
+
+// addTags fills Tags of each open session in list from peer_tag.
+func (s *Store) addTags(ctx context.Context, list []SessionView) error {
+	var ids []string
+	for _, v := range list {
+		if v.State != "ended" && v.State != "gone" {
+			ids = append(ids, v.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var args []any
+	q := `SELECT session_id, tag FROM peer_tag WHERE ` + in("session_id", ids, &args) + ` ORDER BY session_id, tag`
+	rows, err := s.r.QueryContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	tags := map[string][]string{}
+	for rows.Next() {
+		var id, t string
+		if err := rows.Scan(&id, &t); err != nil {
+			return err
+		}
+		tags[id] = append(tags[id], t)
+	}
+	for i := range list {
+		if t, ok := tags[list[i].ID]; ok && list[i].State != "ended" && list[i].State != "gone" {
+			list[i].Tags = t
+		}
+	}
+	return rows.Err()
 }
 
 // Session returns one session.
@@ -364,7 +405,12 @@ func (s *Store) Session(ctx context.Context, id string, now time.Time) (SessionV
 	if errors.Is(err, sql.ErrNoRows) {
 		return v, ErrNotFound
 	}
-	return v, err
+	if err != nil {
+		return v, err
+	}
+	one := []SessionView{v}
+	err = s.addTags(ctx, one)
+	return one[0], err
 }
 
 // TimelineItem is one hook event of a session.

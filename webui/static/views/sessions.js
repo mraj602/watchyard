@@ -9,7 +9,7 @@ import { stateTag, isLive, isHistory, isEnded } from '../components/state.js';
 import { pct, ago, plural, projectOf, subtitleOf } from '../format.js';
 import { ensureSessions } from '../store.js';
 import { alertLine } from '../components/alerts.js';
-import { MAX_QUERY, searchTerms, searchSession, searchFolder, highlight } from '../components/search-fmt.js';
+import { MAX_QUERY, searchTerms, searchSession, searchFolder, highlight, tagTerms, TAG_PREFIX } from '../components/search-fmt.js';
 
 export const load = () => ensureSessions();
 
@@ -43,6 +43,11 @@ function onSearchKey(e) {
   if (e.key !== 'Escape' || !ui.q) return;
   e.preventDefault();
   ui.q = '';
+  again();
+}
+// A tag chip: the search becomes `tag:<name>` (what was there is replaced).
+function searchTag(tag) {
+  ui.q = `${TAG_PREFIX}${tag}`;
   again();
 }
 function clearSearch() {
@@ -207,16 +212,21 @@ function sessionRow(s, { now, idx, terms, found }) {
   const extra = (found.get(s.id) || {}).extra;
   const extraLine = extra ? h('span', { class: 'search-extra muted small', 'data-key': `extra-${s.id}` }, `${extra.label}: `,
     extra.segments.map((g) => (g.hit ? h('mark', {}, g.text) : g.text))) : null;
+  const tags = Array.isArray(s.tags) ? s.tags : [];
+  const chips = tags.length ? h('span', { class: 'tag-chips', 'data-key': `tags-${s.id}` }, tags.map((tag) => h('button', {
+    type: 'button', class: 'tag-chip', 'aria-label': `Show sessions tagged ${tag}`, 'data-key': `tag-${s.id}-${tag}`,
+    onclick: () => searchTag(tag),
+  }, marked(tag, tagTerms(tag, terms))))) : null;
   const inSession = extra && (extra.key === 'title' || extra.key === 'name');
   const ctx = s.context_pct;
   const href = `#/sessions/${encodeURIComponent(s.id)}`;
   const age = ago(s.state_since, now);
   const empty = (v) => (v ? '' : ' is-empty');
-  return h('tr', { class: `srow${s.needs_you ? ' srow-needs' : ''}${s.alert && s.alert.status === 'seen' ? ' is-seen' : ''}`, onclick: (e) => { if (!e.target.closest('a')) location.hash = href; } },
+  return h('tr', { class: `srow${s.needs_you ? ' srow-needs' : ''}${s.alert && s.alert.status === 'seen' ? ' is-seen' : ''}`, onclick: (e) => { if (!e.target.closest('a, button')) location.hash = href; } },
     h('td', { class: 'c-state', 'data-label': 'State' }, stateTag(s), s.stale ? h('span', { class: 'flag', title: 'No events for 12 hours' }, ' stale')
       : !isEnded(s) && !isLive(s, now) ? h('span', { class: 'flag', title: 'Not used for 12 hours' }, ' idle') : null, s.machine_stale ? h('span', { class: 'flag' }, ' machine quiet') : null),
     h('td', { class: 'c-session', 'data-label': 'Session' }, sessionLink(s, h('b', {}, searchFolder(s) ? marked(folder, terms) : folder)),
-      sub ? h('span', { class: 'muted' }, ' · ', marked(sub, terms)) : null, inSession ? extraLine : null),
+      sub ? h('span', { class: 'muted' }, ' · ', marked(sub, terms)) : null, chips, inSession ? extraLine : null),
     h('td', { class: `c-machine${empty(s.machine_name)}`, 'data-label': 'Machine' }, h('span', { class: 'machine-chip', title: s.machine_name || undefined }, s.machine_name || '–')),
     h('td', { class: `c-last${s.state === 'needs_permission' ? ' mono' : ''}${empty(last || (extra && !inSession) || (s.alert && s.needs_you))}`, 'data-label': 'Last line' }, h('span', { class: 'clamp' }, last ? marked(last, terms) : '–'), extra && !inSession ? extraLine : null, s.alert && s.needs_you ? h('span', { class: 'alert-meta' }, alertLine(s.alert, now)) : null),
     h('td', { class: `c-ctx${empty(ctx != null)}`, 'data-label': 'Context' }, ctx == null ? h('span', { class: 'muted' }, '–') : h('span', { class: `ctx${ctx >= 85 ? ' hot' : ''}` },

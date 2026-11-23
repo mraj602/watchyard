@@ -25,6 +25,17 @@ const (
 	OpState  = "state"
 	// OpTag adds or removes a tag of the calling session, or lists its tags (peers.md 3.4).
 	OpTag = "tag"
+	// OpTrust approves, revokes or shows the trusted sender, from a terminal only (peers.md
+	// 4.1a); OpServiceSend is a send by the approved Doorbell.
+	OpTrust       = "trust"
+	OpServiceSend = "service_send"
+)
+
+// Trust ops (Request.TrustOp).
+const (
+	TrustSet  = "set"
+	TrustOff  = "off"
+	TrustShow = "show"
 )
 
 // MaxLine bounds one request line.
@@ -43,6 +54,15 @@ type Request struct {
 	// TagOp (add, rm, list) and Tag are the `tag` op's arguments.
 	TagOp string `json:"tag_op,omitempty"`
 	Tag   string `json:"tag,omitempty"`
+	// TrustOp (set, off, show), Program and Account are the `trust` op's arguments; the agent
+	// resolves Program itself.
+	TrustOp string `json:"trust_op,omitempty"`
+	Program string `json:"program,omitempty"`
+	Account string `json:"account,omitempty"`
+	// One, SameHost and Stdin are a `service_send`'s options (peers.md 4.1a).
+	One      bool `json:"one,omitempty"`
+	SameHost bool `json:"same_host,omitempty"`
+	Stdin    bool `json:"stdin,omitempty"`
 }
 
 // Error is the refusal in a reply: Code is a peers refusal code.
@@ -87,6 +107,14 @@ type Reply struct {
 	State   *State            `json:"state,omitempty"`
 	// TagResult is the `tag` op's answer.
 	TagResult *peers.TagResult `json:"tag_result,omitempty"`
+	// Trust is the `trust` op's record (set, show); nil when none.
+	Trust *peers.TrustRecord `json:"trust,omitempty"`
+	// Lines are a `service_send`'s outcomes, one per holder sent to (each a send's reply,
+	// with To set), and Exit the exit code of the whole send (peers.md 3.4).
+	Lines []Reply `json:"lines,omitempty"`
+	Exit  int     `json:"exit,omitempty"`
+	// Warning is printed by the CLI (the trusttest build's).
+	Warning string `json:"warning,omitempty"`
 }
 
 // Refusal is the reply's error as a *peers.Refusal, or nil.

@@ -51,7 +51,7 @@ func TestSpecSchemaApplies(t *testing.T) {
 		"limit_sample", "account_lease", "seat_calibration", "web_usage", "usage_window", "rollup_daily", "rule", "alert", "delivery",
 		"session_transition", "pull_target",
 		"owner_key", "device_key", "revocation_doc", "link_state", "link_queue",
-		"matrix_doc", "peer_thread", "peer_message", "peer_audit", "peer_tag",
+		"matrix_doc", "peer_thread", "peer_message", "peer_audit", "peer_tag", "peer_trust",
 	}
 	for _, name := range want {
 		var strict int

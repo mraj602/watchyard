@@ -104,14 +104,15 @@ func newID() string {
 
 // ---- the directory ----
 
-// directory asks the hub for its session directory, reusing an answer for ListFresh.
-func (r *Remote) directory() (*peers.PeersReply, error) {
+// directory asks the hub for its session directory, reusing an answer for ListFresh unless
+// force (a trusted send always asks, so a revocation applies to it at once: peers.md 4.1a).
+func (r *Remote) directory(force bool) (*peers.PeersReply, error) {
 	r.mu.Lock()
 	fresh := r.Fresh
 	if fresh == 0 {
 		fresh = ListFresh
 	}
-	if r.cache.reply != nil && r.now().Sub(r.cache.at) < fresh {
+	if !force && r.cache.reply != nil && r.now().Sub(r.cache.at) < fresh {
 		rep := r.cache.reply
 		r.mu.Unlock()
 		return rep, nil
@@ -140,6 +141,7 @@ func (r *Remote) directory() (*peers.PeersReply, error) {
 		r.mu.Lock()
 		r.cache.at, r.cache.reply = r.now(), rep
 		r.mu.Unlock()
+		r.reconcileTrust(rep)
 		return rep, nil
 	case <-time.After(wait):
 		return nil, errors.New("the hub did not answer")
@@ -182,8 +184,13 @@ func (r *Remote) Tag(session, op, tag string) (peers.TagAnswer, error) {
 }
 
 // Sessions is peers.Remote: the other machines' sessions from the hub.
-func (r *Remote) Sessions() ([]peers.Session, error) {
-	rep, err := r.directory()
+func (r *Remote) Sessions() ([]peers.Session, error) { return r.sessions(false) }
+
+// SessionsFresh is Sessions asked of the hub now, never from the cache (peers.FreshRemote).
+func (r *Remote) SessionsFresh() ([]peers.Session, error) { return r.sessions(true) }
+
+func (r *Remote) sessions(force bool) ([]peers.Session, error) {
+	rep, err := r.directory(force)
 	if err != nil {
 		return nil, err
 	}
@@ -283,6 +290,8 @@ func hubRefusal(a peers.PeerAck) *peers.Refusal {
 		return peers.Refuse(peers.CodeRateLimited, "the hub's rate limit is reached; retry in a minute")
 	case peers.ReasonUnboundAccount:
 		return peers.Refuse(peers.CodeRejected, "%s", peers.UnboundLine)
+	case peers.ReasonReceiverTooOld:
+		return peers.Refuse(peers.CodeRejected, "the receiving machine runs a Watchyard older than 1.3.0, which cannot take a message from Doorbell; update wy there")
 	}
 	if passThrough[a.Detail] {
 		return peers.Refuse(a.Detail, "the hub refused it (%s)", a.Detail)
@@ -293,7 +302,7 @@ func hubRefusal(a peers.PeerAck) *peers.Refusal {
 // Send is peers.Remote: seal to the target machine's certified key, sign, hand to the hub
 // and wait for its verdict.
 func (r *Remote) Send(o peers.Outgoing) (*peers.Pending, *peers.Refusal) {
-	rep, err := r.directory()
+	rep, err := r.directory(false)
 	if err != nil {
 		return nil, peers.Refuse(peers.CodeHubUnreachable, "the hub cannot be reached now (%v)", err)
 	}
@@ -343,6 +352,11 @@ func (r *Remote) Send(o peers.Outgoing) (*peers.Pending, *peers.Refusal) {
 		CreatedAt: now.UTC().Format(time.RFC3339Nano), Exp: now.Add(o.TTL).Unix()}
 	if !o.HumanAt.IsZero() {
 		e.From.HumanAt = o.HumanAt.UTC().Format(time.RFC3339Nano)
+	}
+	if o.Service != "" {
+		// The trusted sender (peers.md 4.1a, 8.2): its kind and the tag; never bypass, no
+		// human prompt of its own.
+		e.From.Kind, e.Tag, e.From.Mode, e.From.HumanAt = o.Service, o.Tag, peers.ModePrompting, ""
 	}
 	doc, err := peers.SealEnvelope(e, o.Text, cert, sign)
 	if err != nil {
@@ -419,7 +433,8 @@ func (r *Remote) spoolPath() string { return filepath.Join(r.Env.State, "agent",
 // cannot be reached; the spool goes out with the next report that gets through.
 func (r *Remote) Log(l peers.LocalLog) {
 	up := peers.PeerLogUp{T: link.TypePeerLog, Msg: l.Msg, Thread: l.Thread, FromSession: l.FromSession, ToSession: l.ToSession,
-		Kind: l.Kind, Status: l.Status, Detail: l.Detail, Size: l.Size, At: l.At.UTC().Format(time.RFC3339Nano)}
+		Kind: l.Kind, Status: l.Status, Detail: l.Detail, Size: l.Size, At: l.At.UTC().Format(time.RFC3339Nano),
+		FromKind: l.FromKind, Tag: l.Tag}
 	r.sendLog(up)
 }
 

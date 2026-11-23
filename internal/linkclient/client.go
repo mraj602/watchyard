@@ -329,7 +329,7 @@ func (c *Client) session(ctx context.Context) (int, error) {
 	}
 	st := c.readState()
 	pingS := int(c.cfg.PingEvery / time.Second)
-	client := link.Client{Kind: "agent", Wy: c.cfg.Version, OS: runtime.GOOS}
+	client := link.Client{Kind: "agent", Wy: c.cfg.Version, OS: runtime.GOOS, Caps: []string{link.CapPeerService}}
 	if pingS >= 60 {
 		client.PingS = pingS
 	}

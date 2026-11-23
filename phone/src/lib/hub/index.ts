@@ -17,6 +17,8 @@ import type {
   Overview,
   PeerAuditEntry,
   PeerMessage,
+  PeerSession,
+  TrustedSender,
   PushTarget,
   PushTestResult,
   RulesReply,
@@ -37,6 +39,8 @@ export class HubError extends Error {
     readonly status: number | null,
     readonly code: string | null,
     message: string,
+    /** The hub's own `error` text; kept only for calls that ask (revoke's 404), never a token. */
+    readonly hubMessage: string | null = null,
   ) {
     super(message);
     this.name = 'HubError';
@@ -114,6 +118,12 @@ export interface HubClient {
   peerAudit(q?: { limit?: number }): Promise<{ entries: PeerAuditEntry[] }>;
   /** GET /v1/peers/messages: who messaged whom, size and outcome; the hub may not serve it yet (404, 501). */
   peerMessages(q?: { limit?: number }): Promise<{ messages: PeerMessage[] }>;
+  /** GET /v1/peers: the live sessions peers can reach, with their tags (peers.md 3). */
+  peers(): Promise<{ sessions: PeerSession[] }>;
+  /** GET /v1/peers/trusted: each machine's trusted sender (Doorbell), revoked ones included; an older hub answers 404. */
+  trustedSenders(): Promise<{ senders: TrustedSender[] }>;
+  /** POST /v1/peers/trusted/revoke (peers.md 4.1a): narrows, so the paired phone may; 404 when the hub has no record (the error carries the hub's message in `hubMessage`). */
+  revokeTrustedSender(machine: string): Promise<TrustedSender>;
   /** GET /v1/analytics/{report} (analytics.md): tokens, API-equivalent cost, models, projects, heatmap, sessions, limit windows and hits. */
   analytics<R extends keyof AnalyticsReplies>(report: R, q?: AnalyticsQuery): Promise<AnalyticsReplies[R]>;
   /** PATCH /v1/accounts/{seat}: label, colour, order, hidden or picker mode; owner only (403 for a phone without an owner session). */
@@ -222,12 +232,14 @@ async function send(fetch: FetchLike, clock: Clock, c: Call): Promise<ResponseLi
 }
 
 /** The Error schema's `code`, if the body has one in the expected shape; nothing else is kept. */
-async function errorCode(res: ResponseLike): Promise<string | null> {
+async function errorCode(res: ResponseLike): Promise<{ code: string | null; message: string | null }> {
   try {
-    const v = (await res.json()) as { code?: unknown };
-    return typeof v?.code === 'string' && /^[a-z_]{1,30}$/.test(v.code) ? v.code : null;
+    const v = (await res.json()) as { code?: unknown; error?: unknown };
+    const code = typeof v?.code === 'string' && /^[a-z_]{1,30}$/.test(v.code) ? v.code : null;
+    const message = typeof v?.error === 'string' && v.error.length > 0 && v.error.length <= 300 ? v.error : null;
+    return { code, message };
   } catch {
-    return null;
+    return { code: null, message: null };
   }
 }
 
@@ -244,7 +256,7 @@ export function createHubClient(deps: HubClientDeps): HubClient {
   const origin = normalizeOrigin(deps.origin);
   let unauthorized = false;
 
-  async function call<T>(method: string, path: string, body?: unknown, label?: string): Promise<T> {
+  async function call<T>(method: string, path: string, body?: unknown, label?: string, keepNotFound = false): Promise<T> {
     const lab = label ?? path.split('?')[0] ?? path;
     const what = `${method} ${lab}`;
     const res = await send(fetch, clock, { method, path, label: lab, body, auth: token, timeoutMs: REQUEST_TIMEOUT_MS, origin });
@@ -256,8 +268,9 @@ export function createHubClient(deps: HubClientDeps): HubClient {
       throw new HubError(lab, 401, 'unauthorized', `${what}: 401 unauthorized`);
     }
     if (!res.ok) {
-      const code = await errorCode(res);
-      throw new HubError(lab, res.status, code, `${what}: ${res.status}${code ? ` ${code}` : ''}`);
+      const { code, message } = await errorCode(res);
+      const keep = keepNotFound && res.status === 404 && code === 'not_found' ? message : null;
+      throw new HubError(lab, res.status, code, `${what}: ${res.status}${code ? ` ${code}` : ''}`, keep);
     }
     if (res.status === 204) return undefined as T;
     return readJson<T>(res, lab, what);
@@ -310,6 +323,9 @@ export function createHubClient(deps: HubClientDeps): HubClient {
     editMatrix: (edit) => call<MatrixInfo>('PUT', '/v1/peers/matrix', { edit }),
     pausePeers: (paused) => call<MatrixInfo>('POST', '/v1/peers/pause', { paused }),
     peerAudit: (q = {}) => call<{ entries: PeerAuditEntry[] }>('GET', `/v1/peers/audit${query({ limit: q.limit })}`),
+    peers: () => call<{ sessions: PeerSession[] }>('GET', '/v1/peers'),
+    trustedSenders: () => call<{ senders: TrustedSender[] }>('GET', '/v1/peers/trusted'),
+    revokeTrustedSender: (machine) => call<TrustedSender>('POST', '/v1/peers/trusted/revoke', { machine, sender: 'doorbell' }, undefined, true),
     peerMessages: (q = {}) => call<{ messages: PeerMessage[] }>('GET', `/v1/peers/messages${query({ limit: q.limit })}`),
     relation: (seat) => call<UsageRelation>('GET', `/v1/accounts/${seg(seat)}/relation`),
     analytics: (report, q = {}) => call<AnalyticsReplies[typeof report]>('GET', `/v1/analytics/${seg(report)}${query({ days: q.days, seat: q.seat })}`),

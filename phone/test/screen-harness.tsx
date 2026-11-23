@@ -6,7 +6,7 @@ import type { Alert, AlertBrief, Device, Me, Overview, Seat, Session } from '../
 import type { AppInfo } from '../src/contract/platform';
 import { HubApiProvider, type HubApi } from '../src/components/hub-api';
 import { reduce, type DataAction, type HubData } from '../src/lib/data';
-import type { HubClient } from '../src/lib/hub';
+import { HubError, type HubClient } from '../src/lib/hub';
 import accounts from './fixtures/hub/accounts.json';
 import alert from './fixtures/hub/alert.json';
 import alerts from './fixtures/hub/alerts.json';
@@ -103,6 +103,12 @@ export function fakeClient(over: Partial<Record<keyof HubClient, unknown>> = {})
     peerMessages: jest.fn(async () => {
       throw new Error('GET /v1/peers/messages: 501');
     }),
+    // An older hub: no trusted senders (404, the section is hidden); no live sessions to list.
+    trustedSenders: jest.fn(async () => {
+      throw new HubError('/v1/peers/trusted', 404, 'not_found', 'GET /v1/peers/trusted: 404 not_found');
+    }),
+    peers: jest.fn(async () => ({ sessions: [] })),
+    revokeTrustedSender: jest.fn(async (machine: string) => ({ machine })),
   };
   return { ...base, ...over } as unknown as FakeClient;
 }

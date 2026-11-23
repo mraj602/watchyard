@@ -50,6 +50,9 @@ type Outgoing struct {
 	Text    string
 	TTL     time.Duration
 	Now     time.Time
+	// Service is the trusted sender's kind ("service:doorbell", peers.md 4.1a) and Tag the
+	// tag it sends to; both empty for a session.
+	Service, Tag string
 }
 
 // Pending is a message the hub queued.
@@ -78,12 +81,16 @@ type LocalLog struct {
 	Status, Detail         string
 	Size                   int
 	At                     time.Time
+	// FromKind and Tag mark a trusted send (peers.md 4.1a).
+	FromKind, Tag string
 }
 
 // SendOpts are the optional parts of a send.
 type SendOpts struct {
 	// TTL of a message to another machine (default 1 h, 1 min to 24 h).
 	TTL time.Duration
+	// Service and Tag are set by SendService only (peers.md 4.1a).
+	Service, Tag string
 }
 
 // stateMu and <state>/peers/state.lock serialise the read-change-write of the state files

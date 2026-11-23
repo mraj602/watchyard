@@ -8,12 +8,14 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	hubkeys "github.com/mraj602/watchyard/internal/hub/keys"
 	"github.com/mraj602/watchyard/internal/keys"
+	peerspkg "github.com/mraj602/watchyard/internal/peers"
 )
 
 // fakeProcs is a fake /proc for the signing guard.
@@ -344,5 +346,61 @@ func TestPeersAccountNames(t *testing.T) {
 	}
 	if _, err := resolveAccount(list, "*", false); err == nil {
 		t.Error("'*' is for deny only")
+	}
+}
+
+// `wy peers audit` lists a trusted sender's sends from this machine's log (peers.md 7.1, 10):
+// by name with the tag in the table, with from_kind, tag and detail in --json.
+func TestPeersAuditListsServiceSends(t *testing.T) {
+	m := newMatrixWorld(t)
+	now := time.Now().UTC()
+	lines := []map[string]any{
+		{"ts": now.Add(-2 * time.Minute).Format(time.RFC3339Nano), "msg": "m-sess", "thread": "t_1", "from": "sess-a", "to": "sess-b",
+			"from_account": "acc-work", "to_account": "acc-personal", "size": 5, "local": true, "status": "delivered"},
+		{"ts": now.Add(-time.Minute).Format(time.RFC3339Nano), "msg": "m-svc", "thread": "t_2", "from": peerspkg.ServiceSessionID("m_T"),
+			"to": "sess-b", "from_account": "acc-work", "to_account": "acc-personal", "size": 7, "local": true, "status": "delivered",
+			"from_kind": peerspkg.ServiceDoorbell, "tag": "tohands-slack-manager"},
+		{"ts": now.Format(time.RFC3339Nano), "msg": "m-held", "from": peerspkg.ServiceSessionID("m_R"), "to": "sess-b",
+			"from_account": "acc-work", "to_account": "acc-personal", "size": 7, "local": false, "status": "rejected", "detail": "held",
+			"from_kind": peerspkg.ServiceDoorbell, "tag": "ci"},
+	}
+	var b strings.Builder
+	for _, l := range lines {
+		j, _ := json.Marshal(l)
+		b.Write(j)
+		b.WriteByte('\n')
+	}
+	peersWriteFile(t, filepath.Join(m.w.state, "peers", "audit.jsonl"), b.String())
+
+	code, out, errs := m.wy(nil, "audit")
+	if code != 0 {
+		t.Fatalf("audit: %d %q", code, errs)
+	}
+	local := out[strings.Index(out, "THIS MACHINE"):]
+	for _, want := range []string{"doorbell (service) tag:tohands-slack-manager → sess-b", "rejected (held)",
+		"doorbell (service) tag:ci → sess-b", "sess-a → sess-b"} {
+		if !strings.Contains(local, want) {
+			t.Errorf("table lacks %q:\n%s", want, local)
+		}
+	}
+	code, out, errs = m.wy(nil, "audit", "--json")
+	if code != 0 {
+		t.Fatalf("audit --json: %d %q", code, errs)
+	}
+	var js struct {
+		Local []map[string]any `json:"local"`
+	}
+	if err := json.Unmarshal([]byte(out), &js); err != nil || len(js.Local) != 3 {
+		t.Fatalf("json: %v %q", err, out)
+	}
+	svc := js.Local[1] // newest first
+	if svc["msg"] != "m-svc" || svc["from_kind"] != peerspkg.ServiceDoorbell || svc["tag"] != "tohands-slack-manager" {
+		t.Errorf("service line: %v", svc)
+	}
+	if js.Local[0]["detail"] != "held" {
+		t.Errorf("held line: %v", js.Local[0])
+	}
+	if _, ok := js.Local[2]["from_kind"]; ok {
+		t.Errorf("a session's line has from_kind: %v", js.Local[2])
 	}
 }

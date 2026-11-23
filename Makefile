@@ -14,7 +14,7 @@
 #   make e2e-android the Android app against a real local hub on the emulator (test/e2e/android; ~15 min,
 #                    builds the APK once, ~6 min; skips without the SDK/AVD/KVM; never part of check)
 #   make pane-check  the Claude Code pane mod gate (scripts/pane-check.sh and its --self-test; needs claude)
-#   make release-check  a release build of wy contains no test seams (fakeclock, fakeopen)
+#   make release-check  a release build of wy contains no test seams (fakeclock, fakeopen, peerstest, trusttest)
 #   make app-test    the desktop app (app/): npm ci --ignore-scripts, lint, unit tests (no display)
 #   make app-smoke   the Electron smoke S1-S15 (Linux: under xvfb-run; a real hub built from here)
 #   make app-dist    the bundled wy for this machine + the app packages in app/dist (never signed;
@@ -53,6 +53,7 @@ build:
 test:
 	$(GO) test ./...
 	$(GO) test -tags fakeinbox,peerstest ./internal/peers/... ./cmd/wy
+	$(GO) test -tags trusttest -run Trust ./internal/peers ./internal/version ./cmd/wy
 	$(GO) test -tags fakeinbox ./test/e2e/peers
 
 lint:

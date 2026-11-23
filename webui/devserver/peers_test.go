@@ -119,3 +119,95 @@ func TestPeersThreadResume(t *testing.T) {
 		t.Fatalf("second resume: %v", m)
 	}
 }
+
+// The directory carries the sessions' tags, and the list shows the same tags (pwa.md 3.0b, 3.1).
+func TestPeersDirectoryTags(t *testing.T) {
+	schemas := loadSchemas(t)
+	_, ts := newServer(t)
+	board := newClient(t, ts)
+	board.cookie(DefaultToken)
+
+	list := board.want(200, "GET", "/v1/peers", nil)
+	held := map[string][]any{}
+	each(t, list["sessions"], func(p any) {
+		check(t, schemas, "PeerSession", "peer", p)
+		m := p.(map[string]any)
+		held[m["session"].(string)] = m["tags"].([]any)
+	})
+	if len(held) == 0 {
+		t.Fatal("no live sessions in the directory")
+	}
+	// Every tag of the sessions list is in the directory, and a session with none has none.
+	sessions := board.want(200, "GET", "/v1/sessions", nil)
+	tagged := 0
+	each(t, sessions["sessions"], func(x any) {
+		s := x.(map[string]any)
+		check(t, schemas, "Session", "session", s)
+		tags, has := s["tags"].([]any)
+		if has {
+			tagged++
+			if len(tags) == 0 {
+				t.Fatalf("tags must be omitted when none: %v", s["id"])
+			}
+		}
+		if dir, ok := held[s["id"].(string)]; ok && len(dir) != len(tags) {
+			t.Fatalf("session %v: tags %v in the list, %v in the directory", s["id"], tags, dir)
+		}
+	})
+	if tagged == 0 {
+		t.Fatal("no session carries tags")
+	}
+}
+
+// Trusted senders (peers.md 4.1a): readable by a read-only sign-in; revoking narrows, needs an
+// owner or a push device, is idempotent, 404 for a machine with no entry, and is audited.
+func TestPeersTrustedSenders(t *testing.T) {
+	schemas := loadSchemas(t)
+	_, ts := newServer(t)
+	owner := newClient(t, ts)
+	owner.cookie(OwnerToken)
+	phone := newClient(t, ts)
+	phone.cookie(PhoneToken)
+	board := newClient(t, ts)
+	board.cookie(DefaultToken)
+
+	list := board.want(200, "GET", "/v1/peers/trusted", nil)
+	revoked := 0
+	each(t, list["senders"], func(x any) {
+		check(t, schemas, "TrustedSender", "sender", x)
+		if x.(map[string]any)["revoked_at"] != nil {
+			revoked++
+		}
+	})
+	if n := len(list["senders"].([]any)); n < 2 || revoked != 1 {
+		t.Fatalf("want a live and a revoked sender, got %d senders, %d revoked", n, revoked)
+	}
+
+	body := M{"machine": "m_laptop", "sender": "doorbell"}
+	board.want(403, "POST", "/v1/peers/trusted/revoke", body)
+	owner.want(400, "POST", "/v1/peers/trusted/revoke", M{"machine": "m_laptop", "sender": "other"})
+	owner.want(404, "POST", "/v1/peers/trusted/revoke", M{"machine": "m_nowhere", "sender": "doorbell"})
+	got := phone.want(200, "POST", "/v1/peers/trusted/revoke", body)
+	check(t, schemas, "TrustedSender", "revoked", got)
+	if got["revoked_at"] == nil || got["revoked_by"] == nil {
+		t.Fatalf("not revoked: %v", got)
+	}
+	// Idempotent: the first time stays.
+	again := owner.want(200, "POST", "/v1/peers/trusted/revoke", body)
+	if again["revoked_at"] != got["revoked_at"] {
+		t.Fatalf("second revoke changed the time: %v vs %v", again["revoked_at"], got["revoked_at"])
+	}
+	a := owner.want(200, "GET", "/v1/peers/audit", nil)
+	if e := a["entries"].([]any)[0].(map[string]any); e["event"] != "trust_revoke" {
+		t.Fatalf("newest audit entry %v", e)
+	}
+	n := 0
+	each(t, a["entries"], func(e any) {
+		if e.(map[string]any)["event"] == "trust_revoke" {
+			n++
+		}
+	})
+	if n != 1 {
+		t.Fatalf("%d trust_revoke rows, want 1", n)
+	}
+}

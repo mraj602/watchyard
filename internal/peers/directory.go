@@ -223,10 +223,22 @@ func (e Env) localLabels() map[string][]string {
 // asked first, so the local sessions take the canonical handles of that answer. A remote
 // session gains an alias for every label this machine shows for its account, so a handle
 // typed with this machine's own label for the account still reaches it.
-func (e Env) directoryAll() (local, all []Session, remoteErr error) {
+func (e Env) directoryAll() (local, all []Session, remoteErr error) { return e.directoryWith(false) }
+
+// FreshRemote is a Remote that can ask the hub now, past its cache (peerlink.Remote).
+type FreshRemote interface {
+	SessionsFresh() ([]Session, error)
+}
+
+// directoryWith is directoryAll; fresh asks the hub past the Remote's cache when it can.
+func (e Env) directoryWith(fresh bool) (local, all []Session, remoteErr error) {
 	var rs []Session
 	if e.Remote != nil {
-		rs, remoteErr = e.Remote.Sessions()
+		if f, ok := e.Remote.(FreshRemote); ok && fresh {
+			rs, remoteErr = f.SessionsFresh()
+		} else {
+			rs, remoteErr = e.Remote.Sessions()
+		}
 	}
 	local = e.Directory()
 	all = append([]Session(nil), local...)

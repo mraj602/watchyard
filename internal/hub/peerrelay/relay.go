@@ -113,6 +113,14 @@ func (r *Relay) Up(ctx context.Context, device string, u link.Up) (string, any, 
 			}
 		}
 		return "", nil, nil
+	case link.TypePeerTrust:
+		var m peers.PeerTrustUp
+		if err := json.Unmarshal(u.Raw, &m); err == nil {
+			if err := r.trust(ctx, device, m); err != nil {
+				return "", nil, err
+			}
+		}
+		return "", nil, nil
 	case link.TypePeerLog:
 		var m peers.PeerLogUp
 		if err := json.Unmarshal(u.Raw, &m); err == nil {
@@ -226,7 +234,72 @@ func (r *Relay) directory(ctx context.Context, device, id string) (peers.PeersRe
 			}
 		}
 	}
+	if mine != "" {
+		rows, err := r.Store.MachinePeerTrust(ctx, mine)
+		if err != nil {
+			return rep, err
+		}
+		for _, t := range rows {
+			if rep.Trust == nil {
+				rep.Trust = map[string]peers.TrustState{}
+			}
+			st := peers.TrustState{ApprovedAt: isoMS(t.ApprovedAt)}
+			if t.RevokedAt != 0 {
+				v := isoMS(t.RevokedAt)
+				st.RevokedAt = &v
+			}
+			rep.Trust[t.Sender] = st
+		}
+	}
 	return rep, nil
+}
+
+func isoMS(ms int64) string { return time.UnixMilli(ms).UTC().Format(time.RFC3339) }
+
+// ---- the trusted sender (peers.md 4.1a) ----
+
+// trust stores a machine's peer_trust report: "set" with its record, "off" when it was turned
+// off at the machine's terminal. Only a machine (or desktop) device that is not revoked may
+// report, and only for its own machine. A malformed report is dropped.
+func (r *Relay) trust(ctx context.Context, device string, m peers.PeerTrustUp) error {
+	if m.Sender != peers.TrustDoorbell || (m.Op != "set" && m.Op != "off") {
+		return nil
+	}
+	var approved time.Time
+	if m.Op == "set" {
+		t, err := time.Parse(time.RFC3339Nano, m.ApprovedAt)
+		if err != nil || m.Account == "" || !strings.HasPrefix(m.Program, "/") || !strings.HasPrefix(m.Interpreter, "/") ||
+			!strings.HasPrefix(m.Venv, "/") {
+			r.Log.Printf("peers: device %s sent a malformed peer_trust; dropped", device)
+			return nil
+		}
+		approved = t
+	}
+	now := r.Now().UnixMilli()
+	return r.Store.Write(ctx, func(tx *store.Tx) error {
+		kind, machine, revoked, err := tx.DeviceMachine(device)
+		if err != nil || revoked || machine == "" || (kind != "machine" && kind != "desktop") {
+			r.Log.Printf("peers: peer_trust from device %s, which is not a machine's; dropped", device)
+			return nil
+		}
+		var changed bool
+		event := "trust"
+		if m.Op == "set" {
+			changed, err = tx.PutPeerTrust(store.PeerTrustRow{Machine: machine, Sender: m.Sender, Device: device, Account: m.Account,
+				Program: m.Program, Interpreter: m.Interpreter, Venv: m.Venv, ApprovedAt: approved.UnixMilli(), TestBuild: m.TestBuild}, now)
+		} else {
+			event = "trust_off"
+			changed, err = tx.RevokePeerTrust(machine, m.Sender, "cli", now)
+			if errors.Is(err, store.ErrNotFound) {
+				err = nil
+			}
+		}
+		if err != nil || !changed {
+			return err
+		}
+		d, _ := json.Marshal(map[string]any{"machine": machine, "sender": m.Sender, "account": m.Account})
+		return tx.InsertPeerAudit(store.PeerAuditRow{At: now, Actor: device, Event: event, Detail: d})
+	})
 }
 
 // ---- tags (peers.md 3.4) ----
@@ -316,13 +389,35 @@ func (r *Relay) relay(ctx context.Context, device string, doc keys.Doc) (peers.P
 			ack = refused(env.Msg, ReasonForbidden)
 			return nil
 		}
-		from, ok, err := tx.PeerSession(env.From.Session)
-		if err != nil {
-			return err
-		}
-		if !ok || from.MachineID != machine {
-			ack = refused(env.Msg, ReasonForbidden)
-			return nil
+		var from store.PeerSession
+		if env.Service() {
+			// The trusted sender (peers.md 4.1a): no session row; the machine's peer_trust row
+			// must be active and name the account the envelope claims.
+			t, ok, err := tx.PeerTrust(machine, peers.TrustDoorbell)
+			if err != nil {
+				return err
+			}
+			if env.From.Machine != machine || env.From.Session != peers.ServiceSessionID(machine) {
+				r.Log.Printf("peers: trusted-sender message %s from machine %s refused: not_trusted", env.Msg, machine)
+				ack = refused(env.Msg, ReasonForbidden)
+				return nil
+			}
+			if !ok || !t.Active() || t.Account != env.From.Account {
+				r.Log.Printf("peers: trusted-sender message %s from machine %s refused: not_trusted", env.Msg, machine)
+				ack = refused(env.Msg, ReasonForbidden)
+				return nil
+			}
+			from = store.PeerSession{ID: env.From.Session, MachineID: machine, Account: t.Account, Live: true}
+		} else {
+			f, ok, err := tx.PeerSession(env.From.Session)
+			if err != nil {
+				return err
+			}
+			if !ok || f.MachineID != machine {
+				ack = refused(env.Msg, ReasonForbidden)
+				return nil
+			}
+			from = f
 		}
 		if old, err := tx.PeerMessage(env.Msg); err == nil {
 			// A repeat of a message the hub has (the agent resent it after a reconnect).
@@ -343,6 +438,9 @@ func (r *Relay) relay(ctx context.Context, device string, doc keys.Doc) (peers.P
 		row := store.PeerMessageRow{ID: env.Msg, Thread: env.Thread, FromSession: env.From.Session, FromDevice: device,
 			FromAcct: env.From.Account, ToSession: env.To.Session, ToDevice: env.To.Device, ToAcct: env.To.Account,
 			Kind: string(env.Kind), Size: int64(env.Size), Status: "queued", CreatedAt: nowMS, ExpiresAt: env.Exp * 1000}
+		if env.Service() {
+			row.FromKind, row.ViaTag = env.From.Kind, env.Tag
+		}
 		refuse := func(detail string) error {
 			row.Status, row.Detail, row.FinalAt = "refused", detail, nowMS
 			ack = refused(env.Msg, detail)
@@ -365,6 +463,25 @@ func (r *Relay) relay(ctx context.Context, device string, doc keys.Doc) (peers.P
 			return refuse(peers.CodeUnknownTarget)
 		case !to.Live:
 			return refuse(peers.CodeTargetGone)
+		}
+		if env.Service() {
+			// Doorbell sends only to a tag: the target must hold it now.
+			held, err := tx.SessionPeerTags(env.To.Session)
+			if err != nil {
+				return err
+			}
+			if !slices.Contains(held, env.Tag) {
+				return refuse(peers.CodeUnknownTarget)
+			}
+			// Only an agent that announced it understands a trusted send takes one: an older
+			// agent would treat the envelope as a session's.
+			caps, err := tx.DeviceCaps(env.To.Device)
+			if err != nil {
+				return err
+			}
+			if !slices.Contains(caps, link.CapPeerService) {
+				return refuse(peers.ReasonReceiverTooOld)
+			}
 		}
 		// 3. accounts (the hub's view wins; a different claim is refused), matrix, loop
 		// guard, rates.
@@ -413,7 +530,16 @@ func (r *Relay) relay(ctx context.Context, device string, doc keys.Doc) (peers.P
 		pt := threadOf(th)
 		fromP := peers.Party{Session: env.From.Session, Account: row.FromAcct, Label: from.AccountLabel}
 		toP := peers.Party{Session: env.To.Session, Account: row.ToAcct, Label: to.AccountLabel}
-		if d := m.Allowed(fromP, toP, &pt); !d.Allowed {
+		mth := &pt
+		if env.Service() {
+			// Never a reply (peers.md 4.1a): a thread another session opened is refused, and
+			// the reply rule never applies.
+			if th.A != env.From.Session {
+				return refuse(peers.CodeNotAllowed)
+			}
+			mth = nil
+		}
+		if d := m.Allowed(fromP, toP, mth); !d.Allowed {
 			return refuse(d.Reason)
 		}
 		human := pt.HumanAt // zero when none is known (not 1970)
@@ -753,11 +879,25 @@ func (r *Relay) peerLog(ctx context.Context, device string, m peers.PeerLogUp) e
 	default:
 		return nil
 	}
+	if m.FromKind != "" && (m.FromKind != peers.ServiceDoorbell || !peers.ValidTag(m.Tag)) || m.FromKind == "" && m.Tag != "" {
+		return nil
+	}
 	at, err := time.Parse(time.RFC3339Nano, m.At)
 	if err != nil {
 		at = r.Now()
 	}
 	return r.Store.Write(ctx, func(tx *store.Tx) error {
+		fromAcct := ""
+		if m.FromKind != "" {
+			// A trusted send on its own machine: the account is the one in the machine's row.
+			_, machine, _, err := tx.DeviceMachine(device)
+			if err != nil || m.FromSession != peers.ServiceSessionID(machine) {
+				return nil
+			}
+			if t, ok, err := tx.PeerTrust(machine, peers.TrustDoorbell); err == nil && ok {
+				fromAcct = t.Account
+			}
+		}
 		acct := func(id string) string {
 			s, ok, err := tx.PeerSession(id)
 			if err != nil || !ok {
@@ -766,9 +906,9 @@ func (r *Relay) peerLog(ctx context.Context, device string, m peers.PeerLogUp) e
 			return s.Account
 		}
 		err := tx.InsertPeerMessage(store.PeerMessageRow{ID: m.Msg, Thread: m.Thread, FromSession: m.FromSession, FromDevice: device,
-			FromAcct: acct(m.FromSession), ToSession: m.ToSession, ToDevice: device, ToAcct: acct(m.ToSession), Kind: string(m.Kind),
+			FromAcct: coalesce(fromAcct, acct(m.FromSession)), ToSession: m.ToSession, ToDevice: device, ToAcct: acct(m.ToSession), Kind: string(m.Kind),
 			Size: int64(max(m.Size, 0)), Local: true, Status: m.Status, Detail: m.Detail, CreatedAt: at.UnixMilli(),
-			ExpiresAt: at.UnixMilli(), FinalAt: at.UnixMilli()})
+			ExpiresAt: at.UnixMilli(), FinalAt: at.UnixMilli(), FromKind: m.FromKind, ViaTag: m.Tag})
 		if errors.Is(err, store.ErrDuplicate) {
 			return nil
 		}

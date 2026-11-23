@@ -49,6 +49,8 @@ type Device struct {
 	HubPub ed25519.PublicKey
 	HubFP  string
 	Known  *link.Known
+	// NoCaps leaves link.CapPeerService out of a machine's hello (an old receiver).
+	NoCaps bool
 
 	mu   sync.Mutex
 	last int64
@@ -104,6 +106,9 @@ func (d *Device) Hello(c link.Challenge) (link.Hello, error) {
 		return link.Hello{}, fmt.Errorf("challenge: %w", link.ErrSignature)
 	}
 	client := link.Client{Kind: "agent", Wy: "test", OS: "linux"}
+	if !d.NoCaps {
+		client.Caps = []string{link.CapPeerService}
+	}
 	if d.Kind == "phone" {
 		client = link.Client{Kind: "android", App: "test", SDK: 35}
 	}

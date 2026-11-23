@@ -3,6 +3,8 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"net/http/httptest"
 	"path/filepath"
@@ -27,6 +29,7 @@ const resumeThread = "t_0123456789abcdef"
 type resumeHub struct {
 	*keysHub
 	machines [2]string // agent device ids
+	signs    [2]ed25519.PrivateKey
 	relay    *peerrelay.Relay
 }
 
@@ -63,7 +66,12 @@ func newResumeHub(t *testing.T, relay bool) *resumeHub {
 			t.Fatal(err)
 		}
 		h.machines[i] = c.Device.ID
-		pub := testMachineKeys(t)
+		dk, err := keys.NewDeviceKeys(time.Now(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub, _ := dk.Public()
+		h.signs[i], _ = dk.SignKey()
 		sess := []string{"sess-a", "sess-b"}[i]
 		acct := []string{"acct-a", "acct-b"}[i]
 		if err := st.Write(ctx, func(tx *store.Tx) error {

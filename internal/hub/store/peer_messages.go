@@ -114,16 +114,19 @@ type PeerMessageRow struct {
 	Local                             bool
 	Status, Detail                    string
 	CreatedAt, ExpiresAt, FinalAt     int64
+	// FromKind is "service:doorbell" for the trusted sender (schema v21, peers.md 4.1a) and
+	// ViaTag the tag it sent to; both "" for a session.
+	FromKind, ViaTag string
 }
 
 const peerMessageCols = `id, thread_id, from_session, from_device, from_account, to_session, to_device, to_account, kind, size,
-	local, status, coalesce(detail, ''), created_at, expires_at, coalesce(final_at, 0)`
+	local, status, coalesce(detail, ''), created_at, expires_at, coalesce(final_at, 0), coalesce(from_kind, ''), coalesce(via_tag, '')`
 
 func scanPeerMessage(sc interface{ Scan(...any) error }) (PeerMessageRow, error) {
 	var r PeerMessageRow
 	var local int
 	err := sc.Scan(&r.ID, &r.Thread, &r.FromSession, &r.FromDevice, &r.FromAcct, &r.ToSession, &r.ToDevice, &r.ToAcct, &r.Kind,
-		&r.Size, &local, &r.Status, &r.Detail, &r.CreatedAt, &r.ExpiresAt, &r.FinalAt)
+		&r.Size, &local, &r.Status, &r.Detail, &r.CreatedAt, &r.ExpiresAt, &r.FinalAt, &r.FromKind, &r.ViaTag)
 	r.Local = local == 1
 	return r, err
 }
@@ -134,10 +137,12 @@ func (tx *Tx) InsertPeerMessage(r PeerMessageRow) error {
 	if r.FinalAt != 0 {
 		final = r.FinalAt
 	}
-	_, err := tx.exec(`INSERT INTO peer_message (`+strings.ReplaceAll(strings.ReplaceAll(peerMessageCols, "coalesce(detail, '')", "detail"),
-		"coalesce(final_at, 0)", "final_at")+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, nullif(?, ''), ?, ?, ?)`,
+	cols := strings.NewReplacer("coalesce(detail, '')", "detail", "coalesce(final_at, 0)", "final_at",
+		"coalesce(from_kind, '')", "from_kind", "coalesce(via_tag, '')", "via_tag").Replace(peerMessageCols)
+	_, err := tx.exec(`INSERT INTO peer_message (`+cols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, nullif(?, ''), ?, ?, ?,
+		nullif(?, ''), nullif(?, ''))`,
 		r.ID, r.Thread, r.FromSession, r.FromDevice, r.FromAcct, r.ToSession, r.ToDevice, r.ToAcct, r.Kind, r.Size, boolInt(r.Local),
-		r.Status, r.Detail, r.CreatedAt, r.ExpiresAt, final)
+		r.Status, r.Detail, r.CreatedAt, r.ExpiresAt, final, r.FromKind, r.ViaTag)
 	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 		return ErrDuplicate
 	}

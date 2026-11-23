@@ -33,5 +33,5 @@ func String() string {
 	if commit == "" {
 		commit = "unknown"
 	}
-	return fmt.Sprintf("wy %s (%s) %s/%s %s", Version, commit, runtime.GOOS, runtime.GOARCH, runtime.Version())
+	return fmt.Sprintf("wy %s%s (%s) %s/%s %s", Version, buildSuffix, commit, runtime.GOOS, runtime.GOARCH, runtime.Version())
 }

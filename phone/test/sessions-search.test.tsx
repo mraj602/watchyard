@@ -79,4 +79,33 @@ describe('Sessions search', () => {
     expect(screen.queryByTestId('search-count')).toBeNull();
     expect(rows().length).toBe(live().length + 1);
   });
+
+  describe('tags', () => {
+    const tagged = async (tags: Record<string, string[]>) => {
+      const next = structuredClone(fx.sessions.sessions) as unknown as Session[];
+      for (const s of next) if (tags[s.project ?? '']) s.tags = tags[s.project ?? ''];
+      const h = makeHarness();
+      await render(<SessionsScreen />, { wrapper: h.Wrapper });
+      await act(async () => h.probe.api.dispatch({ type: 'loaded', at: NOW, sessions: next }));
+    };
+
+    it('shows chips; a tap searches tag:<tag> and only that exact tag matches', async () => {
+      await tagged({ finance: ['ops', 'billing'], infra: ['ops-night'] });
+      expect(screen.getByTestId('session-tag-billing')).toBeTruthy();
+      expect(screen.getByLabelText('Show sessions tagged ops')).toBeTruthy();
+      await fireEvent.press(screen.getByTestId('session-tag-ops'));
+      expect(screen.getByTestId('session-search').props.value).toBe('tag:ops');
+      expect(rows()).toEqual(['finance']); // not infra: ops-night is another tag
+      expect(hits()).toEqual(['ops']); // only the chip of the named tag is marked, nothing else
+    });
+
+    it('a plain term matches a tag by substring and marks the chip', async () => {
+      await tagged({ finance: ['ops'], infra: ['ops-night'] });
+      await type('ops');
+      expect(rows().sort()).toEqual(['finance', 'infra']);
+      expect(hits()).toEqual(expect.arrayContaining(['ops']));
+      await type('tag:');
+      expect(rows()).toEqual([]);
+    });
+  });
 });

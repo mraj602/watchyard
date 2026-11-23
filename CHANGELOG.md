@@ -6,6 +6,33 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-23
+
+### Added
+
+- **Doorbell as a trusted sender** (Linux): `wy peers trust doorbell` at a terminal approves
+  the Doorbell program on this machine to send to tags (`wy peers send tag:<tag> [--one]
+  --stdin`) as one chosen account. The agent checks the sender itself from the socket's peer
+  credentials and `/proc` (interpreter and script in the approved venv), never from the
+  request. Approval needs a controlling terminal whose session has no Claude Code process
+  above it, always asks y/N (no `--yes`), and accepts only an install whose `RECORD` matches. Doorbell never sends to a session by name or as a reply. Its messages carry the
+  header "from doorbell (service) on <machine>", and the matrix, the limits and the audit
+  (`service:doorbell`) apply. To revoke it, run `wy peers trust doorbell --off`, or use
+  Settings → Peers → Trusted senders on the board or the phone. The hub has `peer_trust`
+  (migration 0021) and `GET /v1/peers/trusted`, `POST /v1/peers/trusted/revoke`. The hub
+  relays Doorbell's messages only to agents from 1.3.0 (`client.caps` `peer_service` in the
+  link hello); an older receiver is refused with `receiver_too_old`. Doorbell has no
+  permission class of its own (the owner's approval is the vetting), so each of its messages
+  is framed in the receiving session's class and reaches bypass and prompting sessions alike
+  without an approval dialog; the approval prompt says so. A receiving session whose mode is
+  not known gets nothing, and the send exits 9 (`held`, new), never 0; a broadcast exits 0
+  only when every holder took it. `wy peers audit` lists Doorbell's sends as
+  `doorbell (service)` with the tag, and its `--json` carries `from_kind`, `tag` and `detail`.
+- **Tags in the UI**: session rows on the board and the phone show the session's tags as chips;
+  search matches tags, and `tag:<name>` matches one tag exactly (a chip sets it). Settings →
+  Peers lists every tag with its holders and the trusted senders that sent to it recently.
+  `Session.tags` in the read API.
+
 ## [1.2.0] - 2026-11-23
 
 1.1.0 was never tagged; its changes ship here.
@@ -165,6 +192,7 @@ The first public version. Everything below is new.
   itself does, instead of the full build number. claude.ai's Claude Code section kept asking to
   verify the device again, because the string was unusual and changed with every Electron update.
 
-[Unreleased]: https://github.com/mraj602/watchyard/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/mraj602/watchyard/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/mraj602/watchyard/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/mraj602/watchyard/compare/v1.0.0...v1.2.0
 [1.0.0]: https://github.com/mraj602/watchyard/releases/tag/v1.0.0

@@ -34,6 +34,9 @@ type Config struct {
 	UID int
 	// PeerCred reads the connecting process's pid and uid (default peers.PeerPID).
 	PeerCred func(*net.UnixConn) (pid, uid int, err error)
+	// PeerAlive takes the connecting process's pidfd: a check that it is still alive (nil
+	// when the kernel has no SO_PEERPIDFD) and a close (default peers.PeerAlive).
+	PeerAlive func(*net.UnixConn) (alive func() bool, closeFn func())
 	// Tick is the housekeeping period (default 1 minute).
 	Tick time.Duration
 	Now  func() time.Time
@@ -50,6 +53,9 @@ type server struct {
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.Load == nil || cfg.Socket == "" {
 		return errors.New("agent: Config needs Socket and Load")
+	}
+	if cfg.PeerAlive == nil {
+		cfg.PeerAlive = peers.PeerAlive
 	}
 	if cfg.PeerCred == nil {
 		cfg.PeerCred = peers.PeerPID
@@ -206,10 +212,16 @@ func (s *server) handle(c *net.UnixConn) {
 		enc(fail(peers.CodeFailed, "bad request"))
 		return
 	}
-	enc(s.dispatch(req, pid))
+	alive, closeFn := s.cfg.PeerAlive(c)
+	defer closeFn()
+	enc(s.dispatchFrom(req, pid, alive))
 }
 
-func (s *server) dispatch(req Request, pid int) Reply {
+func (s *server) dispatch(req Request, pid int) Reply { return s.dispatchFrom(req, pid, nil) }
+
+// dispatchFrom runs one request from pid; alive reports whether that process still lives
+// (its pidfd), for the trust checks.
+func (s *server) dispatchFrom(req Request, pid int, alive func() bool) Reply {
 	env, enabled, err := s.cfg.Load()
 	if err != nil {
 		return fail(peers.CodeFailed, "%v", err)
@@ -217,7 +229,7 @@ func (s *server) dispatch(req Request, pid int) Reply {
 	if !enabled {
 		return fail(peers.CodeOff, "peers are not enabled on this machine")
 	}
-	env.StartPID = pid
+	env.StartPID, env.PeerAlive = pid, alive
 	if s.cfg.Remote != nil {
 		env.Remote = s.cfg.Remote
 	}
@@ -238,6 +250,10 @@ func (s *server) dispatch(req Request, pid int) Reply {
 			return fail(peers.CodeFailed, "%v", err)
 		}
 		return Reply{OK: true}
+	case OpTrust:
+		return s.trust(env, req, pid)
+	case OpServiceSend:
+		return s.serviceSend(env, req)
 	case OpWhoami, OpList, OpSend, OpTag:
 	default:
 		return fail(peers.CodeUnsupported, "op %q is not supported by this agent", req.Op)
@@ -305,6 +321,11 @@ func (s *server) waitFinal(req Request, res peers.SendResult) Reply {
 		s.logf("send msg=%s thread=%s from=%s to=%s status=%s detail=%s", res.Msg, res.Thread, from, to, f.Status, f.Detail)
 		if f.Status == "delivered" {
 			return Reply{Msg: res.Msg, Thread: res.Thread, Status: "delivered", To: res.Target.Handle, HeldLikely: f.Detail == "held_likely"}
+		}
+		if f.Status == peers.CodeRejected && f.Detail == peers.CodeHeld {
+			// The receiver took a trusted send's target mode as unknown (peers.md 8.4 step 3).
+			return Reply{Msg: res.Msg, Thread: res.Thread, Error: &Error{Code: peers.CodeHeld,
+				Detail: res.Target.Handle + "'s permission mode is not known on its machine, so Claude Code could hold it for approval unseen; nothing was written"}}
 		}
 		return Reply{Msg: res.Msg, Thread: res.Thread, Error: &Error{Code: f.Status, Detail: finalDetail(res.Target.Handle, f)}}
 	}

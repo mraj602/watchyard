@@ -52,3 +52,28 @@ func TestPhoneOpensSharedVector(t *testing.T) {
 		t.Fatal("tampered body opened")
 	}
 }
+
+type hubSigner struct{ k ed25519.PrivateKey }
+
+func (s hubSigner) SignLink(in []byte) ([]byte, error) { return ed25519.Sign(s.k, in), nil }
+
+// A test machine says it takes a trusted sender's message unless NoCaps models an old agent.
+func TestMachineHelloCaps(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	for _, noCaps := range []bool{false, true} {
+		d := NewMachine(7)
+		d.ID, d.NoCaps = "dev_x", noCaps
+		d.Pin(pub)
+		c, err := link.NewChallenge(hubSigner{priv}, d.HubFP, keys.B64(make([]byte, 32)), 4102444800)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := d.Hello(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if has := len(h.Client.Caps) == 1 && h.Client.Caps[0] == link.CapPeerService; has == noCaps {
+			t.Errorf("NoCaps %v: caps %v", noCaps, h.Client.Caps)
+		}
+	}
+}

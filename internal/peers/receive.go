@@ -57,12 +57,32 @@ func (e Env) Receive(in Incoming) ReceiveResult {
 	threads.Expire(now, func(id string) bool { return live[id] })
 	th := threads.FindOpen(env.From.Session, target.Entry.SessionID)
 	m := e.matrix()
-	if d := m.Allowed(from, party(*target), th); !d.Allowed {
+	mth := th
+	if env.Service() {
+		// The trusted sender (peers.md 4.1a, 8.4): never a reply, so the reply rule never lets
+		// it through, and a thread it did not open is refused.
+		if th != nil && th.A != env.From.Session {
+			res.Status, res.Detail = CodeRejected, CodeNotAllowed
+			return res
+		}
+		mth = nil
+	}
+	if d := m.Allowed(from, party(*target), mth); !d.Allowed {
 		res.Status, res.Detail = CodeRejected, d.Reason
 		if res.Detail == "" {
 			res.Detail = CodeNotAllowed
 		}
 		return res
+	}
+	mode := env.From.Mode
+	if env.Service() {
+		// The trusted sender is framed in the receiving class (peers.md 4.1a, 8.4 step 3); when
+		// that is not known nothing is written, so the sender never counts a hold as delivered.
+		if !ModeKnown(target.File, target.HasFile) {
+			res.Status, res.Detail = CodeRejected, CodeHeld
+			return res
+		}
+		mode = target.Mode
 	}
 	if th == nil {
 		th = threads.Adopt(env.Thread, env.From.Session, target.Entry.SessionID, env.From.Account, target.Account, env.From.Session, now)
@@ -108,9 +128,14 @@ func (e Env) Receive(in Incoming) ReceiveResult {
 			}
 		}
 	}
+	header := Header(handle, label, in.MachineName, th.ID)
+	if env.Service() {
+		handle = ServiceName(in.MachineName)
+		header = ServiceHeader(in.MachineName, label, env.Tag, th.ID)
+	}
 	w := Wrapper{
-		From: addr, FromSession: env.From.Session, Hop: HopTokens(env.Hop), FromName: handle, FromMode: env.From.Mode,
-		Body: Header(handle, label, in.MachineName, th.ID) + "\n\n" + clean,
+		From: addr, FromSession: env.From.Session, Hop: HopTokens(env.Hop), FromName: handle, FromMode: mode,
+		Body: header + "\n\n" + clean,
 	}
 	if err := WriteFrame(target.Entry.SocketOf(e.Runtime), NewFrame(env.Msg, target.Entry.SessionID, w)); err != nil {
 		res.Status, res.Detail = CodeFailed, CodeFailed
@@ -123,9 +148,9 @@ func (e Env) Receive(in Incoming) ReceiveResult {
 	_ = threads.Save(e.ThreadsPath())
 	_ = MarkDelivered(e.State, target.Entry.SessionID, now)
 	e.audit(auditLine{Msg: env.Msg, Thread: th.ID, From: env.From.Session, To: target.Entry.SessionID, FromA: env.From.Account,
-		ToA: target.Account, Size: len(clean), Status: "delivered"}, now)
+		ToA: target.Account, Size: len(clean), Status: "delivered", FromKind: env.From.Kind, Tag: env.Tag}, now)
 	res.Status = "delivered"
-	if env.From.Mode != "" && env.From.Mode != target.Mode {
+	if mode != "" && mode != target.Mode {
 		res.Detail = "held_likely"
 	}
 	return res

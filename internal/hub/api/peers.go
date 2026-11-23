@@ -160,6 +160,7 @@ func (s *Server) peerMessages(w http.ResponseWriter, r *http.Request) {
 			"from": map[string]string{"session": m.FromSession, "device": m.FromDevice, "device_name": name(m.FromDevice), "account": m.FromAcct},
 			"to":   map[string]string{"session": m.ToSession, "device": m.ToDevice, "device_name": name(m.ToDevice), "account": m.ToAcct},
 			"kind": m.Kind, "size": m.Size, "local": m.Local, "status": m.Status, "detail": nullable(m.Detail),
+			"from_kind": nullable(m.FromKind), "via_tag": nullable(m.ViaTag),
 			"created_at": msTime(m.CreatedAt), "final_at": nil}
 		if m.FinalAt != 0 {
 			e["final_at"] = msTime(m.FinalAt)

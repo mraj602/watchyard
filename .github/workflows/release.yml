@@ -132,6 +132,10 @@ jobs:
           echo "${out}"
           case "${out}" in "wy ${want} ("*) ;; *) echo "bundled wy is not ${want}"; exit 1 ;; esac
 
+      # The bundled binary itself: no test seam (peers.md 15).
+      - name: Bundled wy holds no test seams
+        run: scripts/ci/check-release-seams.sh --scan app/resources/wy
+
       - name: Package
         working-directory: app
         run: npm run dist -- --publish never
@@ -180,6 +184,10 @@ jobs:
 
       - name: Build archives
         run: scripts/release/build.sh "${GITHUB_REF_NAME}"
+
+      # The binaries just built, not a rebuild: none may hold a test seam (peers.md 15).
+      - name: Released binaries hold no test seams
+        run: scripts/ci/check-release-seams.sh --scan dist/release
 
       - name: Download the desktop packages
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
