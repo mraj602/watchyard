@@ -716,3 +716,45 @@ func TestReadOutboxMeter(t *testing.T) {
 		t.Errorf("without the meter: %+v", plain)
 	}
 }
+
+// 2c. fill_exp groups: two accounts in their last day take turns; an account whose room is at
+// risk by the full-speed estimate goes before one with days of slack; the 5-hour gate holds.
+func TestLanesFillGroups(t *testing.T) {
+	s := world(20, 40)
+	s["claude-2"] = smp(80, 10, 5, 10)
+	s["claude-3"] = smp(70, 10, 5, 20)
+	in := laneIn(s, 4)
+	var got []string
+	for _, p := range rank(t, in).Picks {
+		got = append(got, p.Key)
+	}
+	if len(got) != 4 || got[0] == got[1] || got[2] == got[3] {
+		t.Fatalf("picks %v: the two last-day accounts must take turns", got)
+	}
+	for _, k := range got {
+		if k != "claude-2" && k != "claude-3" {
+			t.Errorf("picks %v: %s went before the last-day accounts were capped", got, k)
+		}
+	}
+
+	// claude-3 at 44% with 56 h: needs 56*7.2/98*5 = 20.6 h at full speed, 3x = 62 h >= 56: at
+	// risk. claude-4 at 2% with 132 h: needs 35 h, 3x = 106 h < 132: not.
+	s = world(2, 40)
+	for _, a := range aggrNames {
+		s[a] = smp(2, 10, 5, 132)
+	}
+	s["claude-3"] = smp(44, 10, 5, 56)
+	in = laneIn(s, 1)
+	r := rank(t, in)
+	if r.Picks[0].Key != "claude-3" || !rowOf(r, "claude-3").Expiring || rowOf(r, "claude-4").Expiring {
+		t.Errorf("at-risk claude-3 not first: %s", r.Picks[0].Key)
+	}
+
+	// The 5-hour gate: a last-day account at 92% of its 5 hours does not jump the queue.
+	s = world(20, 40)
+	s["claude-2"] = smp(80, 92, 5, 10)
+	in = laneIn(s, 1)
+	if p := rank(t, in).Picks[0].Key; p == "claude-2" {
+		t.Errorf("claude-2 at 5h 92 still went first")
+	}
+}

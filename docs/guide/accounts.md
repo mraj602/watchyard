@@ -115,10 +115,10 @@ them. `--explain` lists each lease with where its use was measured.
 
 The default strategy, `lanes`, treats each account as **aggressive** (use its room up to 98 %)
 or **protected** (kept for you: new sessions only while its week is behind an even pace plus
-10 points, under 85 %, and its 5 hours under 45 %; nothing ever falls back onto it). An aggressive
-account whose week resets within two days is filled first, the soonest reset first, so its room
-is not lost; then the other aggressive accounts take turns; protected accounts get a session only
-when no aggressive account has room. Other strategies (`--strategy`, or `wy config set next.strategy …`) project usage
+10 points, under 85 %, and its 5 hours under 45 %; nothing ever falls back onto it). Aggressive accounts
+whose week resets within a day, then those whose unused room could not be used up in time even
+running flat out (with slack), go first so their room is not lost; then the other aggressive
+accounts take turns; protected accounts get a session only when no aggressive account has room. Other strategies (`--strategy`, or `wy config set next.strategy …`) project usage
 forward instead: `smart` (spend the weekly room that would otherwise expire unused first,
 keeping clear of accounts about to fill their 5 hours), `expiring`, `most-room`, `spread`,
 `fill` (a fixed order) and `sticky`.

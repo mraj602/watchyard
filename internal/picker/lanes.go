@@ -31,11 +31,21 @@ type LaneParams struct {
 	H5Weight     float64 // score damping by the 5-hour level
 	ExpH         float64 // an aggressive account resetting within this many hours goes first ...
 	ExpMax5h     float64 // ... while its 5-hour level is under this
-	// Order is the account order: OrderFill (default: expiring aggressive accounts first, soonest
-	// reset first, then the other aggressive accounts round robin, protected accounts only after
-	// every aggressive account) or OrderRRExp (the reference: one round robin over all eligible
-	// accounts, expiring aggressive ones first while their 5-hour level is under ExpMax5h).
-	Order       string
+	// Order is the account order: OrderFill (default; setup.md 8.5) or OrderRRExp (the
+	// reference: one round robin over all eligible accounts, expiring aggressive ones first while
+	// their week resets within ExpH and their 5-hour level is under ExpMax5h).
+	// OrderFill groups: 0 aggressive accounts in their last day (LastDayH) with room left, 1
+	// aggressive accounts whose room is at risk (ExpSlack), 2 the other aggressive accounts,
+	// 3 protected accounts; groups 0 and 1 need the 5-hour level under ExpMax5h; each group takes
+	// turns (newest lease oldest first). ExpH is not used.
+	Order string
+	// ExpSlack (fill_exp): room at risk when the hours to the weekly reset are at most ExpSlack
+	// times the hours needed to use the weekly room (to AggrSkip) at full 5-hour speed (one
+	// 5-hour window = AggrSkip/ratio weekly points, the account's own ratio).
+	ExpSlack float64
+	// LastDayH (fill_exp): an aggressive account whose week resets this soon, with room left,
+	// goes before every other account.
+	LastDayH    float64
 	BurstAggr   int // new leases per aggressive account per BurstWindow
 	BurstProt   int // new leases per protected account per BurstWindow
 	BurstWindow time.Duration
@@ -54,7 +64,7 @@ type LaneParams struct {
 // DefaultLaneParams are the shipped values (setup.md 8.5, Parameters).
 var DefaultLaneParams = LaneParams{
 	Target: 85, Headstart: 10, Handicap: 0.85, Cap5h: 80, Lane5h: 35, ProtMinHours: 24, MinHours: 0.5,
-	AggrSkip: 98, H5Weight: 1, ExpH: 48, ExpMax5h: 90, Order: OrderFill, BurstAggr: 6, BurstProt: 2, BurstWindow: time.Hour,
+	AggrSkip: 98, H5Weight: 1, ExpH: 48, ExpMax5h: 90, Order: OrderFill, ExpSlack: 3, LastDayH: 24, BurstAggr: 6, BurstProt: 2, BurstWindow: time.Hour,
 	LeasePrice: 4, LaneFull5: 0, CostMult: 2, Ratio: 7.2, F5: 1.4e-6,
 	LeaseTTL: 5 * time.Hour, Settle: 10 * time.Minute, StaleGuard: time.Hour, StaleLease: 6 * time.Hour,
 	Unlaunched: 10 * time.Minute,
@@ -102,6 +112,16 @@ func (p LaneParams) account(acc LaneAccount) LaneParams {
 		p.LeasePrice, p.CostMult, p.LaneFull5 = acc.Charge, 1, 0
 	}
 	return p
+}
+
+// needHours is how long acc needs to use its weekly room up to AggrSkip at full 5-hour speed:
+// each 5-hour window gives at most AggrSkip/ratio weekly points (fill_exp, setup.md 8.5).
+func (p LaneParams) needHours(acc LaneAccount, w float64) float64 {
+	room := math.Max(0, p.AggrSkip-w)
+	if room == 0 || p.AggrSkip <= 0 {
+		return 0
+	}
+	return room * p.account(acc).ratio() / p.AggrSkip * 5
 }
 
 func (p LaneParams) ratio() float64 {
@@ -589,18 +609,18 @@ type laneKey struct {
 	last  float64 // newest lease, unix seconds; -inf when never leased
 	hrs   float64
 	ord   int
-	fill  bool // fill_exp: the expiring group goes by soonest reset before round robin
+	n     int // fill_exp: leases in the burst window; fewer first when the newest leases tie (a batch)
 }
 
 func (a laneKey) less(b laneKey) bool {
 	if a.group != b.group {
 		return a.group < b.group
 	}
-	if a.fill && a.group == 0 && a.hrs != b.hrs {
-		return a.hrs < b.hrs
-	}
 	if a.last != b.last {
 		return a.last < b.last
+	}
+	if a.n != b.n {
+		return a.n < b.n
 	}
 	if a.hrs != b.hrs {
 		return a.hrs < b.hrs
@@ -694,14 +714,29 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 			if v.hasLease {
 				ll = float64(v.lastLease.UnixNano()) / 1e9
 			}
-			fill := p.Order != OrderRRExp
-			key := laneKey{group: 1, last: ll, hrs: 0, ord: acc.Ord, fill: fill}
-			if fill && prot {
-				key.group = 2 // protected accounts only after every aggressive one
-			}
-			expiring := !prot && v.hrs <= p.ExpH && v.h < p.ExpMax5h
-			if expiring {
-				key = laneKey{group: 0, last: ll, hrs: v.hrs, ord: acc.Ord, fill: fill}
+			key := laneKey{group: 1, last: ll, hrs: 0, ord: acc.Ord}
+			var expiring bool
+			if p.Order != OrderRRExp {
+				// fill_exp groups (LaneParams.Order); ties within a group by the time left per hour
+				// needed (most at risk first).
+				need := p.needHours(acc, v.w)
+				key.group, key.n = 2, v.capN
+				if need > 0 {
+					key.hrs = v.hrs / need
+				}
+				switch {
+				case prot:
+					key.group = 3
+				case need > 0 && v.h < p.ExpMax5h && v.hrs <= p.LastDayH:
+					key.group, expiring = 0, true
+				case need > 0 && v.h < p.ExpMax5h && v.hrs <= p.ExpSlack*need:
+					key.group, expiring = 1, true
+				}
+			} else {
+				expiring = !prot && v.hrs <= p.ExpH && v.h < p.ExpMax5h
+				if expiring {
+					key = laneKey{group: 0, last: ll, hrs: v.hrs, ord: acc.Ord}
+				}
 			}
 			row := LaneRow{Key: acc.Key, Protected: prot, Score: sc, Skip: skip, Reason: why, Weekly: v.w, FiveHour: v.h,
 				Reserve: v.wRes, HoursToReset: v.hrs, Leases: v.leaseN, Burst: v.capN, BurstCap: cp, Capped: capped,

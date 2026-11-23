@@ -210,8 +210,8 @@ The desktop app's Hub tab shows this same page.
      - the headline: "Can take the next new session", "Can take a new session: 3rd in line",
        or "Not taking new sessions now"; with the place explained: "3rd in line: 2 other
        accounts get a new session before this one; they take turns." (1st: "It gets the next
-       new session started with wy account next."); "weekly room expiring" says "Its week
-       resets within 2 days, so it goes first."
+       new session started with wy account next."); "weekly room expiring" says "Its weekly room would
+       otherwise expire unused, so it goes first."
      - its kind in words, with the definition from `MODE_WORDS` inline (a protected account
        also on hover, `title`), and when it is not chosen: "Not chosen yet; treated as
        aggressive.";

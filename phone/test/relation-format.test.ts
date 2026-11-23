@@ -130,7 +130,7 @@ describe('verdictModel', () => {
   it('first in line, and weekly room expiring', () => {
     const v = verdictModel(ownerVerdict({ rank: 1, expiring: true }), NOW)!;
     expect(v.headline).toBe('Can take the next new session');
-    expect(v.place).toBe('It gets the next new session started with wy account next. Its week resets within 2 days, so it goes first.');
+    expect(v.place).toBe('It gets the next new session started with wy account next. Its weekly room would otherwise expire unused, so it goes first.');
     expect(verdictModel(ownerVerdict({ rank: 2 }), NOW)!.place).toBe('2nd in line: 1 other account gets a new session before this one; they take turns.');
   });
   it('aggressive: the week rule is a stop level', () => {
