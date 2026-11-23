@@ -115,7 +115,8 @@ them. `--explain` lists each lease with where its use was measured.
 
 The default strategy, `lanes`, treats each account as **aggressive** (use its room up to 98 %)
 or **protected** (kept for you: new sessions only while its week is behind an even pace plus
-10 points, under 85 %, and its 5 hours under 45 %; nothing ever falls back onto it).
+10 points, under 85 %, and its 5 hours under 45 %; past that only when no aggressive account
+can take a session at all).
 
 An aggressive account **drains** when its week resets soon with room left: within a day, or
 within twice the time it would need to use that room running flat out. A draining account goes
@@ -123,13 +124,20 @@ first and takes as many sessions at once as its room can absorb before the reset
 from what your sessions really cost and how long they run (small, short sessions count as
 small), with no hourly cap. Its picks say so ("drain: 12% of week left, resets 05:30, finish by
 05:20"), and with `--exec` the session gets `WY_FINISH_BY` and `WY_ACCOUNT_RESET` (UTC) so an
-agent can wrap up in time. `--expect 3h` tells the picker how long a session will run. A
+agent can wrap up in time. `--expect short|medium|long` (or `--expect 90m`, `--expect-minutes
+90`, `--expect-tokens 2000000`) tells the picker how big a session will be: under 25 minutes is
+short, up to 2 hours medium, longer long. A long session is kept off accounts whose week resets
+before it would finish, so short ones use up the room that is about to expire. Without it, a
+session counts as your typical one. A
 protected account drains too, but only when its room would expire even at full speed, and only
 after every aggressive draining account. Then come aggressive accounts whose room is at risk,
 then the other aggressive accounts in turn (one whose running sessions will use up its 5 hours
 waits for them), then those with an unknown weekly level, and protected accounts last, only when
-no aggressive account has room. When the aggressive accounts only hit their hourly cap, a batch
-waits (exit 4 with the time one frees up) rather than use a protected account. Other strategies (`--strategy`, or `wy config set next.strategy …`) project usage
+no aggressive account has room. Nothing waits while an account can take a session safely: the
+hourly cap, a protected account's limits and a draining account's count only set the order, so
+when every account has reached one of them the session still goes to an aggressive account, then
+a protected one, and the pick says "over". A batch waits (exit 4 with the time one frees up) only
+when every account is at 98 %, its 5 hours would run out, or its usage cannot be read. Other strategies (`--strategy`, or `wy config set next.strategy …`) project usage
 forward instead: `smart` (spend the weekly room that would otherwise expire unused first,
 keeping clear of accounts about to fill their 5 hours), `expiring`, `most-room`, `spread`,
 `fill` (a fixed order) and `sticky`.

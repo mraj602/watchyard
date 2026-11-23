@@ -23,7 +23,18 @@ All notable changes to Watchyard are recorded here. The format follows
   hours before its reset; now all six go to claude-2.
 - `wy account next` (lanes) skips an aggressive account whose running lanes will still burn its
   5-hour window to the limit, until the first of them is expected to end.
-- New `--expect <duration>` (lanes): how long the session is expected to run.
+- `wy account next` (lanes) **never stalls**: a lane waits only when every account is at a hard
+  limit (weekly 98, the 5-hour limit with the running lanes' burn, the backstop, the landing
+  guard) or cannot be read. The hourly cap, the protected account's gate and a draining account's
+  capacity only order the accounts; when all are reached the lane goes to an aggressive account,
+  then a protected one, marked `over` (`"over": true` in `--json`). Protected accounts stay last.
+- New `--expect short|medium|long|<duration>`, `--expect-minutes N` and `--expect-tokens N`
+  (lanes): how big each new session will be. The class sizes come from measured sessions (short
+  under 25 minutes, about 1.2 5-hour points; medium up to 2 hours, about 3.2; long, about 14).
+  The estimate (never below the measured mean lane) sets drain capacity, the landing guard and
+  the 5-hour check, and a long lane goes to accounts that do not reset before it would finish.
+  The pick line says `expect <class>` and `--json` has `expect`. In the week simulator this cuts
+  lanes running past a weekly reset in the long-lanes pattern from 4.3 to about 1.2 per week.
 - Leases record `drain` and `finish_by` in the ledger and in `account_lease` records.
 
 ## [1.3.1] - 2026-11-23

@@ -969,7 +969,8 @@ the ledger and the output; `lanes` decides eligibility and order by its own rule
 
 Built for launching agent sessions ("lanes") in bursts. Each account is **aggressive** (its
 room is there to be used up) or **protected** (kept for its owner: lanes may use only what
-its weekly pace and a 5-hour floor leave over, and nothing ever falls back onto it). It
+its weekly pace and a 5-hour floor leave over; it gets a lane only when no aggressive account
+can take it under the hard limits, *No stalling*). It
 decides from the current state only (the newest readings, the token meter since them and the
 live leases), never from a forecast of past use.
 
@@ -1059,7 +1060,10 @@ own readings and token use and moves from the value shown (its fallback) to the 
 | 5-hour backstop | 95 | No new drain lane at a measured 5-hour level at or over this, unless the window resets within fresh soon. |
 | spill max | 2 | Lanes per account that may run past its weekly reset. |
 | landing guard | 99 | No aggressive lane when `w + E95/ρ` is over this. |
-| short wait | 15 min | Rather than use a protected account, wait for an aggressive one whose 5-hour window frees this soon. |
+| short wait | 15 min | Rather than use a protected account, wait for an aggressive one whose 5-hour window frees this soon (only when no account can take the lane under the hard limits: No stalling). |
+| lane classes | short 7 min / 1.2, medium 48 min / 3.2, long 3 h / 14 | Wall time and 5-hour points of a lane of each `--expect` class (Estimates; from the worker's sessions, below). |
+| class cut points | 25 min, 2 h | A wall time up to 25 minutes is short, up to 2 hours medium, longer long. |
+| units per token | 0.19 | Weighted units per raw token (input + output + cache), for `--expect-tokens`. |
 | hub-down factor | 0.5 | Drain capacities times this when the hub could not be read. |
 | web gap | 15 min | Age of the newest reading after which claude.ai use the meter cannot see is added. |
 
@@ -1167,9 +1171,8 @@ signed out on the hub, not `exclude`d, inside its `hours` and `days`):
   charges, no pace line or target; their drain capacity, the 5-hour backstop, the hard limits and
   the landing guard on their measured levels.
 
-There is **no fallback onto a protected account**: a protected account outside drain gets a lane
-only when no aggressive account has room (*Order*); with no eligible account nothing is picked
-(exit 4).
+A protected account outside drain gets a lane only when no aggressive account can take it under
+the hard limits (*Order*, *No stalling*); with no account that can, nothing is picked (exit 4).
 
 *Order* (`drain`, owner 2026-11-24). Every eligible account is in exactly one class, and the
 classes go first to last:
@@ -1187,12 +1190,59 @@ classes go first to last:
 4. **Aggressive**: turns (the newest lease oldest first, never leased first), then fewer leases in
    the burst window (so a batch alternates), then the earliest weekly reset, then label.
 5. **Unknown**: aggressive accounts with an unknown weekly level (owner: before protected).
-6. **Protected**, only when no aggressive account has room: every aggressive account is at a hard
-   limit, at drain capacity, behind the landing guard, or excluded. When an aggressive account is
-   blocked only by its burst cap, or its 5-hour window (its level, or its running lanes' 5-hour
-   burn) frees it within 15 minutes, the lane waits instead (exit 4 with `next_free`).
+6. **Protected**, only when no aggressive account can take the lane: every aggressive account is
+   at a hard limit, behind the landing guard, unreadable or excluded (*No stalling*: one held only
+   by its burst cap or its drain capacity takes the lane first, marked over).
 
-A draining account with no capacity is skipped and does not fall into a later class.
+A draining account with no capacity is skipped and does not fall into a later class (except as an
+over pick, *No stalling*).
+
+*No stalling* (owner change 2, 2026-11-24). A lane never waits while some account can take it
+under the **hard limits**: weekly 98, 5-hour 98 (with the running lanes' forward burn and one
+more lane), the 5-hour backstop 95 for drain lanes, the landing guard 99, and a readable state (not
+stale, weekly level known, for a protected account). The **soft limits** only set the order:
+the burst cap, the protected gate (the 5-hour floor 45 and the pace line, the reserve target) and
+drain capacity. When the order above finds no eligible account, the lane goes, in this order, to:
+
+1. an aggressive account held only by soft limits (its burst cap, or a draining account full by
+   its capacity whose next lane stays under the hard limits: `w + (F + N1)/ρ ≤ 98`, the 5-hour
+   window holds it, `h < 95`), in table order;
+2. an eligible protected account;
+3. a protected account held only by its gate (under the hard limits and the backstop).
+
+Such a pick is **over** (`"over": true`, "over (no account free under its soft limits)" in the
+pick line); it never counts against drain capacity or the spill limit. `--urgent` still comes
+first for a burst-capped aggressive account. Exit 4 only when every account is at a hard limit or
+unreadable. Under no stalling a protected account's 5-hour check is the forward check against 98
+(not its floor) once it is past its gate.
+
+*Estimates* (`--expect`, owner change 2). The agent says how big each new lane will be: a class
+(`short`, `medium`, `long`), a wall time (`--expect 90m` or `--expect-minutes 90`; its class by
+the cut points) and/or its tokens (`--expect-tokens N`). The estimate is the class's benchmark
+(table above), the wall time given (the class's cost scaled to it) and, with tokens, the cost
+`N × 0.19 × f`. No estimate: the measured median lane (length `L`, cost `Ē`; class `measured`), or
+medium without lane statistics. The cost is never below `Ē` (*cost floor*: agents underestimate;
+a lane floored up keeps its stated burn rate and runs longer). The estimate replaces `N1`, `N1₅`
+and the lane rate `r` for the new lane in *Capacity*, the landing guard (when given and over
+`E95`) and the 5-hour forward check, and the pick's lease carries its wall time and rate, so the
+next picks of the batch and later calls see the lane as it was announced (a lane measured
+burning uses its measured rate).
+
+*Runway.* A lane whose estimated wall time is longer than an account's hours to its weekly reset
+less the guard is **late** for it: a late aggressive drain account goes after the aggressive
+accounts that are not late (before unknown ones), a late at-risk, aggressive or unknown account
+after every aggressive and unknown one, a late protected drain account with the protected ones.
+So long lanes go to accounts with a week ahead of them and short lanes drain the room that
+expires. A drain lane is a spill lane when its estimated wall time exceeds the hours to the
+reset.
+
+*Benchmarks.* From the worker's ledger and session logs (read only, 2026-11-24; 600 distinct
+sessions, `f` 1.4): wall time p50 25 min, p90 121 min; 5-hour points p50 1.4, p75 3.1, p95 11.1,
+mean 3.3 (opus 5.2, sonnet 1.3). By class at the cut points: short (≤ 25 min) median 6.4 min,
+mean 1.2 points (p95 3.8); medium median 48 min, mean 3.2 (p95 8.6); long (> 2 h) median 3 h,
+mean 13.7 (p95 43). Weighted units per raw token: median 0.19. The ledger's own lanes (15): median
+18 min, mean 5.7 points. Measured lane statistics replace the class benchmarks when the ledger
+has them.
 
 `w` and `h` here are the levels with the lease charges (Effective state); a draining account is
 judged on its *measured* levels instead. `score` is shown but does not order: `(1 − h/100) ×
@@ -1248,7 +1298,7 @@ account out of the drain; they only limit how many more it takes).
   same room as fast), so a batch places about half. `C = min(Cw, C5)`; then *spill*: a new lane is a spill lane when
   `H − guard < L` or `--expect` is longer, and at most 2 lanes expected to run past `finish_by` may
   be running per account; *stale*: at most 1 new drain lane per reading (none when a lease came
-  after the reading); and the landing guard. With `C ≤ 0` the account takes no lane now: "drain
+  after the reading); and the landing guard. With `C ≤ 0` the account takes no lane now (unless as an over pick, *No stalling*): "drain
   full: N lanes running use the room left before HH:MM" or "drain: 5h full until HH:MM".
 - *Batches.* Each placed pick is a running lane of age 0 for the next pick of the batch, so `F`
   and `C` count it.
@@ -1610,15 +1660,19 @@ Unknown fields are reported by `wy doctor` as unknown keys.
 #### Flags, output and exit codes
 
 `wy account next [--strategy <s>] [--model <m>] [--n <K>] [--session-id <uuid>]...
-[--urgent] [--expect <duration>] [--env | --json | --explain] [--no-reserve] [--no-hub] [--exec [-- <cmd>
-[args...]]]`
+[--urgent] [--expect short|medium|long|<duration>] [--expect-minutes <N>] [--expect-tokens <N>]
+[--env | --json | --explain] [--no-reserve] [--no-hub] [--exec [-- <cmd> [args...]]]`
 
 - `--n K` (1 to 50): picks for K sessions. Default: the number of `--session-id` values, else 1.
 - `--session-id <uuid>`, repeatable: the id each session will get (`claude --session-id`),
   in pick order; given at all, there must be exactly K. Each must be a UUID (exit 2).
 - `--urgent`: above.
-- `--expect <duration>` (lanes; e.g. `3h`): how long the caller expects the session to run. A
-  drain uses it for the spill check and the new lane's burn (Drain).
+- `--expect short|medium|long|<duration>` (lanes; e.g. `long` or `3h`), `--expect-minutes N`,
+  `--expect-tokens N`: how big the caller expects each new session to be (*Estimates*); the
+  class is case-insensitive, a wall time must be positive and given once (`--expect <duration>`
+  or `--expect-minutes`), and tokens are input + output + cache. Other values: exit 2. They
+  set drain capacity, the runway order, the landing guard and the 5-hour forward check for the
+  lanes of this call.
 - `--env` and `--exec` need K = 1 (exit 2). With `--exec` and `--session-id`, a `claude`
   command that has no `--session-id`, `--resume`, `-r`, `--continue` or `-c` argument gets
   `--session-id <uuid>` added, so the lease is marked launched.
@@ -1629,7 +1683,9 @@ Unknown fields are reported by `wy doctor` as unknown keys.
   `claude-3  ~/.claude-3  (aggressive; 7d 23%, resets Wed 10:00; 5h 12%; 2 leases in 60 min)`:
   the kind, the weekly and 5-hour levels the pick was judged on, `unknown` for a weekly level
   with no reading, `urgent` for a pick
-  past its burst cap, `local data` or `no usage data`, `data <age> old` when the newest reading
+  past its burst cap, `over (no account free under its soft limits)` for an over pick
+  (*No stalling*), `expect <class>` (the class used: `short`, `medium`, `long`, `measured`),
+  `local data` or `no usage data`, `data <age> old` when the newest reading
   is over 60 minutes old, and `session <uuid>` when given. A drain pick says instead, e.g.
   `claude-2  ~/.claude-2  (aggressive; drain: 9% of week left, resets 09:30, finish by 09:20; 5h
   50%; 2 of 5 drain lanes running)` (its measured levels; lanes running now and with its capacity;
@@ -1645,7 +1701,7 @@ Unknown fields are reported by `wy doctor` as unknown keys.
   `env $(wy account next --env) claude`; a folder with spaces needs `--exec`.
 - `--json`: `{"v": 1, "time", "strategy", "model", "data": "hub"|"local", "hub_error",
   "reserved", "picked": {"label", "folder", "dir", "env", "reason", "session_id", "urgent",
-  "drain", "finish_by", "weekly_reset", "spill", "why", "hint"} | null, "picks": [<as picked>...], "waiting", "next_free", "skipped_ledger_lines",
+  "drain", "finish_by", "weekly_reset", "spill", "why", "hint", "expect", "over"} | null, "picks": [<as picked>...], "waiting", "next_free", "skipped_ledger_lines",
   "accounts": [...], "warnings"}`. `picked` is the first pick, `picks` every pick in order,
   `waiting` the number of the K sessions not placed. Each account has `label`, `folder`,
   `dir`, `default_view`, `seat`, `email`, `seat_matched_by`, `logged_in`, `eligible`,
@@ -1719,7 +1775,7 @@ Unknown fields are reported by `wy doctor` as unknown keys.
 `--env`, `--json`, `--explain` and `--exec` do not mix (exit 2).
 
 **Exit codes.** 0: every session asked for was placed. 4: fewer than K were placed (none,
-for K = 1): no account can take the rest now. The picks that were placed are printed and
+for K = 1): no account can take the rest now (`lanes`: every account at a hard limit or unreadable). The picks that were placed are printed and
 leased (launch only those); the line on stderr says when the earliest account frees up
 (`next_free`, or that none does at a known time; after a partial batch, `lanes` ranks once more
 with the placed picks leased to find it) and points to `--explain`; `--json` and
