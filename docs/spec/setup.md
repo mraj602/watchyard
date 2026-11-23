@@ -977,7 +977,7 @@ live leases), never from a forecast of past use.
 from a label. In plain words (the one wording every surface uses: `internal/picker`
 `ModeWords`, the board's `components/pick-mode.js`, the phone's `lib/format/pickMode.ts`):
 
-- **Protected**: "Kept for you. New sessions only while this week is behind an even pace and
+- **Protected**: "Kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and
   the 5-hour window is under 45%." For the account you use yourself (in Chrome, the app, or
   interactively in a terminal).
 - **Aggressive**: "Use it up. Sessions go here until 98% of the week or 5 hours." For
@@ -1045,7 +1045,7 @@ own readings and token use and moves from the value shown (its fallback) to the 
 | stale guard | 60 min | Age of the newest reading after which an account that ran is stale. |
 | stale lease | 6 h | Age after which an account with a lease since its reading is stale. |
 | unlaunched | 10 min | A lease whose session never started is dropped after this. |
-| expiring | 48 h, 5-hour < 30 | An aggressive account whose weekly window resets this soon goes first. |
+| expiring | 48 h, 5-hour < 90 | An aggressive account whose weekly window resets this soon goes first, the soonest reset first. |
 | web gap | 15 min | Age of the newest reading after which claude.ai use the meter cannot see is added. |
 
 `cap_5h`, `cap_7d` and `reserve_pct` (taken off both) are the only per-account caps `lanes`
@@ -1148,11 +1148,15 @@ signed out on the hub, not `exclude`d, inside its `hours` and `days`):
 There is **no fallback onto a protected account**, ever: with no eligible account nothing is
 picked (exit 4).
 
-*Order* (`rr_exp`). Eligible aggressive accounts whose weekly window resets within 48 hours
-and whose `h < 30` come first: their unused weekly room is about to expire; they take turns
-among themselves (newest lease oldest first, then the sooner reset). Then every other
-eligible account, round robin: the one whose newest lease is oldest first, never leased
-first. Ties by label in natural order. Aggressive accounts with an unknown weekly level come
+*Order* (`fill_exp`, owner 2026-11-24). Three groups, each eligible account in exactly one:
+(1) aggressive accounts whose weekly window resets within 48 hours and whose `h < 90`: their
+unused weekly room is about to expire, so they are filled first, the soonest reset first
+(then newest lease oldest first); (2) the other aggressive accounts, round robin: the one whose
+newest lease is oldest first, never leased first; (3) protected accounts, round robin, only
+when no aggressive account can take the lane. Ties by label in natural order. The reference
+order `rr_exp` (golden cases; one round robin over groups 2 and 3 together, and the expiring
+turn only while `h < 30`) is kept as `ReferenceLaneParams` for the parity test only. It sent
+lanes to protected accounts while an aggressive account about to reset had room (2026-11-23). Aggressive accounts with an unknown weekly level come
 after all others. `score` is shown but does not order: `(1 − h/100) × (100 − w) / max(hours,
 0.5)` for aggressive, `(1 − h/100) × 0.85 × (T − w) / max(hours, 24)` for protected.
 

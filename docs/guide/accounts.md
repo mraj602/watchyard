@@ -14,7 +14,7 @@ switches or rotates accounts for you, and it never shares a login between folder
 `wy account next` (below) decides where new Claude Code sessions go. Tell it, once per
 account, how to treat that account:
 
-- **Protected**: kept for you. New sessions only while this week is behind an even pace and
+- **Protected**: kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and
   the 5-hour window is under 45%. Choose it for the account you use yourself: in Chrome, the
   Claude app, or interactively in a terminal. Agents then only borrow what you would not use
   anyway, and nothing ever falls back onto it when the other accounts are full.
@@ -115,9 +115,10 @@ them. `--explain` lists each lease with where its use was measured.
 
 The default strategy, `lanes`, treats each account as **aggressive** (use its room up to 98 %)
 or **protected** (kept for you: new sessions only while its week is behind an even pace plus
-10 points, under 85 %, and its 5 hours under 45 %; nothing ever falls back onto it). Accounts
-take turns, and an aggressive account whose week resets within two days goes first so its room
-is not lost. Other strategies (`--strategy`, or `wy config set next.strategy …`) project usage
+10 points, under 85 %, and its 5 hours under 45 %; nothing ever falls back onto it). An aggressive
+account whose week resets within two days is filled first, the soonest reset first, so its room
+is not lost; then the other aggressive accounts take turns; protected accounts get a session only
+when no aggressive account has room. Other strategies (`--strategy`, or `wy config set next.strategy …`) project usage
 forward instead: `smart` (spend the weekly room that would otherwise expire unused first,
 keeping clear of accounts about to fill their 5 hours), `expiring`, `most-room`, `spread`,
 `fill` (a fixed order) and `sticky`.

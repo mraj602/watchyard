@@ -182,7 +182,7 @@ The desktop app's Hub tab shows this same page.
   open row, above Details. Its wording comes from one place, `components/pick-mode.js`
   (`MODE_WORDS`; tested in `pick-mode.test.cjs`), which every other mention of protected or
   aggressive on the board also uses (the verdict below, its hover title):
-  - **Protected**: "Kept for you. New sessions only while this week is behind an even pace and
+  - **Protected**: "Kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and
     the 5-hour window is under 45%."
   - **Aggressive**: "Use it up. Sessions go here until 98% of the week or 5 hours."
   - **Not chosen**: "Not chosen yet; treated as aggressive."

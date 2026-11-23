@@ -6,7 +6,7 @@
 export const MODE_WORDS = {
   protected: {
     name: 'Protected',
-    definition: 'Kept for you. New sessions only while this week is behind an even pace and the 5-hour window is under 45%.',
+    definition: 'Kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and the 5-hour window is under 45%.',
   },
   aggressive: {
     name: 'Aggressive',

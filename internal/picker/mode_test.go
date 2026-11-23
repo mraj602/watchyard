@@ -135,7 +135,7 @@ func TestLanesModeFromAndCaps(t *testing.T) {
 
 // The one wording (setup.md 8.5, Kind; the board and the phone say the same).
 func TestModeWords(t *testing.T) {
-	if ModeWords.Protected != "Kept for you. New sessions only while this week is behind an even pace and the 5-hour window is under 45%." ||
+	if ModeWords.Protected != "Kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and the 5-hour window is under 45%." ||
 		ModeWords.Aggressive != "Use it up. Sessions go here until 98% of the week or 5 hours." ||
 		ModeWords.NotChosen != "Not chosen yet; treated as aggressive." {
 		t.Fatalf("%+v", ModeWords)

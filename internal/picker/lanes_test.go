@@ -151,8 +151,9 @@ func TestLanesUrgentPassesOnlyTheCap(t *testing.T) {
 	}
 }
 
-// 2. Order: round robin, the newest lease oldest first; a batch visits every account once;
-// expiring aggressive accounts go first.
+// 2. Order (fill_exp): round robin among aggressive accounts, the newest lease oldest first; a
+// batch visits every aggressive account before any protected one; expiring aggressive accounts
+// go first while their 5-hour level is under ExpMax5h.
 func TestLanesOrder(t *testing.T) {
 	in := laneIn(world(30, 20), 1)
 	in.Leases = []LaneLease{lease("claude-2", 0.5, "a", true), lease("claude-3", 0.4, "b", true)}
@@ -164,8 +165,13 @@ func TestLanesOrder(t *testing.T) {
 	for _, p := range rank(t, in).Picks {
 		seen[p.Key] = true
 	}
-	if len(seen) != 7 {
-		t.Errorf("a batch of 7 visited %d accounts", len(seen))
+	for k := range seen {
+		if isProt(k) {
+			t.Errorf("a batch of 7 reached protected %s while aggressive accounts had room", k)
+		}
+	}
+	if len(seen) != len(aggrNames) {
+		t.Errorf("a batch of 7 visited %d aggressive accounts, want %d", len(seen), len(aggrNames))
 	}
 	// claude-6 resets in 24 h with 5h under 30: it goes first even though it was leased last.
 	s := world(30, 20)
@@ -176,11 +182,47 @@ func TestLanesOrder(t *testing.T) {
 	if r.Picks[0].Key != "claude-6" || !rowOf(r, "claude-6").Expiring {
 		t.Errorf("expiring account not first: %s", r.Picks[0].Key)
 	}
-	s["claude-6"] = smp(30, 35, 5, 24) // 5h at 35: no longer expiring-first
+	s["claude-6"] = smp(30, 35, 5, 24) // 5h at 35: still expiring-first (owner 2026-11-24)
+	in = laneIn(s, 1)
+	in.Leases = []LaneLease{lease("claude-6", 0.1, "x", true)}
+	if p := rank(t, in).Picks[0].Key; p != "claude-6" {
+		t.Errorf("claude-6 with 5h 35 not first: %s", p)
+	}
+	s["claude-6"] = smp(30, 92, 5, 24) // 5h at 92 >= ExpMax5h: no longer expiring-first
 	in = laneIn(s, 1)
 	in.Leases = []LaneLease{lease("claude-6", 0.1, "x", true)}
 	if p := rank(t, in).Picks[0].Key; p == "claude-6" {
-		t.Errorf("claude-6 with 5h 35 still went first")
+		t.Errorf("claude-6 with 5h 92 still went first")
+	}
+}
+
+// 2b. The 2026-11-23 case: claude-2 resets in 9 h with 88% used and 45% of its 5-hour window,
+// just leased three times; the other aggressive accounts have days left; the protected ones are
+// eligible. Every lane goes to claude-2 up to its burst cap, then the other aggressive accounts;
+// no protected account is reached.
+func TestLanesFillExpiringFirst(t *testing.T) {
+	s := world(20, 40)
+	s["claude-2"] = smp(88, 45, 5, 9)
+	s["claude-6"] = smp(6, 13, 5, 140)
+	in := laneIn(s, 6)
+	in.Leases = []LaneLease{lease("claude-2", 0.3, "a", true), lease("claude-2", 0.3, "b", true), lease("claude-2", 0.3, "c", true)}
+	r := rank(t, in)
+	var got []string
+	for _, p := range r.Picks {
+		got = append(got, p.Key)
+	}
+	if len(got) != 6 || got[0] != "claude-2" || got[1] != "claude-2" || got[2] != "claude-2" {
+		t.Fatalf("picks %v: claude-2 must take the first three (burst cap 6, three used)", got)
+	}
+	for _, k := range got[3:] {
+		if isProt(k) || k == "claude-2" {
+			t.Errorf("picks %v: after claude-2's cap the other aggressive accounts, never protected", got)
+		}
+	}
+	// The reference order (rr_exp) would have sent it elsewhere: claude-2 is not expiring there.
+	in.Params = ReferenceLaneParams
+	if p := rank(t, in).Picks[0].Key; p == "claude-2" {
+		t.Errorf("rr_exp unexpectedly picked claude-2 first")
 	}
 }
 
@@ -603,8 +645,8 @@ func TestDecideLanesMeterAndLeases(t *testing.T) {
 	if math.Abs(rb.Lanes.FiveHourPct-11) > 0.11 || rb.Lanes.Leases != 0 {
 		t.Errorf("b lanes %+v", *rb.Lanes)
 	}
-	if res.Picks[0].Label != "b" || res.Picks[0].LaneKind != "protected" {
-		t.Errorf("pick %+v: b has no lease yet, round robin takes it first", res.Picks[0].Ranked.Label)
+	if res.Picks[0].Label != "a" || res.Picks[0].LaneKind != "aggressive" {
+		t.Errorf("pick %+v: aggressive a has room, so protected b waits (fill_exp)", res.Picks[0].Ranked.Label)
 	}
 	// The same session id again is refused.
 	if _, err := Decide(Input{Now: t0, Settings: s, Candidates: []Candidate{a, b}, Leases: ledger, Outbox: ob, N: 1, SIDs: []string{"S1"}}); !errors.Is(err, ErrDuplicateSession) {

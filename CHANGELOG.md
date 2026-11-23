@@ -6,6 +6,15 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `wy account next` (lanes): an aggressive account whose week resets within 48 hours is now
+  filled first, the soonest reset first, while its 5-hour window is under 90% (was 30%, which
+  dropped it from the front as soon as it was busy). The other aggressive accounts then take
+  turns, and protected accounts get a lane only when no aggressive account has room. Before, one
+  round robin over all eligible accounts sent lanes to protected accounts while an account
+  about to reset still had room.
+
 ## [1.3.1] - 2026-11-23
 
 ### Fixed

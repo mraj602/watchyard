@@ -31,29 +31,48 @@ type LaneParams struct {
 	H5Weight     float64 // score damping by the 5-hour level
 	ExpH         float64 // an aggressive account resetting within this many hours goes first ...
 	ExpMax5h     float64 // ... while its 5-hour level is under this
-	BurstAggr    int     // new leases per aggressive account per BurstWindow
-	BurstProt    int     // new leases per protected account per BurstWindow
-	BurstWindow  time.Duration
-	LeasePrice   float64 // first-5h lane price, 5-hour points
-	LaneFull5    float64 // expected full lane cost (0 = LeasePrice)
-	CostMult     float64 // safety factor on both
-	Ratio        float64 // 5-hour points per weekly point
-	F5           float64 // 5-hour points per weighted token unit
-	LeaseTTL     time.Duration
-	Settle       time.Duration
-	StaleGuard   time.Duration
-	StaleLease   time.Duration
-	Unlaunched   time.Duration
+	// Order is the account order: OrderFill (default: expiring aggressive accounts first, soonest
+	// reset first, then the other aggressive accounts round robin, protected accounts only after
+	// every aggressive account) or OrderRRExp (the reference: one round robin over all eligible
+	// accounts, expiring aggressive ones first while their 5-hour level is under ExpMax5h).
+	Order       string
+	BurstAggr   int // new leases per aggressive account per BurstWindow
+	BurstProt   int // new leases per protected account per BurstWindow
+	BurstWindow time.Duration
+	LeasePrice  float64 // first-5h lane price, 5-hour points
+	LaneFull5   float64 // expected full lane cost (0 = LeasePrice)
+	CostMult    float64 // safety factor on both
+	Ratio       float64 // 5-hour points per weekly point
+	F5          float64 // 5-hour points per weighted token unit
+	LeaseTTL    time.Duration
+	Settle      time.Duration
+	StaleGuard  time.Duration
+	StaleLease  time.Duration
+	Unlaunched  time.Duration
 }
 
 // DefaultLaneParams are the shipped values (setup.md 8.5, Parameters).
 var DefaultLaneParams = LaneParams{
 	Target: 85, Headstart: 10, Handicap: 0.85, Cap5h: 80, Lane5h: 35, ProtMinHours: 24, MinHours: 0.5,
-	AggrSkip: 98, H5Weight: 1, ExpH: 48, ExpMax5h: 30, BurstAggr: 6, BurstProt: 2, BurstWindow: time.Hour,
+	AggrSkip: 98, H5Weight: 1, ExpH: 48, ExpMax5h: 90, Order: OrderFill, BurstAggr: 6, BurstProt: 2, BurstWindow: time.Hour,
 	LeasePrice: 4, LaneFull5: 0, CostMult: 2, Ratio: 7.2, F5: 1.4e-6,
 	LeaseTTL: 5 * time.Hour, Settle: 10 * time.Minute, StaleGuard: time.Hour, StaleLease: 6 * time.Hour,
 	Unlaunched: 10 * time.Minute,
 }
+
+// Account orders (LaneParams.Order).
+const (
+	OrderFill  = "fill_exp"
+	OrderRRExp = "rr_exp"
+)
+
+// ReferenceLaneParams are the parameters of the reference ranker (the golden cases): the
+// rr_exp order with the expiring turn only under 30% of the 5-hour window.
+var ReferenceLaneParams = func() LaneParams {
+	p := DefaultLaneParams
+	p.ExpMax5h, p.Order = 30, OrderRRExp
+	return p
+}()
 
 // Price is the charge of a new lane: c5 for its first 5 hours and cf, its expected full cost,
 // in 5-hour points.
@@ -566,15 +585,19 @@ func hoursDur(h float64) time.Duration { return time.Duration(h * float64(time.H
 
 // laneKey is the rr_exp order key: lower first.
 type laneKey struct {
-	group int     // 0 expiring aggressive, 1 the rest
+	group int     // 0 expiring aggressive, 1 the rest (fill_exp: 1 other aggressive, 2 protected)
 	last  float64 // newest lease, unix seconds; -inf when never leased
 	hrs   float64
 	ord   int
+	fill  bool // fill_exp: the expiring group goes by soonest reset before round robin
 }
 
 func (a laneKey) less(b laneKey) bool {
 	if a.group != b.group {
 		return a.group < b.group
+	}
+	if a.fill && a.group == 0 && a.hrs != b.hrs {
+		return a.hrs < b.hrs
 	}
 	if a.last != b.last {
 		return a.last < b.last
@@ -671,10 +694,14 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 			if v.hasLease {
 				ll = float64(v.lastLease.UnixNano()) / 1e9
 			}
-			key := laneKey{group: 1, last: ll, hrs: 0, ord: acc.Ord}
+			fill := p.Order != OrderRRExp
+			key := laneKey{group: 1, last: ll, hrs: 0, ord: acc.Ord, fill: fill}
+			if fill && prot {
+				key.group = 2 // protected accounts only after every aggressive one
+			}
 			expiring := !prot && v.hrs <= p.ExpH && v.h < p.ExpMax5h
 			if expiring {
-				key = laneKey{group: 0, last: ll, hrs: v.hrs, ord: acc.Ord}
+				key = laneKey{group: 0, last: ll, hrs: v.hrs, ord: acc.Ord, fill: fill}
 			}
 			row := LaneRow{Key: acc.Key, Protected: prot, Score: sc, Skip: skip, Reason: why, Weekly: v.w, FiveHour: v.h,
 				Reserve: v.wRes, HoursToReset: v.hrs, Leases: v.leaseN, Burst: v.capN, BurstCap: cp, Capped: capped,
