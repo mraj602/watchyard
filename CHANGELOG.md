@@ -6,6 +6,14 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `make phone-apk-release` checks the keystore password before it builds. Before, a wrong
+  password passed the check (keytool's error text was hashed as if it were the certificate)
+  and the build failed only at signing, about 20 minutes later. The check now also unlocks the
+  key and refuses a keystore whose certificate is not the pinned release certificate, unless
+  `WY_ANDROID_ALLOW_OTHER_KEY=1` is set for a deliberate key change.
+
 ## [1.3.0] - 2026-11-23
 
 ### Added
