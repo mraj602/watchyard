@@ -533,7 +533,7 @@ func laneLive(acc LaneAccount, c cleanSample, now time.Time, p LaneParams, lease
 	st.wRes = math.Max(wRes, 0)
 	st.add5 = add5
 	st.hM = math.Min(math.Max(h+m5part+g5+math.Max(0, acc.Extra5), 0), 100)
-	st.wM = math.Min(math.Max(wCore+math.Max(0, acc.Extra5)/ratio, 0), 100)
+	st.wM = math.Min(math.Max(w+add7+g7+math.Max(0, acc.Extra5)/ratio, 0), 100)
 	return st
 }
 
@@ -793,6 +793,9 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 						skip, why, level = true, d.Why, 3
 					}
 					dk.group, dk.deficit, dk.finish = 0, d.Deficit, float64(d.FinishBy.Unix())
+					for _, pk := range res.Picks {
+						dk.batched = dk.batched || pk.Key == acc.Key
+					}
 					if prot {
 						dk.group = 1
 					}

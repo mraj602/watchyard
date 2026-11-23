@@ -196,7 +196,7 @@ func TestLanesOrder(t *testing.T) {
 	}
 }
 
-// 2b. The 2026-11-23 case: claude-2 resets in 9 h with 88% used and 45% of its 5-hour window,
+// 2b. The draft (fill_exp) on the 2026-11-23 case: claude-2 resets in 9 h with 88% used and 45% of its 5-hour window,
 // just leased three times; the other aggressive accounts have days left; the protected ones are
 // eligible. Every lane goes to claude-2 up to its burst cap, then the other aggressive accounts;
 // no protected account is reached.
@@ -205,6 +205,7 @@ func TestLanesFillExpiringFirst(t *testing.T) {
 	s["claude-2"] = smp(88, 45, 5, 9)
 	s["claude-6"] = smp(6, 13, 5, 140)
 	in := laneIn(s, 6)
+	in.Params = DraftLaneParams // the draft's behaviour; the drain order: TestDrainIncident1123
 	in.Leases = []LaneLease{lease("claude-2", 0.3, "a", true), lease("claude-2", 0.3, "b", true), lease("claude-2", 0.3, "c", true)}
 	r := rank(t, in)
 	var got []string

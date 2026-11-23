@@ -1208,11 +1208,11 @@ account out of the drain; they only limit how many more it takes).
 
 - *Quantities.* `ρ` the account's ratio; `M` the drain margin (1 weekly point, 2 when stale or the
   hub could not be read); `R5 = (98 − M − w) × ρ`, the room this week in 5-hour points; `A0 =
-  max(0, 98 − h)` the room in the current 5-hour window (a protected account: its 5-hour floor 45
-  instead of 98); `t5` the hours to the 5-hour reset (5 when no window is open); `H` the hours to
-  the weekly reset; `need` the hours to use `R5` at full 5-hour speed (`5 × R5 / 98` when `R5 ≤
-  A0`, else `t5 + 5 × (R5 − A0) / 98`).
-- *Entry* (all of): the weekly level and its `resets_at` are known from a reading; `98 − w ≥ 0.5`;
+  max(0, 98 − h)` the room in the current 5-hour window; `t5` the hours to the 5-hour reset (5
+  when no window is open); `H` the hours to the weekly reset; `need` the hours to use `R5` at full
+  5-hour speed (`5 × R5 / 98` when `R5 ≤ A0`, else `t5 + 5 × (R5 − A0) / 98`), for every account.
+  For a protected account's capacity `A0` is `max(0, 45 − h)`: its 5-hour floor stays.
+- *Entry* (all of): the weekly level and its `resets_at` are known from a reading; `98 − w > 0.5`;
   `H > guard` (10 minutes); and `H ≤ max(24, 2 × need)` for an aggressive account, `H ≤ 1 × need`
   for a protected one that is not stale (owner: only room that would be wasted even at full
   speed). It leaves the drain as soon as one fails (no state is kept between calls). A protected
@@ -1228,7 +1228,10 @@ account out of the drain; they only limit how many more it takes).
   included), where `rate` = the units the session used in the last 15 minutes `× f` per hour when
   something measures it and it is at least 5 minutes old, else `r`; `rem = max(L − age, age, 10
   min)` (a lane that has run 3 hours is likely to run about 3 more), at least `--expect − age`,
-  at most the lease's life left.
+  at most the lease's life left. A lane nothing measures (no local session, no hub burn) has
+  also used `r ×` the hours since the later of its pick and the reading (an ended one at most one
+  lane length of it), which neither the reading nor the meter holds: that *past* use is added to
+  `F` (it replaces the fixed weekly charge kept for unseen lanes).
 - *Capacity* (new lanes the room absorbs now): with `N1 = min(Ē, r × (H − guard))`, weekly `Cw =
   ⌊(R5 − F(H − guard) − (E − Ē)) / N1⌋`; with `t5' = min(t5, H)` and `N1₅ = min(Ē, r × t5')`, 5-hour
   `C5 = ⌊(A0 − F(t5') − (E − Ē)) / N1₅⌋`, not counted when the 5-hour window resets within 15

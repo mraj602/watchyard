@@ -69,6 +69,7 @@ type DrainInfo struct {
 // drainKey orders the accounts in the drain order: lower first.
 type drainKey struct {
 	group   int // 0 aggressive drain, 1 protected drain, 2 at risk, 3 aggressive, 4 unknown, 5 protected
+	batched bool // drain: already picked in this batch (every draining account gets one first)
 	deficit int
 	finish  float64 // finish_by, unix seconds
 	risk    float64 // hours to reset per hour of need
@@ -84,6 +85,9 @@ func (a drainKey) less(b drainKey) bool {
 	}
 	switch a.group {
 	case 0, 1:
+		if a.batched != b.batched {
+			return !a.batched
+		}
 		if a.deficit != b.deficit {
 			return a.deficit > b.deficit
 		}
@@ -141,15 +145,18 @@ type runLane struct {
 	since          bool // picked after the reading
 }
 
-func (p LaneParams) runningLanes(acc LaneAccount, c cleanSample, leases []LaneLease, now time.Time, r, lmed, finishH float64) []runLane {
+//
+// past is what the lanes nothing measures (no local session, no hub burn) used since the
+// reading, at the new-lane rate: neither the reading nor the meter holds it (an ended one at
+// most one lane length of it).
+func (p LaneParams) runningLanes(acc LaneAccount, c cleanSample, leases []LaneLease, now time.Time, r, lmed, finishH float64) (out []runLane, past float64) {
 	f5 := p.account(acc).F5
 	bw := p.BurnWindow
 	if bw <= 0 {
 		bw = 15 * time.Minute
 	}
-	var out []runLane
 	for _, L := range leases {
-		if L.Key != acc.Key || L.Ended {
+		if L.Key != acc.Key {
 			continue
 		}
 		age := now.Sub(L.T0)
@@ -157,6 +164,21 @@ func (p LaneParams) runningLanes(acc LaneAccount, c cleanSample, leases []LaneLe
 			age = 0
 		}
 		if age >= p.LeaseTTL {
+			continue
+		}
+		if !L.RecentOK {
+			from := L.T0
+			if c.ts.After(from) {
+				from = c.ts
+			}
+			if sinceH := now.Sub(from).Hours(); sinceH > 0 {
+				if L.Ended {
+					sinceH = math.Min(sinceH, lmed)
+				}
+				past += r * sinceH
+			}
+		}
+		if L.Ended {
 			continue
 		}
 		ah := age.Hours()
@@ -173,7 +195,7 @@ func (p LaneParams) runningLanes(acc LaneAccount, c cleanSample, leases []LaneLe
 		out = append(out, runLane{age: ah, rate: rate, rem: rem, since: L.T0.After(c.ts),
 			spill: L.Spill || rem > finishH})
 	}
-	return out
+	return out, past
 }
 
 // forward is the 5-hour points the running lanes burn in the next t hours.
@@ -207,7 +229,7 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	if !known || H <= guard || (acc.Protected && v.stale) {
 		return d
 	}
-	if lim7-v.wM < p.DrainMinRoom || lim7-v.wM <= 0 {
+	if lim7-v.wM <= p.DrainMinRoom || lim7-v.wM <= 0 {
 		return d
 	}
 	stale := v.stale
@@ -222,14 +244,16 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	if fiveOpen {
 		t5 = v.fiveRst.Sub(now).Hours()
 	}
+	// need is at full 5-hour speed (a protected account too: owner Q3, "even at 100%").
+	a0full := math.Max(0, full-v.hM)
 	var need float64
 	switch {
 	case R5 <= 0:
 		need = 0
-	case R5 <= A0:
+	case R5 <= a0full:
 		need = 5 * R5 / full
 	default:
-		need = t5 + 5*(R5-A0)/full
+		need = t5 + 5*(R5-a0full)/full
 	}
 	slack, floor := p.DrainSlack, p.DrainFloorH
 	if acc.Protected {
@@ -255,9 +279,9 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 
 	e, em, lmed, r := p.laneStats(in.Stats)
 	spread := e - em
-	rs := p.runningLanes(acc, c, leases, now, r, lmed, hRem)
+	rs, past := p.runningLanes(acc, c, leases, now, r, lmed, hRem)
 	d.Running = len(rs)
-	F := forward(rs, hRem)
+	F := past + forward(rs, hRem)
 	d.ForwardBurn = F
 	d.Projected = v.wM + F/rho
 	n1 := math.Min(em, r*hRem)
@@ -281,7 +305,7 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	if !soon {
 		t5p := math.Min(t5, H)
 		n15 := math.Max(math.Min(em, r*t5p), 1e-6)
-		c5 = int(math.Floor((A0 - forward(rs, t5p) - spread) / n15))
+		c5 = int(math.Floor((A0 - past - forward(rs, t5p) - spread) / n15))
 		if c5 < 0 {
 			c5 = 0
 		}
