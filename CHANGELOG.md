@@ -6,6 +6,19 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-23
+
+### Fixed
+
+- Phone: the microphone in a claude.ai tab works. The app asked for `RECORD_AUDIO` but did not
+  declare `MODIFY_AUDIO_SETTINGS`, which Android's WebView also needs, so the page saw no
+  microphone ("your microphone isn't available") even after the permission was granted.
+- `make phone-apk-release` checks the keystore password before it builds. Before, a wrong
+  password passed the check (keytool's error text was hashed as if it were the certificate)
+  and the build failed only at signing, about 20 minutes later. The check now also unlocks the
+  key and refuses a keystore whose certificate is not the pinned release certificate, unless
+  `WY_ANDROID_ALLOW_OTHER_KEY=1` is set for a deliberate key change.
+
 ## [1.3.0] - 2026-11-23
 
 ### Added
@@ -192,7 +205,8 @@ The first public version. Everything below is new.
   itself does, instead of the full build number. claude.ai's Claude Code section kept asking to
   verify the device again, because the string was unusual and changed with every Electron update.
 
-[Unreleased]: https://github.com/mraj602/watchyard/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/mraj602/watchyard/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/mraj602/watchyard/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/mraj602/watchyard/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/mraj602/watchyard/compare/v1.0.0...v1.2.0
 [1.0.0]: https://github.com/mraj602/watchyard/releases/tag/v1.0.0

@@ -4,7 +4,7 @@
 // iOS:     NSSupportsLiveActivities = true (P12).
 // Android: application android:allowBackup="false" (the keychain token never leaves the
 //          phone, P3) plus dataExtractionRules and fullBackupContent that exclude every domain
-//          from cloud backup and from device-to-device transfer (res/xml/wy_*.xml); RECORD_AUDIO and SYSTEM_ALERT_WINDOW removed if a library adds them;
+//          from cloud backup and from device-to-device transfer (res/xml/wy_*.xml); SYSTEM_ALERT_WINDOW removed if a library adds it;
 //          android:usesCleartextTraffic only in development builds;
 //          every androidx.work artifact is forced to one version (WORK_VERSION) in
 //          app/build.gradle. react-native-android-widget declares work-runtime 2.8.1 while
