@@ -646,10 +646,12 @@ then gets the 401 that shows Pair, P3).
   `expo-build-properties` iOS option is deprecated since SDK 56, and `expo-widgets` reads
   the same field for its extension), Android `minSdkVersion` 24 (through
   `expo-build-properties`; 31 in the Android build below).
-- Android `permissions: [POST_NOTIFICATIONS, CAMERA, RECORD_AUDIO]` and `blockedPermissions:
+- Android `permissions: [POST_NOTIFICATIONS, CAMERA, RECORD_AUDIO, MODIFY_AUDIO_SETTINGS]` and `blockedPermissions:
   [SYSTEM_ALERT_WINDOW, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE]`.
   `RECORD_AUDIO` is for claude.ai's microphone in a tab (P17.5); it is asked at run time, only
-  when the page asks. Both lists are shown so the prebuilt manifest shows them (`wy-notify` and `wy-scan` also declare
+  when the page asks. `MODIFY_AUDIO_SETTINGS` is a normal permission granted at install (no
+  prompt); the WebView needs it besides `RECORD_AUDIO`, or Chromium finds no recording device
+  and the page reports the microphone as unavailable. Both lists are shown so the prebuilt manifest shows them (`wy-notify` and `wy-scan` also declare
   them, merged only at Gradle time).
 - Plugins: `expo-router`; `expo-secure-store`; `expo-widgets` (`groupIdentifier: group.<WY_APP_ID>`, `bundleIdentifier:
   <WY_APP_ID>.widgets` for the extension, the two widgets, `enablePushNotifications: false`,
@@ -970,7 +972,7 @@ claude.ai URL through `Linking.openURL`). It does not switch on its own, so a sl
 - **Microphone and camera** (`onPermissionRequest`, `TabMedia`): only `AUDIO_CAPTURE` and
   `VIDEO_CAPTURE`, and only when the requesting origin is `https://claude.ai` or a subdomain
   (default port; `TabPolicy.grantable`). The Android runtime permission (`RECORD_AUDIO`,
-  and `CAMERA` for video) is asked first; the page's request is granted only if it is granted
+  and `CAMERA` for video; `MODIFY_AUDIO_SETTINGS` is declared and granted at install) is asked first; the page's request is granted only if it is granted
   and denied otherwise.
 - **File chooser** (`onShowFileChooser`): launches `FileChooserParams.createIntent()` (so the
   page's accept types and multiple-selection apply). When the accept types include images
