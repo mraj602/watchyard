@@ -314,6 +314,29 @@ is safe while the hub runs (ingest waits for it), and running it twice changes n
 `--dry-run` reports the counts and writes nothing. It repairs hubs that typed history
 before these rules (all imported sessions `done`, `started_at` = the scan time, no project).
 
+### 5.2 Background sessions Claude Code retired for idleness (`wy status`)
+
+Claude Code's daemon ends idle, unpinned background sessions without a SessionEnd (peers.md
+3.5), so their last state here stays `done` (or `asked`). The local `wy status` reads, per slot
+and best-effort, the daemon files of peers.md 3.5 (`internal/ccjobs`; never written, nothing
+fails when they are missing) and, for a session that is a background job of its slot:
+
+- **Retired:** when `daemon.log` has a `bg retire <short>` line for its job **newer than the
+  session's last event** (else its `since`) and the fold has not already made it `ended` or
+  `gone`, the STATE column reads `ended:idle-retired`, `--json` carries `retired_idle_at`, and
+  one line under the table explains it: "ended:idle-retired: Claude Code ended this
+  background session for being idle. `claude respawn <session>` starts it again; pin it
+  (`claude agents`, select it, Ctrl+T) to keep it running." A retirement older than the last
+  event (the session was respawned or resumed since) is ignored. The fold's state is not
+  changed (the row stays where its state sorts it, and is shown without `--all`).
+- **Pinned:** when its job's short id is in `pins.json`, the STATE column gains ` (pinned)`
+  (for example `done (pinned)`) and `--json` carries `"pinned": true`.
+- `--json` carries `"background": true` for every background session.
+
+Only the local view does this. The hub, the board and the phone do not see these files and
+still show such a session's folded state; carrying the marks there (a record field and a
+board badge) is not done yet.
+
 ## 6. Mapping to other views
 
 | Watchyard | Warp cli-agent (section 14) | `claude agents` status |

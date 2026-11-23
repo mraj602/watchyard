@@ -311,9 +311,6 @@ func peersSendService(pe peerEnv, notASession *peerspkg.Refusal, to, text string
 		case peerspkg.CodeUsage:
 			fmt.Fprintln(stderr, "wy peers send: "+rf.Detail)
 			return errUsage
-		case peerspkg.CodeNoHolder:
-			fmt.Fprintln(stdout, "not delivered: "+rf.Detail+".")
-			return peersExit(peerspkg.ExitCode(rf.Code), nil)
 		}
 		fmt.Fprintln(stdout, peerspkg.Describe(rf))
 		return peersExit(peerspkg.ExitCode(rf.Code), nil)

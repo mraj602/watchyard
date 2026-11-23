@@ -46,6 +46,10 @@ func TestDeliverTagNoHolder(t *testing.T) {
 	if exitOf(err) != 3 || len(calls) != 0 || !strings.Contains(out.String(), "no session you may message on this machine holds tag x") {
 		t.Fatalf("exit %d calls %v out %q", exitOf(err), calls, out.String())
 	}
+	// One line, ending with why a holder may be gone and how to keep one (peers.md 3.5).
+	if o := out.String(); strings.Count(o, "\n") != 1 || !strings.Contains(o, "holds tag x. "+peerspkg.NoHolderHint) {
+		t.Fatalf("hint: %q", o)
+	}
 }
 
 // --one: exactly one delivery, to the first target; one that has gone passes it to the next,

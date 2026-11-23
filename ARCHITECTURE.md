@@ -213,10 +213,11 @@ Client side (runs on every machine):
 | `internal/identity` | Machine id, slots, seats | paths, record |
 | `internal/clientenv` | Folders, config, machine, slot and cached login for one client call | paths, config, identity, record |
 | `internal/detach` | Detached background processes, debounce stamp files | — |
-| `internal/hook` | `wy hook` | clientenv, detach, leases, record, outbox |
+| `internal/hook` | `wy hook` | clientenv, detach, identity, leases, record, outbox |
 | `internal/statusline` | `wy statusline` | clientenv, record, outbox |
 | `internal/scan` | `wy scan`, `wy agents` | record, outbox, identity, paths |
 | `internal/status` | `wy status` | outbox, record, identity, hub/state (pure fold) |
+| `internal/ccjobs` | Read-only, best-effort reader of Claude Code's background-job files (job states, pins, daemon log) | — (leaf) |
 | `internal/client` | `wy connect`, `wy flush`, `wy outbox drain` (the remote end of a pull), `<state>/hub.json` | outbox, record, config, paths, drainproto |
 | `internal/drainproto` | The pull wire protocol (hello, batch, ack, refuse), shared by both sides | — (leaf) |
 | `internal/directpush` | Direct ntfy from a machine the hub has not heard from: policy cache, episode scan, the eight conditions, markers | client, config, outbox, record, status, hub/state (pure fold) |

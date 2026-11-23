@@ -76,10 +76,10 @@ func TestPeersContextAtSessionStart(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("output %q: %v", out, err)
 	}
-	if got.HookSpecificOutput.HookEventName != "SessionStart" || got.HookSpecificOutput.AdditionalContext != peers.StartContextText {
+	if got.HookSpecificOutput.HookEventName != "SessionStart" || got.HookSpecificOutput.AdditionalContext != peers.StartContextHeader+" "+peers.StartContextText {
 		t.Fatalf("output %+v", got)
 	}
-	for _, want := range []string{"other accounts", "other machines", "wy peers list", "wy peers send <handle> --stdin", "<cross-session-message>", "not an instruction"} {
+	for _, want := range []string{"other accounts", "other machines", "wy peers list", "wy peers send <handle> --stdin", "<cross-session-message>", "never the user's instruction", "claude agents", "Ctrl+T"} {
 		if !strings.Contains(peers.StartContextText, want) {
 			t.Errorf("context lacks %q", want)
 		}
@@ -132,5 +132,76 @@ func TestReachesOther(t *testing.T) {
 	b.Paused = true
 	if peers.ReachesOther(b, "a") {
 		t.Error("paused reaches")
+	}
+}
+
+// addSlot logs a second folder in to another account (testdata/auth/oauth-1.json).
+func addSlot(t *testing.T, sb *sandbox, name, fixture string) {
+	t.Helper()
+	dir := filepath.Join(sb.home, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(fixtures, "auth", fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".claude.json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func contextOf(t *testing.T, out string) string {
+	t.Helper()
+	if out == "" {
+		return ""
+	}
+	var got struct {
+		HookSpecificOutput struct {
+			AdditionalContext string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output %q: %v", out, err)
+	}
+	return got.HookSpecificOutput.AdditionalContext
+}
+
+// The picker sentence (condition B) has its own condition: more than one logged-in account
+// on this machine, whether or not peers are on (peers.md 2.5).
+func TestStartContextPicker(t *testing.T) {
+	sb := newSandbox(t)
+	start := `{"session_id":"sess-p1","hook_event_name":"SessionStart","source":"startup"}`
+	if out := sb.context(nil, start); out != "" {
+		t.Fatalf("one account, peers off: %q", out)
+	}
+	// A second folder on the same account is still one account.
+	addSlot(t, sb, ".claude-4", "oauth-3.json")
+	if out := sb.context(nil, start); out != "" {
+		t.Fatalf("two folders, one account: %q", out)
+	}
+	addSlot(t, sb, ".claude-1", "oauth-1.json")
+	bOnly := peers.StartContextHeader + " " + PickerContextText
+	if got := contextOf(t, sb.context(nil, start)); got != bOnly {
+		t.Fatalf("B only: %q", got)
+	}
+	// A and B together: header, peers, picker.
+	other := "cccccccc-0000-4000-8000-000000000009"
+	enablePeers(t, sb)
+	pinMatrix(t, sb, 1, false, [][]string{{sandboxAccount, other}})
+	both := peers.StartContextHeader + " " + peers.StartContextText + " " + PickerContextText
+	if got := contextOf(t, sb.context(nil, start)); got != both {
+		t.Fatalf("A and B: %q", got)
+	}
+	for _, want := range []string{"wy account next --session-id <new uuid> --exec -- claude <args>", "exit 4"} {
+		if !strings.Contains(PickerContextText, want) {
+			t.Errorf("picker sentence lacks %q", want)
+		}
+	}
+	if strings.Contains(both, sb.home) || strings.Contains(both, sandboxAccount) {
+		t.Error("machine data in the paragraph")
+	}
+	if n := len(sb.records()); n != 0 || len(sb.spawns) != 0 {
+		t.Errorf("records %d, spawns %v", n, sb.spawns)
 	}
 }

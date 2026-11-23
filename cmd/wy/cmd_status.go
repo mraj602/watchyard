@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mraj602/watchyard/internal/ccjobs"
 	"github.com/mraj602/watchyard/internal/config"
 	"github.com/mraj602/watchyard/internal/doctor"
+	"github.com/mraj602/watchyard/internal/identity"
 	"github.com/mraj602/watchyard/internal/paths"
 	"github.com/mraj602/watchyard/internal/status"
 )
@@ -45,6 +47,7 @@ func runStatus(args []string, stdout, stderr io.Writer) error {
 	now := time.Now()
 	rows, err := status.Collect(status.Options{
 		OutboxDir: filepath.Join(d.State.Path, "outbox"), Home: pe.Home, Labels: cfg.Slots.Labels, All: *all, Now: now,
+		Keepalive: statusKeepalive(pe.Home),
 	})
 	if err != nil {
 		return err
@@ -58,6 +61,35 @@ func runStatus(args []string, stdout, stderr io.Writer) error {
 		return enc.Encode(map[string]any{"sessions": rows})
 	}
 	return status.Render(stdout, rows, now)
+}
+
+// statusKeepalive reads Claude Code's daemon files of each slot once (states.md 5.2,
+// best-effort: a slot whose files are missing knows nothing).
+func statusKeepalive(home string) func(slot, sessionID string) status.Keepalive {
+	if home == "" {
+		return nil
+	}
+	loc := identity.Locator{Home: home, FS: identity.OSFS{}}
+	cache := map[string]ccjobs.Account{}
+	return func(slot, sessionID string) status.Keepalive {
+		if slot == "" {
+			return status.Keepalive{}
+		}
+		a, ok := cache[slot]
+		if !ok {
+			a = ccjobs.Load(loc.SlotFor(slot).Dir)
+			cache[slot] = a
+		}
+		short := a.Job(sessionID)
+		if short == "" {
+			return status.Keepalive{}
+		}
+		k := status.Keepalive{Background: true, Pinned: a.Pins[short]}
+		if r, ok := a.Retired[short]; ok {
+			k.RetiredAt = r.At
+		}
+		return k
+	}
 }
 
 // runDoctor is `wy doctor [--json] [--rebaseline]`. It exits non-zero only when a check

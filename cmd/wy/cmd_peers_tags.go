@@ -59,6 +59,11 @@ func peersTagCmd(op string, args []string, stdout, stderr io.Writer) error {
 		return peersExit(peerspkg.ExitCode(rf.Code), nil)
 	}
 	printTagResult(stdout, op, tag, res)
+	if op == peerspkg.TagAdd {
+		if note := peerspkg.KeepAliveNote(caller.Slot.Dir, caller.Entry.SessionID, tag); note != "" {
+			fmt.Fprintln(stdout, note)
+		}
+	}
 	return nil
 }
 
@@ -182,7 +187,7 @@ func deliverTag(w io.Writer, tag string, targets []peerspkg.ListEntry, one, same
 			where = " on this machine"
 		}
 		rf := peerspkg.Refuse(peerspkg.CodeNoHolder, "no session you may message%s holds tag %s", where, tag)
-		fmt.Fprintln(w, "not delivered: "+rf.Detail+".")
+		fmt.Fprintln(w, peerspkg.Describe(rf))
 		return peersExit(peerspkg.ExitCode(rf.Code), nil)
 	}
 	code := 0
