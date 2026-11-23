@@ -80,7 +80,7 @@ const nextAuthFresh = time.Minute
 
 func nextUsage(w io.Writer) {
 	fmt.Fprint(w, `usage: wy account next [--strategy lanes|smart|expiring|most-room|spread|fill|sticky] [--model <m>]
-                       [--n <K>] [--session-id <uuid>]... [--urgent]
+                       [--n <K>] [--session-id <uuid>]... [--urgent] [--expect <duration>]
                        [--env | --json | --explain] [--no-reserve] [--no-hub]
        wy account next [flags] --exec [-- <command> [args...]]     (default command: claude)
 --n, --session-id and --urgent are for the lanes strategy (the default).
@@ -126,6 +126,7 @@ func accountNext(e nextEnv, args []string) error {
 	doExec := fs.Bool("exec", false, "start the command after -- (default claude) with the pick's CLAUDE_CONFIG_DIR")
 	n := fs.Int("n", 0, "picks for this many sessions, 1 to 50 (default: the number of --session-id, else 1)")
 	urgent := fs.Bool("urgent", false, "lanes: may pass an aggressive account's burst cap when nothing else is free")
+	expect := fs.Duration("expect", 0, "lanes: how long the session is expected to run, e.g. 3h (drain: spill check)")
 	var sids []string
 	fs.Func("session-id", "the session id (a UUID) each session will get, repeatable, in pick order", func(v string) error {
 		sids = append(sids, v)
@@ -172,6 +173,9 @@ func accountNext(e nextEnv, args []string) error {
 			return bad(fmt.Sprintf("--session-id %q is not a UUID", sid))
 		}
 	}
+	if *expect < 0 {
+		return bad("--expect must not be negative")
+	}
 	if k > 1 && (*envOut || *doExec) {
 		return bad("--env and --exec start one session: use them without --n or with --n 1")
 	}
@@ -194,8 +198,8 @@ func accountNext(e nextEnv, args []string) error {
 		strat = settings.Strategy
 	}
 	lanes := strat == config.NextStrategyLanes
-	if !lanes && (k > 1 || len(sids) > 0 || *urgent) {
-		return bad("--n above 1, --session-id and --urgent are for the lanes strategy (strategy is " + strat + ")")
+	if !lanes && (k > 1 || len(sids) > 0 || *urgent || *expect > 0) {
+		return bad("--n above 1, --session-id, --urgent and --expect are for the lanes strategy (strategy is " + strat + ")")
 	}
 	now := e.now()
 
@@ -224,7 +228,7 @@ func accountNext(e nextEnv, args []string) error {
 	}
 	src.Local = ob.Samples
 	in := picker.Input{Now: now, Strategy: strat, Model: *model, Settings: settings, Candidates: picker.Candidates(slots, src),
-		Outbox: ob, N: k, SIDs: sids, Urgent: *urgent}
+		Outbox: ob, N: k, SIDs: sids, Urgent: *urgent, Expect: *expect, HubDown: hubErr != ""}
 	// The seats' hub modes: kept after each hub read, used when the hub could not be read (a
 	// setting: no age limit; setup.md 8.5, Kind).
 	modesPath := filepath.Join(e.dirs.State.Path, "next", "modes.json")
@@ -330,7 +334,7 @@ func accountNext(e nextEnv, args []string) error {
 		if p.Urgent {
 			fmt.Fprintln(e.stderr, "wy account next: urgent: "+p.Label+" passed its burst cap")
 		}
-		return nextExec(e, p.Ranked, withSessionID(cmdArgs, p.SessionID))
+		return nextExec(e, p, withSessionID(cmdArgs, p.SessionID))
 	default:
 		for _, p := range res.Picks {
 			line := picker.Line(p.Ranked)
@@ -375,6 +379,10 @@ func leaseLines(res picker.Result, model string, now time.Time) []leases.Line {
 		out = append(out, leases.Line{V: 1, Op: leases.OpLease, ID: record.NewID(now), At: now.UTC(), Key: p.Key(),
 			Account: p.Account(), Org: p.Org(), Folder: p.Folder, Label: p.Label, Kind: p.LaneKind,
 			SessionID: p.SessionID, C5: &c5, CF: &cf, Model: model, Strategy: res.Strategy, Urgent: p.Urgent, Batch: batch})
+		if p.Drain {
+			fb := p.FinishBy.UTC()
+			out[len(out)-1].Drain, out[len(out)-1].FinishBy = true, &fb
+		}
 	}
 	return out
 }
@@ -397,7 +405,8 @@ func mirrorLeases(e nextEnv, cfg config.Config, machine string, res picker.Resul
 		r, err := record.NewAccountLease(record.Meta{Machine: machine, Client: "wy/" + version.Version, Now: l.At,
 			Seat: &record.Seat{Account: l.Account, Org: l.Org, Src: "claude_json"}},
 			record.AccountLeasePayload{LeaseID: l.ID, SessionID: l.SessionID, Kind: l.Kind, C5: *l.C5, CF: *l.CF,
-				Strategy: l.Strategy, Urgent: l.Urgent, Model: l.Model, Folder: l.Folder, Batch: l.Batch})
+				Strategy: l.Strategy, Urgent: l.Urgent, Model: l.Model, Folder: l.Folder, Batch: l.Batch,
+				Drain: l.Drain, FinishBy: l.FinishBy})
 		if err == nil {
 			_, err = ob.Append(r)
 		}
@@ -566,8 +575,10 @@ func nextHub(e nextEnv, cfg config.Config, slots []picker.Slot, machine string, 
 }
 
 // nextExec starts the command (default claude) with CLAUDE_CONFIG_DIR set to the pick, or
-// unset for the default view of ~/.claude.
-func nextExec(e nextEnv, pick picker.Ranked, argv []string) error {
+// unset for the default view of ~/.claude. A drain pick also gets WY_FINISH_BY and
+// WY_ACCOUNT_RESET (RFC 3339 UTC; owner Q4) and its instruction line on stderr.
+func nextExec(e nextEnv, p picker.Pick, argv []string) error {
+	pick := p.Ranked
 	if len(argv) == 0 {
 		argv = []string{"claude"}
 	}
@@ -585,14 +596,20 @@ func nextExec(e nextEnv, pick picker.Ranked, argv []string) error {
 	}
 	var env []string
 	for _, kv := range environ() {
-		if !strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
+		if !strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") && !strings.HasPrefix(kv, "WY_FINISH_BY=") && !strings.HasPrefix(kv, "WY_ACCOUNT_RESET=") {
 			env = append(env, kv)
 		}
 	}
 	if !pick.Default {
 		env = append(env, "CLAUDE_CONFIG_DIR="+pick.Dir)
 	}
+	if p.Drain {
+		env = append(env, "WY_FINISH_BY="+p.FinishBy.UTC().Format(time.RFC3339), "WY_ACCOUNT_RESET="+p.Reset.UTC().Format(time.RFC3339))
+	}
 	fmt.Fprintln(e.stderr, "wy account next: "+picker.Line(pick))
+	if h := p.Hint(); h != "" {
+		fmt.Fprintln(e.stderr, "wy account next: "+h)
+	}
 	run := e.exec
 	if run == nil {
 		run = execWithEnv

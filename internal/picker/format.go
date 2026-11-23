@@ -72,6 +72,27 @@ type Picked struct {
 	Reason    string `json:"reason"`
 	SessionID string `json:"session_id,omitempty"`
 	Urgent    bool   `json:"urgent"`
+	// Drain picks (lanes, setup.md 8.5 Drain): finish_by and weekly_reset are null otherwise.
+	Drain       bool       `json:"drain"`
+	FinishBy    *time.Time `json:"finish_by"`
+	WeeklyReset *time.Time `json:"weekly_reset"`
+	Spill       bool       `json:"spill"`
+	Why         string     `json:"why,omitempty"`
+	Hint        string     `json:"hint,omitempty"`
+}
+
+// pickedOf is a pick in Doc.
+func pickedOf(p Pick) Picked {
+	x := Picked{Label: p.Label, Folder: p.Folder, Dir: p.Dir, Env: EnvArgs(p.Ranked), Reason: p.Reason,
+		SessionID: p.SessionID, Urgent: p.Urgent, Drain: p.Drain, Spill: p.Spill}
+	if p.Drain {
+		fb, rs := p.FinishBy.UTC(), p.Reset.UTC()
+		x.FinishBy, x.WeeklyReset, x.Hint = &fb, &rs, p.Hint()
+		if v := p.Lanes; v != nil && v.Drain != nil {
+			x.Why = fmt.Sprintf("drain: %.1f%% of the week resets in %.1f h and would expire unused", v.Drain.RoomPct, v.HoursToReset)
+		}
+	}
+	return x
 }
 
 // NewDoc builds the `--json` document of a result; skipped is the ledger's unreadable lines.
@@ -83,8 +104,7 @@ func NewDoc(res Result, data, hubErr string, reserved bool, skipped int) Doc {
 		d.Accounts = []Ranked{}
 	}
 	for _, p := range res.Picks {
-		d.Picks = append(d.Picks, Picked{Label: p.Label, Folder: p.Folder, Dir: p.Dir, Env: EnvArgs(p.Ranked), Reason: p.Reason,
-			SessionID: p.SessionID, Urgent: p.Urgent})
+		d.Picks = append(d.Picks, pickedOf(p))
 	}
 	if len(d.Picks) > 0 {
 		first := d.Picks[0]
@@ -218,7 +238,12 @@ func explainLanes(w io.Writer, res Result) error {
 		why := r.Reason
 		if r.Eligible {
 			why = "eligible"
-			if r.Lanes != nil && r.Lanes.Expiring {
+			switch {
+			case r.Lanes != nil && r.Lanes.Class == ClassDrain:
+				why += ", drain"
+			case r.Lanes != nil && r.Lanes.Class == ClassAtRisk:
+				why += ", at risk"
+			case r.Lanes != nil && r.Lanes.Expiring && r.Lanes.Class == "":
 				why += ", expiring first"
 			}
 		}
@@ -229,6 +254,14 @@ func explainLanes(w io.Writer, res Result) error {
 	}
 	for _, l := range kindLines(res.Ranked) {
 		fmt.Fprintln(w, l)
+	}
+	drained := map[string]bool{}
+	for _, r := range res.Ranked {
+		if r.Lanes == nil || r.Lanes.Drain == nil || !r.Lanes.Drain.On || drained[r.key] {
+			continue
+		}
+		drained[r.key] = true
+		fmt.Fprintln(w, drainLine(r.Label, *r.Lanes.Drain, res.Now))
 	}
 	seen := map[string]bool{}
 	for _, r := range res.Ranked {
@@ -258,6 +291,36 @@ func explainLanes(w io.Writer, res Result) error {
 		fmt.Fprintln(w, "note: "+x)
 	}
 	return nil
+}
+
+// drainLine is the --explain line of a draining account: "Drain claude-2: room 9.3% (71 pts),
+// need 3.6 h at full 5h speed, horizon 24 h; capacity 3 (weekly 6, 5h 3); running burn 12 pts
+// before reset; projected 96% at reset; unavoidable waste 0%; finish by 09:20".
+func drainLine(label string, d DrainView, now time.Time) string {
+	s := fmt.Sprintf("Drain %s: room %.1f%% (%.0f pts), need %.1f h at full 5h speed, horizon %.0f h", label, d.RoomPct, d.RoomPts,
+		d.NeedHours, d.HorizonHours)
+	if d.Capacity != nil {
+		c5 := "not limiting"
+		if d.Capacity5h != nil {
+			c5 = strconv.Itoa(*d.Capacity5h)
+		}
+		s += fmt.Sprintf("; capacity %d (weekly %d, 5h %s", *d.Capacity, *d.CapacityWeekly, c5)
+		if d.LimitedBy == LimitSpill || d.LimitedBy == LimitStale || d.LimitedBy == LimitLanding {
+			s += ", " + d.LimitedBy
+		}
+		s += ")"
+	}
+	s += fmt.Sprintf("; %d running, burn %.0f pts before reset", d.Running, d.ForwardBurn)
+	if d.ProjectedPct != nil {
+		s += fmt.Sprintf("; projected %.0f%% at reset", *d.ProjectedPct)
+	}
+	if d.UnavoidablePct != nil {
+		s += fmt.Sprintf("; unavoidable waste %.1f%%", *d.UnavoidablePct)
+	}
+	if d.FinishBy != nil {
+		s += "; finish by " + d.FinishBy.Local().Format("15:04")
+	}
+	return s
 }
 
 // calibLine is the --explain calibration line of one account:

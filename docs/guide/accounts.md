@@ -15,7 +15,7 @@ switches or rotates accounts for you, and it never shares a login between folder
 account, how to treat that account:
 
 - **Protected**: kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and
-  the 5-hour window is under 45%. Choose it for the account you use yourself: in Chrome, the
+  the 5-hour window is under 45%, or near its reset for room that would expire unused anyway. Choose it for the account you use yourself: in Chrome, the
   Claude app, or interactively in a terminal. Agents then only borrow what you would not use
   anyway, and nothing ever falls back onto it when the other accounts are full.
 - **Aggressive**: use it up. Sessions go here until 98% of the week or 5 hours. Choose it for

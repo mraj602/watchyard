@@ -282,9 +282,21 @@ func TestLanesLeaseCharges(t *testing.T) {
 	}
 }
 
-// 3. Burst caps hold inside one batch; new leases carry no session id unless given.
+// 3. Burst caps hold inside one batch; new leases carry no session id unless given. Drain
+// order (owner Q1): once every aggressive account is only burst-capped the rest wait; they never
+// fall to a protected account. The reference order filled the protected accounts too.
 func TestLanesBatchCaps(t *testing.T) {
-	r := rank(t, laneIn(world(30, 20), 30))
+	d := rank(t, laneIn(world(30, 20), 30))
+	if len(d.Picks) != 4*6 || d.Waiting != 6 {
+		t.Errorf("drain order: %d picks, %d waiting; want 24 placed, 6 waiting", len(d.Picks), d.Waiting)
+	}
+	for _, p := range d.Picks {
+		if isProt(p.Key) {
+			t.Errorf("drain order: protected %s picked while aggressive accounts were only burst-capped", p.Key)
+		}
+	}
+	ref := func(in LaneInput) LaneInput { in.Params = ReferenceLaneParams; return in }
+	r := rank(t, ref(laneIn(world(30, 20), 30)))
 	n := map[string]int{}
 	for _, p := range r.Picks {
 		n[p.Key]++
@@ -300,7 +312,7 @@ func TestLanesBatchCaps(t *testing.T) {
 	if len(r.Picks) != 4*6+3*2 || r.Waiting != 0 {
 		t.Errorf("%d picks, %d waiting; want 30 placed", len(r.Picks), r.Waiting)
 	}
-	r = rank(t, laneIn(world(30, 20), 31))
+	r = rank(t, ref(laneIn(world(30, 20), 31)))
 	if len(r.Picks) != 30 || r.Waiting != 1 {
 		t.Errorf("31 asked: %d placed, %d waiting", len(r.Picks), r.Waiting)
 	}
@@ -717,13 +729,14 @@ func TestReadOutboxMeter(t *testing.T) {
 	}
 }
 
-// 2c. fill_exp groups: two accounts in their last day take turns; an account whose room is at
+// 2c. The draft's fill_exp groups (DraftLaneParams, kept for the replay): two accounts in their last day take turns; an account whose room is at
 // risk by the full-speed estimate goes before one with days of slack; the 5-hour gate holds.
 func TestLanesFillGroups(t *testing.T) {
 	s := world(20, 40)
 	s["claude-2"] = smp(80, 10, 5, 10)
 	s["claude-3"] = smp(70, 10, 5, 20)
 	in := laneIn(s, 4)
+	in.Params = DraftLaneParams
 	var got []string
 	for _, p := range rank(t, in).Picks {
 		got = append(got, p.Key)
@@ -745,6 +758,7 @@ func TestLanesFillGroups(t *testing.T) {
 	}
 	s["claude-3"] = smp(44, 10, 5, 56)
 	in = laneIn(s, 1)
+	in.Params = DraftLaneParams
 	r := rank(t, in)
 	if r.Picks[0].Key != "claude-3" || !rowOf(r, "claude-3").Expiring || rowOf(r, "claude-4").Expiring {
 		t.Errorf("at-risk claude-3 not first: %s", r.Picks[0].Key)
@@ -754,6 +768,7 @@ func TestLanesFillGroups(t *testing.T) {
 	s = world(20, 40)
 	s["claude-2"] = smp(80, 92, 5, 10)
 	in = laneIn(s, 1)
+	in.Params = DraftLaneParams
 	if p := rank(t, in).Picks[0].Key; p == "claude-2" {
 		t.Errorf("claude-2 at 5h 92 still went first")
 	}

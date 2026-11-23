@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"time"
 )
 
 // KindAccountLease is one pick of `wy account next` (record.md 4.10, setup.md 8.5).
@@ -29,6 +30,9 @@ type AccountLeasePayload struct {
 	Model     string  `json:"model,omitempty"`
 	Folder    string  `json:"folder,omitempty"`
 	Batch     string  `json:"batch,omitempty"`
+	// Drain and FinishBy: a drain pick and when its lane should finish (record.md 4.10).
+	Drain    bool       `json:"drain,omitempty"`
+	FinishBy *time.Time `json:"finish_by,omitempty"`
 }
 
 // Validate checks the fields record.md 4.10 requires.

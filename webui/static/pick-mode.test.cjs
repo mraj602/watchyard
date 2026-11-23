@@ -15,7 +15,7 @@ const j = (x) => JSON.parse(JSON.stringify(x));
 
 test('the words are the spec words', () => {
   assert.deepEqual(j(P.MODE_WORDS), {
-    protected: { name: 'Protected', definition: 'Kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and the 5-hour window is under 45%.' },
+    protected: { name: 'Protected', definition: 'Kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and the 5-hour window is under 45%, or near its reset for room that would expire unused anyway.' },
     aggressive: { name: 'Aggressive', definition: 'Use it up. Sessions go here until 98% of the week or 5 hours.' },
     none: { name: 'Not chosen', definition: 'Not chosen yet; treated as aggressive.' },
   });

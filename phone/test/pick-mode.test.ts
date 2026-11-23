@@ -6,7 +6,7 @@ const verdict = (over: Partial<Verdict> = {}): Verdict => ({ at: '2026-11-12T11:
 
 describe('MODE_WORDS', () => {
   it('is the exact wording of the spec', () => {
-    expect(MODE_WORDS.protected).toBe('Kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and the 5-hour window is under 45%.');
+    expect(MODE_WORDS.protected).toBe('Kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and the 5-hour window is under 45%, or near its reset for room that would expire unused anyway.');
     expect(MODE_WORDS.aggressive).toBe('Use it up. Sessions go here until 98% of the week or 5 hours.');
     expect(MODE_WORDS.notChosen).toBe('Not chosen yet; treated as aggressive.');
     expect(MODE_WORDS.question).toBe('How should the picker use this account?');

@@ -532,7 +532,7 @@ async function usageFlow(page, sizeName) {
   // The choice: protected is on, each option has its definition right under it.
   const sect = await text('[data-key=mode-seat_personal]');
   if (!/How should the picker use this account\?/.test(sect)) fail(t('no question'));
-  for (const d of ['Kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and the 5-hour window is under 45%.',
+  for (const d of ['Kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and the 5-hour window is under 45%, or near its reset for room that would expire unused anyway.',
     'Use it up. Sessions go here until 98% of the week or 5 hours.', 'Not chosen yet; treated as aggressive.']) if (!sect.includes(d)) fail(t(`definition missing: ${d}`));
   if (!(await page.$eval('[data-key=mode-opt-seat_personal-protected]', (e) => e.checked))) fail(t('protected is not selected'));
   if (await page.$('[data-key=mode-unset-seat_personal]')) fail(t('a protected account shows the not-chosen line'));
