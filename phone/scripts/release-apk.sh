@@ -54,10 +54,25 @@ command -v keytool >/dev/null || die "keytool (a JDK 17+) is not on PATH"
 command -v node >/dev/null || die "node is not on PATH"
 
 # The signing certificate, read from the keystore (the password only through the environment).
-cert_sha256="$(keytool -exportcert -alias "$WY_ANDROID_KEY_ALIAS" -keystore "$ks" -storepass:env WY_ANDROID_KEYSTORE_PASSWORD 2>/dev/null | sha256sum | cut -d' ' -f1)" || true
-case "$cert_sha256" in
-  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 | "") die "could not read the key from the keystore: check the alias and the keystore password" ;;
-esac
+# keytool prints its errors on stdout, so its exit status decides, never the output: hashing a
+# wrong password's error text once passed as a certificate and the build failed 20 minutes later.
+certfile="$(mktemp)"
+trap 'rm -f "$certfile"' EXIT
+if ! keytool -exportcert -alias "$WY_ANDROID_KEY_ALIAS" -keystore "$ks" \
+    -storepass:env WY_ANDROID_KEYSTORE_PASSWORD -file "$certfile" >/dev/null 2>&1 || [ ! -s "$certfile" ]; then
+  die "could not read the key from the keystore: check the alias and the keystore password"
+fi
+cert_sha256="$(sha256sum "$certfile" | cut -d' ' -f1)"
+# The private key itself (its password can differ from the store's): the build signs with it.
+if ! keytool -certreq -alias "$WY_ANDROID_KEY_ALIAS" -keystore "$ks" \
+    -storepass:env WY_ANDROID_KEYSTORE_PASSWORD -keypass:env WY_ANDROID_KEY_PASSWORD >/dev/null 2>&1; then
+  die "could not unlock the private key: check WY_ANDROID_KEY_PASSWORD (it defaults to the keystore password)"
+fi
+# The hub's app mirror only accepts APKs signed with the pinned release certificate.
+pinned="$(sed -n 's/^var ReleaseCertSHA256 = "\([0-9a-f]*\)"$/\1/p' "$repo/internal/hub/appmirror/pin.go")"
+if [ -n "$pinned" ] && [ "$cert_sha256" != "$pinned" ] && [ -z "${WY_ANDROID_ALLOW_OTHER_KEY:-}" ]; then
+  die "the keystore's certificate ($cert_sha256) is not the pinned release certificate ($pinned); installed apps would refuse the update. Set WY_ANDROID_ALLOW_OTHER_KEY=1 only for a deliberate key change"
+fi
 
 if [ "${1:-}" = "--preflight" ]; then
   echo "phone-apk-release: signing input ok (key alias $WY_ANDROID_KEY_ALIAS, certificate $cert_sha256)"
