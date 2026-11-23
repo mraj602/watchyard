@@ -7,9 +7,12 @@ package picker
 //    ranked under each policy on its recorded state (each call sees the recorded levels, not the
 //    policy's own earlier picks, so waste is measured by the simulator, not here).
 // 2. Week simulator: seven accounts (1/5/7 protected), minute steps over 7 days, demand
-//    patterns, readings every 5 minutes from the simulated use with lag and rounding, lanes that
-//    burn their cost over their length and stop at a limit. WY_SIM_RUNS sets the runs per
-//    pattern (default 12; the report used 300); -short skips it.
+//    patterns, readings every 5 minutes from the simulated use (2 minutes late, noise ±0.3,
+//    rounded), the owner's own use of the protected accounts in day hours, three 2-hour hub
+//    outages, lanes that burn their cost evenly over their length and stop at a limit (100),
+//    lane statistics measured from the finished lanes, lanes waiting over an hour dropped.
+//    WY_SIM_RUNS sets the runs per pattern (default 12; the report used 300), WY_SIM_PAR the
+//    parallel runs, WY_SIM_OUT a file for the table; -short skips it.
 
 import (
 	"fmt"
