@@ -245,6 +245,15 @@ reply. It sends as one of your accounts, so the matrix and the rate limits apply
 The receiving session sees `[Watchyard] from doorbell (service) on <machine> · account <label>
 · tag <tag> · thread <id>`. Doorbell reads no replies.
 
+Doorbell has no permission mode of its own: your approval is what vets it. So its messages
+reach sessions in any permission mode, including ones that skip permission prompts, without
+Claude Code asking anyone to approve them. That is what lets it wake an unattended session.
+The approval prompt says so; remember that the text comes from Slack and other people. If
+Watchyard cannot tell a receiving session's mode, it writes nothing to it and
+`wy peers send` exits 9 (`held`), never 0, so Doorbell falls back or retries. A broadcast
+exits 0 only when every holder took the message; otherwise it prints one line per holder.
+`wy peers audit` lists Doorbell's sends as `doorbell (service)` with the tag.
+
 `wy peers trust` shows the approval. To revoke it, run `wy peers trust doorbell --off` at the
 terminal, or use Settings → Peers → Trusted senders → **Revoke** on the board or the Android
 app. The hub refuses Doorbell's messages at once, and the machine deletes its approval the next

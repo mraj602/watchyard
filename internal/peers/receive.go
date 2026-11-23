@@ -74,6 +74,16 @@ func (e Env) Receive(in Incoming) ReceiveResult {
 		}
 		return res
 	}
+	mode := env.From.Mode
+	if env.Service() {
+		// The trusted sender is framed in the receiving class (peers.md 4.1a, 8.4 step 3); when
+		// that is not known nothing is written, so the sender never counts a hold as delivered.
+		if !ModeKnown(target.File, target.HasFile) {
+			res.Status, res.Detail = CodeRejected, CodeHeld
+			return res
+		}
+		mode = target.Mode
+	}
 	if th == nil {
 		th = threads.Adopt(env.Thread, env.From.Session, target.Entry.SessionID, env.From.Account, target.Account, env.From.Session, now)
 	}
@@ -124,7 +134,7 @@ func (e Env) Receive(in Incoming) ReceiveResult {
 		header = ServiceHeader(in.MachineName, label, env.Tag, th.ID)
 	}
 	w := Wrapper{
-		From: addr, FromSession: env.From.Session, Hop: HopTokens(env.Hop), FromName: handle, FromMode: env.From.Mode,
+		From: addr, FromSession: env.From.Session, Hop: HopTokens(env.Hop), FromName: handle, FromMode: mode,
 		Body: header + "\n\n" + clean,
 	}
 	if err := WriteFrame(target.Entry.SocketOf(e.Runtime), NewFrame(env.Msg, target.Entry.SessionID, w)); err != nil {
@@ -140,7 +150,7 @@ func (e Env) Receive(in Incoming) ReceiveResult {
 	e.audit(auditLine{Msg: env.Msg, Thread: th.ID, From: env.From.Session, To: target.Entry.SessionID, FromA: env.From.Account,
 		ToA: target.Account, Size: len(clean), Status: "delivered", FromKind: env.From.Kind, Tag: env.Tag}, now)
 	res.Status = "delivered"
-	if env.From.Mode != "" && env.From.Mode != target.Mode {
+	if mode != "" && mode != target.Mode {
 		res.Detail = "held_likely"
 	}
 	return res

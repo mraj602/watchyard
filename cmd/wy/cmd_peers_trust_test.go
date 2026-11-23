@@ -197,6 +197,10 @@ func TestPeersTrustAsks(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "Not approved") || len(c.calls) != 0 {
 		t.Fatalf("no: %d %q %v", code, out, c.calls)
 	}
+	// Doorbell is framed in the receiving class (peers.md 4.1a): the owner is told so.
+	if !strings.Contains(c.tty.printed.String(), "Doorbell's messages will reach sessions in any permission mode, including ones that skip permission prompts; the text comes from Slack (other people).") {
+		t.Errorf("the plan lacks the permission-mode warning: %q", c.tty.printed.String())
+	}
 	if !strings.Contains(c.tty.printed.String(), "interpreter:") || len(c.tty.prompts) != 2 ||
 		!strings.HasPrefix(c.tty.prompts[1], "Let Doorbell at this path send to tags as work?") {
 		t.Errorf("tty: %q %q", c.tty.printed.String(), c.tty.prompts)

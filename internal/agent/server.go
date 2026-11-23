@@ -322,6 +322,11 @@ func (s *server) waitFinal(req Request, res peers.SendResult) Reply {
 		if f.Status == "delivered" {
 			return Reply{Msg: res.Msg, Thread: res.Thread, Status: "delivered", To: res.Target.Handle, HeldLikely: f.Detail == "held_likely"}
 		}
+		if f.Status == peers.CodeRejected && f.Detail == peers.CodeHeld {
+			// The receiver took a trusted send's target mode as unknown (peers.md 8.4 step 3).
+			return Reply{Msg: res.Msg, Thread: res.Thread, Error: &Error{Code: peers.CodeHeld,
+				Detail: res.Target.Handle + "'s permission mode is not known on its machine, so Claude Code could hold it for approval unseen; nothing was written"}}
+		}
 		return Reply{Msg: res.Msg, Thread: res.Thread, Error: &Error{Code: f.Status, Detail: finalDetail(res.Target.Handle, f)}}
 	}
 	s.logf("send msg=%s thread=%s from=%s to=%s status=queued", res.Msg, res.Thread, from, to)

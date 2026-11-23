@@ -201,7 +201,8 @@ func trustSet(d trustDeps, pe peerEnv, program, account string, noAsk bool, stdo
 		return peersExit(peerspkg.ExitUsage, err)
 	}
 	plan := fmt.Sprintf("Doorbell on %s:\n  program:     %s\n  interpreter: %s\n  venv:        %s\n  sends as:    %s (%s)\n"+
-		"It will be able to wake sessions by sending to tags (never to a session by name), as that account; the matrix and the limits apply.\n",
+		"It will be able to wake sessions by sending to tags (never to a session by name), as that account; the matrix and the limits apply.\n"+
+		"Doorbell's messages will reach sessions in any permission mode, including ones that skip permission prompts; the text comes from Slack (other people).\n",
 		pe.Env.Machine.Name, in.Program, in.Interpreter, in.Venv, chosen.Label, chosen.Account)
 	if tty != nil {
 		tty.Print(plan)

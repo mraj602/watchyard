@@ -4,17 +4,24 @@ package peers_test
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mraj602/watchyard/internal/peers"
+	"github.com/mraj602/watchyard/internal/peers/fakeinbox"
 )
 
 // serviceWorld: A (work) and B (personal) on this machine, a personal session on another
 // machine, the matrix letting work message personal only, and Doorbell approved as work.
 func serviceWorld(t *testing.T) (*world, *fakeRemote, peers.Env, peers.TrustRecord) {
-	w := newWorld(t, peers.ModeBypass, peers.ModeBypass)
+	return serviceWorldModes(t, peers.ModeBypass, peers.ModeBypass)
+}
+
+// serviceWorldModes is serviceWorld with A's and B's permission classes.
+func serviceWorldModes(t *testing.T, modeA, modeB peers.Mode) (*world, *fakeRemote, peers.Env, peers.TrustRecord) {
+	w := newWorld(t, modeA, modeB)
 	w.allow([][]string{{"acc-work", "acc-personal"}}, nil)
 	r := &fakeRemote{account: "acc-personal", tags: map[string][]string{}}
 	e := w.env()
@@ -29,7 +36,8 @@ func serviceWorld(t *testing.T) (*world, *fakeRemote, peers.Env, peers.TrustReco
 }
 
 // A trusted send to a tag reaches every holder the recorded account may message, with the
-// service header, never as bypass, and the audit says so; no text is logged.
+// service header, framed in the receiving class (a bypass receiver admits it), and the audit
+// says so; no text is logged.
 func TestSendServiceToTag(t *testing.T) {
 	w, r, e, rec := serviceWorld(t)
 	r.tags["sess-b"] = []string{"ci"}
@@ -55,8 +63,18 @@ func TestSendServiceToTag(t *testing.T) {
 		!strings.Contains(got.Body, "reads no replies") || !strings.HasSuffix(got.Body, "build 42 failed") {
 		t.Errorf("body: %q", got.Body)
 	}
-	if got.FromMode != peers.ModePrompting || got.FromSession != "svc-doorbell-m_TEST" || got.FromName != "doorbell (service) on laptop" {
+	if got.FromMode != peers.ModeBypass || got.FromSession != "svc-doorbell-m_TEST" || got.FromName != "doorbell (service) on laptop" {
 		t.Errorf("wrapper: %+v", got)
+	}
+	for _, in := range []*fakeinbox.Server{w.a, w.b} {
+		if rc := in.All()[0]; rc.Outcome != fakeinbox.Deliver {
+			t.Errorf("a bypass receiver held it: %s (%s)", rc.Outcome, rc.Reason)
+		}
+	}
+	for _, l := range lines {
+		if l.Res.HeldLikely {
+			t.Errorf("%s: held_likely", l.Target.Handle)
+		}
 	}
 	if r.sentTo["sess-r"] != 1 || r.last.Service != peers.ServiceDoorbell || r.last.Tag != "ci" {
 		t.Errorf("remote: %v %+v", r.sentTo, r.last)
@@ -134,5 +152,94 @@ func TestSendServiceChecks(t *testing.T) {
 	w.allow([][]string{{"acc-work", "acc-personal"}}, map[string]any{"paused": true})
 	if _, rf := e.SendService(rec, "tag:ci", "x", false, false, peers.SendOpts{}); rf == nil || rf.Code != peers.CodePaused {
 		t.Errorf("paused: %+v", rf)
+	}
+}
+
+// Doorbell has no class of its own (peers.md 4.1a): each frame carries the receiving session's
+// class, so a bypass receiver and a prompting one both admit it without a dialog.
+func TestSendServiceReceivingClass(t *testing.T) {
+	w, r, e, rec := serviceWorldModes(t, peers.ModeBypass, peers.ModePrompting)
+	r.tags["sess-a"] = []string{"ci"}
+	r.tags["sess-b"] = []string{"ci"}
+	lines, rf := e.SendService(rec, "tag:ci", "build 42 failed", false, true, peers.SendOpts{})
+	if rf != nil {
+		t.Fatal(rf)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("lines: %+v", lines)
+	}
+	for _, l := range lines {
+		if l.Refusal != nil || l.Res.HeldLikely {
+			t.Errorf("%s: %+v %+v", l.Target.Handle, l.Refusal, l.Res)
+		}
+	}
+	if !w.a.Wait(1, 2*time.Second) || !w.b.Wait(1, 2*time.Second) {
+		t.Fatal("not delivered")
+	}
+	for _, c := range []struct {
+		in   *fakeinbox.Server
+		mode peers.Mode
+	}{{w.a, peers.ModeBypass}, {w.b, peers.ModePrompting}} {
+		got := c.in.All()[0]
+		if got.Wrapper.FromMode != c.mode || got.Outcome != fakeinbox.Deliver || !got.Canon {
+			t.Errorf("%s receiver: from-mode %q, %s (%s)", c.mode, got.Wrapper.FromMode, got.Outcome, got.Reason)
+		}
+		if !strings.HasPrefix(got.Wrapper.Body, "[Watchyard] from doorbell (service) on laptop") {
+			t.Errorf("header: %q", got.Wrapper.Body)
+		}
+	}
+}
+
+// A receiving session whose permission mode is not known gets nothing: the line is held (exit
+// 9), never a delivery. With another holder admitted, the broadcast has one line of each.
+func TestSendServiceModeUnknownHeld(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		setup func(w *world)
+	}{
+		{"no session file", func(w *world) { os.Remove(filepath.Join(peers.SessionsDir(w.state), "sess-b.json")) }},
+		{"unknown mode", func(w *world) { w.sessionFile("sess-b", "someNewMode", nil) }},
+		{"empty mode", func(w *world) { w.sessionFile("sess-b", "", nil) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w, r, e, rec := serviceWorld(t)
+			c.setup(w)
+			r.tags["sess-a"] = []string{"ci"}
+			r.tags["sess-b"] = []string{"ci"}
+			lines, rf := e.SendService(rec, "tag:ci", "build 42 failed", false, true, peers.SendOpts{})
+			if rf != nil {
+				t.Fatal(rf)
+			}
+			var held, ok int
+			for _, l := range lines {
+				switch {
+				case l.Refusal != nil && l.Refusal.Code == peers.CodeHeld && l.Target.Session == "sess-b":
+					held++
+					if peers.ExitCode(l.Refusal.Code) != peers.ExitHeld || !strings.Contains(l.Refusal.Detail, "nothing was written") {
+						t.Errorf("held line: %+v", l.Refusal)
+					}
+				case l.Refusal == nil && l.Target.Session == "sess-a":
+					ok++
+				default:
+					t.Errorf("line: %+v", l)
+				}
+			}
+			if held != 1 || ok != 1 {
+				t.Fatalf("lines: %+v", lines)
+			}
+			if !w.a.Wait(1, 2*time.Second) {
+				t.Fatal("the known holder got nothing")
+			}
+			time.Sleep(100 * time.Millisecond)
+			if n := len(w.b.All()); n != 0 {
+				t.Errorf("a frame was written to the unknown-mode session: %d", n)
+			}
+			// With --one the held line is final: nothing passes on to the next holder.
+			w.sessionFile("sess-a", "", nil)
+			lines, rf = e.SendService(rec, "tag:ci", "again", true, true, peers.SendOpts{})
+			if rf != nil || len(lines) != 1 || lines[0].Refusal == nil || lines[0].Refusal.Code != peers.CodeHeld {
+				t.Errorf("one: %+v %v", lines, rf)
+			}
+		})
 	}
 }

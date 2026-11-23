@@ -17,7 +17,9 @@ const DoorbellHandleRefusal = "Doorbell may send only to a tag (wy peers send ta
 
 // serviceSender is the trusted sender as the sending side of a message: its pseudo-session,
 // the recorded account with the label every machine shows for it (the hub's canonical label
-// when the hub named any session of that account, else this machine's), always prompting.
+// when the hub named any session of that account, else this machine's). Its Mode is prompting
+// only for the directory's view and the wire (peers.md 8.2): each frame it sends carries the
+// receiving session's class instead (sendTo, Receive; 4.1a).
 func (e Env) serviceSender(rec TrustRecord, all []Session) Session {
 	label := ""
 	if e.Remote != nil {

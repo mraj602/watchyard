@@ -130,10 +130,10 @@ func TestDoorbellSendsToTag(t *testing.T) {
 	line := w.laptop.ring1(t, rec, "ci", text)
 	deliveredLine(t, line)
 	got := onlyContent(t, w.worker.session("builder").inbox, 1)
-	// Doorbell always prompts, so the bypass-mode target holds the message for its owner's
-	// approval (peers.md 8.5); the send still counts as delivered.
-	if got[0].Outcome != fakeinbox.Hold || got[0].Reason != "mode_mismatch" {
-		t.Fatalf("outcome %s (%s)", got[0].Outcome, got[0].Reason)
+	// The envelope says prompting, but the receiving agent frames it in the target's class
+	// (peers.md 4.1a, 8.4): the unattended bypass session admits it without a dialog.
+	if got[0].Outcome != fakeinbox.Deliver || got[0].Wrapper.FromMode != peers.ModeBypass || line.Res.HeldLikely {
+		t.Fatalf("outcome %s (%s), from-mode %q, held_likely %v", got[0].Outcome, got[0].Reason, got[0].Wrapper.FromMode, line.Res.HeldLikely)
 	}
 	body := got[0].Wrapper.Body
 	header := "[Watchyard] from doorbell (service) on laptop · account work · tag ci · thread " + line.Res.Thread
@@ -160,6 +160,30 @@ func TestDoorbellSendsToTag(t *testing.T) {
 	use, err := w.h.st.PeerTrustUse(w.h.ctx, laptopID, peers.ServiceDoorbell, 0, 0)
 	if err != nil || use.Since != 1 || len(use.Tags) != 1 || use.Tags[0].Tag != "ci" {
 		t.Errorf("trust use: %+v %v", use, err)
+	}
+}
+
+// A receiving session whose permission mode its machine does not know gets nothing: the
+// receiving agent refuses it (rejected, held; peers.md 8.4 step 3), so the send is never
+// reported as delivered.
+func TestDoorbellModeUnknownHeld(t *testing.T) {
+	w := newWorld(t, 30)
+	w.worker.tag("builder", "ci")
+	rec := w.laptop.approveAndReport(accWork)
+	if err := os.Remove(filepath.Join(peers.SessionsDir(w.worker.state), w.worker.session("builder").id+".json")); err != nil {
+		t.Fatal(err)
+	}
+	line := w.laptop.ring1(t, rec, "ci", "held for lack of a mode")
+	if line.Refusal != nil || line.Res.Status != "queued" || line.Res.Pending == nil {
+		t.Fatalf("line: %+v", line)
+	}
+	f, ok := line.Res.Pending.Wait(10 * time.Second)
+	if !ok || f.Status != peers.CodeRejected || f.Detail != peers.CodeHeld {
+		t.Fatalf("final %+v (%v)", f, ok)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := len(w.worker.session("builder").inbox.All()); n != 0 {
+		t.Errorf("%d frames written to a session of unknown mode", n)
 	}
 }
 
@@ -378,7 +402,7 @@ func deliveredLine(t *testing.T, line peers.ServiceLine) {
 		t.Fatalf("refused: %v", line.Refusal)
 	}
 	if line.Res.Status == "queued" && line.Res.Pending != nil {
-		if f, ok := line.Res.Pending.Wait(10 * time.Second); !ok || f.Status != "delivered" {
+		if f, ok := line.Res.Pending.Wait(10 * time.Second); !ok || f.Status != "delivered" || f.Detail == "held_likely" {
 			t.Fatalf("final status %+v (%v)", f, ok)
 		}
 		return

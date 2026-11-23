@@ -90,6 +90,11 @@ func (s *server) serviceSend(env peers.Env, req Request) Reply {
 			s.logf("send from=%s kind=%s tag=%s to=%s status=%s", peers.ServiceSessionID(env.Machine.ID), peers.ServiceDoorbell, tagOf(req.To), l.Target.Session, l.Refusal.Code)
 		case l.Res.Status == "queued":
 			r = s.waitFinal(req, l.Res)
+		case l.Res.HeldLikely:
+			// Not expected (the frame carries the receiving class), but never a success.
+			r = heldReply(l.Res.Msg, l.Res.Thread, l.Res.Target.Handle)
+			s.logf("send msg=%s thread=%s from=%s kind=%s tag=%s to=%s status=held", l.Res.Msg, l.Res.Thread,
+				peers.ServiceSessionID(env.Machine.ID), peers.ServiceDoorbell, tagOf(req.To), l.Res.Target.Entry.SessionID)
 		default:
 			r = Reply{Msg: l.Res.Msg, Thread: l.Res.Thread, Status: "delivered", To: l.Res.Target.Handle, HeldLikely: l.Res.HeldLikely}
 			s.logf("send msg=%s thread=%s from=%s kind=%s tag=%s to=%s status=delivered size=%d", l.Res.Msg, l.Res.Thread,
@@ -98,7 +103,7 @@ func (s *server) serviceSend(env peers.Env, req Request) Reply {
 		if r.To == "" {
 			r.To = l.Target.Handle
 		}
-		out.Lines = append(out.Lines, r)
+		out.Lines = append(out.Lines, heldAsRefusal(r))
 	}
 	out.Exit = linesExit(out.Lines, req.One)
 	return out
@@ -109,11 +114,33 @@ func tagOf(to string) string {
 	return t
 }
 
-// linesExit is a tag send's exit code (peers.md 3.4): with one, that of the line it ended on;
-// a broadcast is 0 when every line is delivered, else the code of the first that is not (8
-// for queued).
+// heldReply is a trusted send's line for a message written to a session that will likely hold
+// it for approval: never reported as delivered (peers.md 4.1a, exit 9).
+func heldReply(msg, thread, to string) Reply {
+	return Reply{Msg: msg, Thread: thread, To: to, Error: &Error{Code: peers.CodeHeld,
+		Detail: "written to " + to + ", but its session is in another permission mode, so Claude Code is likely holding it for approval; it may never be seen"}}
+}
+
+// heldAsRefusal turns a trusted send's delivery that is likely held into a held line: a
+// receiving machine older than the receiving-class rule framed it as prompting for a bypass
+// session, so it was written but likely waits for approval (peers.md 4.1a).
+func heldAsRefusal(r Reply) Reply {
+	if r.Error == nil && r.HeldLikely {
+		return heldReply(r.Msg, r.Thread, r.To)
+	}
+	return r
+}
+
+// linesExit is a trusted tag send's exit code (peers.md 3.4, 4.1a): with one, that of the line
+// it ended on; a broadcast is 0 when every line is delivered and admitted, 9 when any line is
+// held, else the code of the first line that is not delivered (8 for queued).
 func linesExit(lines []Reply, one bool) int {
 	code := 0
+	for _, l := range lines {
+		if !one && l.Error != nil && l.Error.Code == peers.CodeHeld {
+			return peers.ExitHeld
+		}
+	}
 	for _, l := range lines {
 		c := 0
 		switch {

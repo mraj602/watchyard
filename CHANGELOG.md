@@ -19,7 +19,13 @@ All notable changes to Watchyard are recorded here. The format follows
   Settings → Peers → Trusted senders on the board or the phone. The hub has `peer_trust`
   (migration 0021) and `GET /v1/peers/trusted`, `POST /v1/peers/trusted/revoke`. The hub
   relays Doorbell's messages only to agents from 1.3.0 (`client.caps` `peer_service` in the
-  link hello); an older receiver is refused with `receiver_too_old`.
+  link hello); an older receiver is refused with `receiver_too_old`. Doorbell has no
+  permission class of its own (the owner's approval is the vetting), so each of its messages
+  is framed in the receiving session's class and reaches bypass and prompting sessions alike
+  without an approval dialog; the approval prompt says so. A receiving session whose mode is
+  not known gets nothing, and the send exits 9 (`held`, new), never 0; a broadcast exits 0
+  only when every holder took it. `wy peers audit` lists Doorbell's sends as
+  `doorbell (service)` with the tag, and its `--json` carries `from_kind`, `tag` and `detail`.
 - **Tags in the UI**: session rows on the board and the phone show the session's tags as chips;
   search matches tags, and `tag:<name>` matches one tag exactly (a chip sets it). Settings →
   Peers lists every tag with its holders and the trusted senders that sent to it recently.

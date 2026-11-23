@@ -143,6 +143,11 @@ func (e Env) sendTo(sender *Session, target Session, dir []Session, text string,
 	if rf != nil {
 		return SendResult{}, rf
 	}
+	if o.Service != "" && !target.Remote && !ModeKnown(target.File, target.HasFile) {
+		// The trusted sender is framed in the receiving class (peers.md 4.1a); without it the
+		// frame could wait unseen for approval, so nothing is written.
+		return SendResult{}, Refuse(CodeHeld, "%s's permission mode is not known, so Claude Code could hold it for approval unseen; nothing was written", target.Handle)
+	}
 	ttl := o.TTL
 	if ttl == 0 {
 		ttl = DefaultTTL
@@ -213,8 +218,14 @@ func (e Env) sendTo(sender *Session, target Session, dir []Session, text string,
 	if o.Service != "" {
 		header = ServiceHeader(e.Machine.Name, sender.AccountLabel, o.Tag, th.ID)
 	}
+	mode := sender.Mode
+	if o.Service != "" {
+		// The trusted sender has no class of its own: the owner's approval is its vetting, so
+		// its frame carries the receiving session's class (peers.md 4.1a, 8.5).
+		mode = target.Mode
+	}
 	w := Wrapper{
-		From: from, FromSession: sender.Entry.SessionID, FromName: sender.Handle, FromMode: sender.Mode,
+		From: from, FromSession: sender.Entry.SessionID, FromName: sender.Handle, FromMode: mode,
 		Body: header + "\n\n" + clean,
 	}
 	frame := NewFrame(msg, target.Entry.SessionID, w)
@@ -234,7 +245,7 @@ func (e Env) sendTo(sender *Session, target Session, dir []Session, text string,
 		e.Remote.Log(LocalLog{Msg: msg, Thread: th.ID, FromSession: sender.Entry.SessionID, ToSession: target.Entry.SessionID,
 			Kind: kind, Status: "delivered", Size: len(clean), At: now, FromKind: o.Service, Tag: o.Tag})
 	}
-	return SendResult{Msg: msg, Thread: th.ID, Target: target, Sender: *sender, HeldLikely: sender.Mode != target.Mode}, nil
+	return SendResult{Msg: msg, Thread: th.ID, Target: target, Sender: *sender, HeldLikely: mode != target.Mode}, nil
 }
 
 // sendRemote hands a checked message to the hub. The state lock is released while the hub
@@ -343,6 +354,8 @@ func Describe(r *Refusal) string {
 		return "not delivered: " + r.Detail + ". Remove it and send again only if the user asks."
 	case CodeAmbiguous:
 		return "not delivered: " + r.Detail + ". Pick one handle and send again."
+	case CodeHeld:
+		return "held: " + r.Detail + "."
 	}
 	return "not delivered: " + strings.TrimPrefix(r.Detail, r.Code+": ")
 }

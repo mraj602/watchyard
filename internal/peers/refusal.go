@@ -29,6 +29,10 @@ const (
 	CodeUsage = "usage"
 	// CodeLimitTags: the session holds the most tags it may (peers.md 3.4); exit 6.
 	CodeLimitTags = "too_many_tags"
+	// CodeHeld: a trusted send (peers.md 4.1a) that Claude Code would or might hold for
+	// approval: the receiving session's permission mode is not known (nothing written), or an
+	// older receiving machine framed it in another class; exit 9, never a success.
+	CodeHeld = "held"
 )
 
 // ReasonReceiverTooOld is a hub reason word (not an exit code): the receiving machine's agent
@@ -47,6 +51,7 @@ const (
 	ExitLimits      = 6
 	ExitNotSent     = 7
 	ExitQueued      = 8
+	ExitHeld        = 9 // a trusted send held or likely held for approval (peers.md 4.1a)
 )
 
 // Refusal is a final "no" with its reason word. Nothing is retried after one.
@@ -83,6 +88,8 @@ func ExitCode(code string) int {
 		return ExitUnsupported
 	case CodeUnknownTarget, CodeTargetGone, CodeExpired, CodeRejected, CodeFailed, CodeHubUnreachable:
 		return ExitNotSent
+	case CodeHeld:
+		return ExitHeld
 	}
 	return ExitInternal
 }
