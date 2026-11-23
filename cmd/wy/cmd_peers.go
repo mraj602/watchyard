@@ -160,7 +160,7 @@ func peersList(args []string, stdout, stderr io.Writer) error {
 		return enc.Encode(entries)
 	}
 	if len(entries) == 0 && *tag != "" {
-		fmt.Fprintf(stdout, "No session you may message holds tag %s.\n", *tag)
+		fmt.Fprintf(stdout, "No session you may message holds tag %s. %s\n", *tag, peerspkg.NoHolderHint)
 		return nil
 	}
 	if len(entries) == 0 {

@@ -356,6 +356,8 @@ func Describe(r *Refusal) string {
 		return "not delivered: " + r.Detail + ". Pick one handle and send again."
 	case CodeHeld:
 		return "held: " + r.Detail + "."
+	case CodeNoHolder:
+		return "not delivered: " + r.Detail + ". " + NoHolderHint
 	}
 	return "not delivered: " + strings.TrimPrefix(r.Detail, r.Code+": ")
 }

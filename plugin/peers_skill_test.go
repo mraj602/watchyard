@@ -45,6 +45,8 @@ func TestPeersSkill(t *testing.T) {
 		"When you message a peer on your own",
 		"wy peers tag add <tag>",
 		"wy peers send tag:<tag> --stdin",
+		"A tag holder that something sends to must stay running",
+		"(`claude agents`, select it, Ctrl+T); never edit Claude Code's files",
 	} {
 		if !strings.Contains(flat, rule) {
 			t.Errorf("skill lacks the rule %q", rule)

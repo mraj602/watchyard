@@ -41,10 +41,15 @@ others reach it by role instead of by handle:
 - `tag add` prints the other sessions that hold the same tag, and each of them is told that you
   took it. Decide with them (a short message) which of you keeps it; the one that does not runs
   `wy peers tag rm <tag>`.
+- A tag holder that something sends to must stay running. Claude Code ends idle background
+  sessions after about 1 to 8 hours unless they are pinned, so when `tag add` says this session
+  is not pinned, ask the user to pin it (`claude agents`, select it, Ctrl+T); never edit Claude
+  Code's files to do it yourself.
 - `wy peers send tag:<tag> --stdin` sends to every holder you may message (one line each);
   `--one` sends to exactly one, an idle one first; `--same-host` keeps holders on this machine.
   Use a handle when you know which session you mean, and a tag for whoever holds a role.
-  `not delivered: no session you may message holds tag …` means nobody holds it now.
+  `not delivered: no session you may message holds tag …` means nobody holds it now (a holder
+  may have been ended for being idle; tell the user, as the line says).
 
 If `wy` is not on PATH, say so and stop; do not try to install it. If `wy peers list` shows
 nobody, say that, and name what it printed (for example that the matrix is not set up).

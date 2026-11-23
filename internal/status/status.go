@@ -22,6 +22,18 @@ type Options struct {
 	Labels    map[string]string // config slots.labels: slot -> account label
 	All       bool              // include ended and gone sessions
 	Now       time.Time         // zero: time.Now()
+	// Keepalive, when set, says what Claude Code's daemon files know of a session of a slot
+	// (states.md 5.2). Nil: nothing is known.
+	Keepalive func(slot, sessionID string) Keepalive
+}
+
+// Keepalive is what Claude Code's daemon files say about one session (states.md 5.2): whether
+// it runs as a background job, whether that job is pinned, and when the daemon last retired
+// it for being idle (zero: never).
+type Keepalive struct {
+	Background bool
+	Pinned     bool
+	RetiredAt  time.Time
 }
 
 // Row is one session of the table.
@@ -39,6 +51,13 @@ type Row struct {
 	Question   string      `json:"question,omitempty"`
 	SessionID  string      `json:"session_id"`
 	Email      string      `json:"email,omitempty"`
+	// Background: a Claude Code background session; Pinned: its job is pinned, so Claude Code
+	// never ends it for being idle (states.md 5.2).
+	Background bool `json:"background,omitempty"`
+	Pinned     bool `json:"pinned,omitempty"`
+	// RetiredIdleAt: Claude Code ended this background session for being idle at that time,
+	// after its last event, so the process is gone although the fold still says State.
+	RetiredIdleAt *time.Time `json:"retired_idle_at,omitempty"`
 }
 
 // Collect reads the outbox and returns the table rows: needs-you first, then working, done,
@@ -78,6 +97,9 @@ func Build(sessions map[string]*Session, o Options, now time.Time) []Row {
 		if s.Seat != nil {
 			row.Email = s.Seat.Email
 		}
+		if o.Keepalive != nil {
+			keepalive(&row, o.Keepalive(s.Slot, s.ID))
+		}
 		rows = append(rows, row)
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
@@ -95,6 +117,24 @@ func Build(sessions map[string]*Session, o Options, now time.Time) []Row {
 		return a.SessionID < b.SessionID
 	})
 	return rows
+}
+
+// keepalive applies what Claude Code's daemon says of the row's session (states.md 5.2): an
+// idle retirement counts only when it is newer than the session's last event (a session
+// respawned or resumed since then is running again) and the fold has not ended it already.
+func keepalive(r *Row, k Keepalive) {
+	r.Background, r.Pinned = k.Background, k.Background && k.Pinned
+	if !k.Background || k.RetiredAt.IsZero() || r.State == state.Ended || r.State == state.Gone {
+		return
+	}
+	last := r.LastEvent
+	if last.IsZero() {
+		last = r.Since
+	}
+	if k.RetiredAt.After(last) {
+		at := k.RetiredAt
+		r.RetiredIdleAt = &at
+	}
 }
 
 func rank(r Row) int {
@@ -145,12 +185,28 @@ func project(cwd string) string {
 	return path.Base(cwd)
 }
 
-// Label is the state as shown in the table: failed sessions carry their error code.
+// RetiredLabel is the STATE column of a session Claude Code ended for being idle.
+const RetiredLabel = "ended:idle-retired"
+
+// RetiredNote is printed under the table when a row is RetiredLabel.
+const RetiredNote = RetiredLabel + ": Claude Code ended this background session for being idle. " +
+	"`claude respawn <session>` starts it again; pin it (`claude agents`, select it, Ctrl+T) to keep it running."
+
+// Label is the state as shown in the table: failed sessions carry their error code, a
+// session Claude Code retired for idleness is RetiredLabel, and a pinned background session
+// is marked "(pinned)".
 func (r Row) Label() string {
-	if r.State == state.Failed && r.Detail != "" {
-		return string(r.State) + ":" + r.Detail
+	l := string(r.State)
+	switch {
+	case r.RetiredIdleAt != nil:
+		return RetiredLabel
+	case r.State == state.Failed && r.Detail != "":
+		l += ":" + r.Detail
 	}
-	return string(r.State)
+	if r.Pinned {
+		l += " (pinned)"
+	}
+	return l
 }
 
 // Age renders d as "42s", "7m", "3h", "2d".
@@ -176,8 +232,9 @@ func Render(w io.Writer, rows []Row, now time.Time) error {
 	}
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "ACCOUNT\tSLOT\tPROJECT\tSTATE\tSINCE\tCTX\tSESSION")
-	need := 0
+	need, retired := 0, false
 	for _, r := range rows {
+		retired = retired || r.RetiredIdleAt != nil
 		ctx := "-"
 		if r.ContextPct != nil {
 			ctx = fmt.Sprintf("%.0f%%", *r.ContextPct)
@@ -198,6 +255,9 @@ func Render(w io.Writer, rows []Row, now time.Time) error {
 		return err
 	}
 	_, err := fmt.Fprintf(w, "\n%d session%s, %d need%s you\n", len(rows), plural(len(rows)), need, map[bool]string{true: "", false: "s"}[need != 1])
+	if err == nil && retired {
+		_, err = fmt.Fprintln(w, RetiredNote)
+	}
 	return err
 }
 

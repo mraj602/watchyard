@@ -6,6 +6,28 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `wy status` marks background sessions that Claude Code ended for being idle
+  (`ended:idle-retired`, with a line on how to respawn and pin them) and pinned ones
+  (`done (pinned)`); `--json` gains `background`, `pinned` and `retired_idle_at`. It reads
+  Claude Code's job files read-only and best-effort; the hub and the board do not show this yet.
+- `wy peers tag add` notes when the session is an unpinned Claude Code background session:
+  Claude Code ends those after about 1 to 8 idle hours and the tag goes with them, so ask the
+  user to pin it (`claude agents`, Ctrl+T).
+- The SessionStart context also tells a session, when this machine has more than one logged-in
+  account, to let `wy account next --session-id <uuid> --exec -- claude <args>` choose the
+  account of any session it starts, whether or not peers are on.
+
+### Changed
+
+- The SessionStart paragraph is rewritten: a one-line header (`wy status`), the peers sentence
+  (now with the pinning rule for tag holders) and the account-picker sentence, each under its
+  own condition; nothing is printed when neither applies.
+- A tag send with no holder (`no_holder`, still exit 3) and `wy peers list --tag` with none add
+  that a holder may have been ended by Claude Code for idleness, and how to pin and respawn it.
+  The peers skill states the same rule.
+
 ## [1.3.1] - 2026-11-23
 
 ### Fixed
