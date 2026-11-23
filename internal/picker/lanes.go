@@ -269,6 +269,9 @@ type LaneInput struct {
 	Stats   LaneStats
 	Expect  time.Duration
 	HubDown bool
+	// prior are picks of the same batch already made by earlier calls (tests that rank a
+	// batch one pick at a time).
+	prior []LanePick
 }
 
 // LaneRow is one account in the ranking of the first pick.
@@ -793,7 +796,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 						skip, why, level = true, d.Why, 3
 					}
 					dk.group, dk.deficit, dk.finish = 0, d.Deficit, float64(d.FinishBy.Unix())
-					for _, pk := range res.Picks {
+					for _, pk := range append(in.prior, res.Picks...) {
 						dk.batched = dk.batched || pk.Key == acc.Key
 					}
 					if prot {
@@ -808,10 +811,11 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 				default:
 					class, dk.group = ClassAggressive, 3
 				}
-				if !d.On && !prot && !skip && len(v.unknown) == 0 && p.LandMax > 0 {
+				if !d.On && !prot && (!skip || level == 0) && len(v.unknown) == 0 && p.LandMax > 0 {
 					e, _, _, _ := p.laneStats(in.Stats)
 					if v.w+e/p.account(acc).ratio() > p.LandMax {
 						skip, why, level = true, fmt.Sprintf("7d %s%%: one lane (%s points) would land over %s%%", f0(v.w), f0(e), f0(p.LandMax)), 3
+						capped = false // a hard limit: --urgent may not pass it
 					}
 				}
 			case OrderFill:

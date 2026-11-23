@@ -61,14 +61,14 @@ type DrainInfo struct {
 	FinishBy    time.Time
 	Reset       time.Time
 	FreeAt      *time.Time
-	Why         string // the reason when Capacity <= 0
+	Why         string  // the reason when Capacity <= 0
 	WM, HM      float64 // the measured weekly and 5-hour levels it was judged on
-	waitShort   bool   // blocked by its 5-hour window (counts for the short wait)
+	waitShort   bool    // blocked by its 5-hour window (counts for the short wait)
 }
 
 // drainKey orders the accounts in the drain order: lower first.
 type drainKey struct {
-	group   int // 0 aggressive drain, 1 protected drain, 2 at risk, 3 aggressive, 4 unknown, 5 protected
+	group   int  // 0 aggressive drain, 1 protected drain, 2 at risk, 3 aggressive, 4 unknown, 5 protected
 	batched bool // drain: already picked in this batch (every draining account gets one first)
 	deficit int
 	finish  float64 // finish_by, unix seconds
@@ -145,11 +145,13 @@ type runLane struct {
 	since          bool // picked after the reading
 }
 
-//
 // past is what the lanes nothing measures (no local session, no hub burn) used since the
 // reading, at the new-lane rate: neither the reading nor the meter holds it (an ended one at
 // most one lane length of it).
-func (p LaneParams) runningLanes(acc LaneAccount, c cleanSample, leases []LaneLease, now time.Time, r, lmed, finishH float64) (out []runLane, past float64) {
+//
+// With the hub down (double), this machine's lanes of the last burst window count twice: another
+// machine is assumed to be draining the same room just as fast.
+func (p LaneParams) runningLanes(acc LaneAccount, c cleanSample, leases []LaneLease, now time.Time, r, lmed, finishH float64, double bool) (out []runLane, past float64) {
 	f5 := p.account(acc).F5
 	bw := p.BurnWindow
 	if bw <= 0 {
@@ -166,6 +168,10 @@ func (p LaneParams) runningLanes(acc LaneAccount, c cleanSample, leases []LaneLe
 		if age >= p.LeaseTTL {
 			continue
 		}
+		mult := 1.0
+		if double && !L.Remote && age < p.BurstWindow {
+			mult = 2
+		}
 		if !L.RecentOK {
 			from := L.T0
 			if c.ts.After(from) {
@@ -175,7 +181,7 @@ func (p LaneParams) runningLanes(acc LaneAccount, c cleanSample, leases []LaneLe
 				if L.Ended {
 					sinceH = math.Min(sinceH, lmed)
 				}
-				past += r * sinceH
+				past += mult * r * sinceH
 			}
 		}
 		if L.Ended {
@@ -192,7 +198,7 @@ func (p LaneParams) runningLanes(acc LaneAccount, c cleanSample, leases []LaneLe
 			rem = math.Max(rem, L.Expect.Hours()-ah)
 		}
 		rem = math.Min(rem, p.LeaseTTL.Hours()-ah)
-		out = append(out, runLane{age: ah, rate: rate, rem: rem, since: L.T0.After(c.ts),
+		out = append(out, runLane{age: ah, rate: mult * rate, rem: rem, since: L.T0.After(c.ts),
 			spill: L.Spill || rem > finishH})
 	}
 	return out, past
@@ -279,7 +285,7 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 
 	e, em, lmed, r := p.laneStats(in.Stats)
 	spread := e - em
-	rs, past := p.runningLanes(acc, c, leases, now, r, lmed, hRem)
+	rs, past := p.runningLanes(acc, c, leases, now, r, lmed, hRem, in.HubDown)
 	d.Running = len(rs)
 	F := past + forward(rs, hRem)
 	d.ForwardBurn = F
@@ -320,12 +326,14 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	if v.hM >= lim5 { // the hard limit holds even when the window resets soon
 		c5 = 0
 	}
-	if in.HubDown {
+	if in.HubDown && p.HubDownFactor > 0 {
+		// Half of what is left (rounded up); each lane this machine places counts twice
+		// (runningLanes), so a batch places that many in all.
 		half := func(x int) int {
 			if x <= 0 {
 				return x
 			}
-			return max(1, int(math.Floor(float64(x)*p.HubDownFactor)))
+			return int(math.Ceil(float64(x) * p.HubDownFactor))
 		}
 		cw, c5 = half(cw), half(c5)
 	}

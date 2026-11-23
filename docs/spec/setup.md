@@ -1170,7 +1170,8 @@ only when no aggressive account has room (*Order*); with no eligible account not
 *Order* (`drain`, owner 2026-11-24). Every eligible account is in exactly one class, and the
 classes go first to last:
 
-1. **Aggressive drain** accounts with capacity: the largest `deficit` first (`needed − running`,
+1. **Aggressive drain** accounts with capacity: in a batch, those not yet picked in it first (every
+   draining account gets a lane before any gets a second); then the largest `deficit` (`needed − running`,
    `needed = ⌈R5 / (r × (H − guard))⌉` the lanes that must run without pause to use the room);
    then the earliest `finish_by`; then the newest lease oldest first; then label. So several
    draining accounts share a batch in proportion to their room, and one draining account takes
@@ -1237,8 +1238,9 @@ account out of the drain; they only limit how many more it takes).
   `C5 = ⌊(A0 − F(t5') − (E − Ē)) / N1₅⌋`, not counted when the 5-hour window resets within 15
   minutes or none is open, and 0 at a measured `h ≥ 95` (the backstop) otherwise, or at `h ≥ 98`
   always. Many lanes cost about `Ē` each; the spread `E − Ē` is kept once. *End game*: `Cw = 0`,
-  `R5 − F ≥ N1 / 2` and no lane running gives `Cw = 1`. With the hub down both are halved (rounded
-  down, at least 1 when above 0). `C = min(Cw, C5)`; then *spill*: a new lane is a spill lane when
+  `R5 − F ≥ N1 / 2` and no lane running gives `Cw = 1`. With the hub down both are halved (rounded up) and this
+  machine's lanes of the last 60 minutes count twice in `F` (another machine may be draining the
+  same room as fast), so a batch places about half. `C = min(Cw, C5)`; then *spill*: a new lane is a spill lane when
   `H − guard < L` or `--expect` is longer, and at most 2 lanes expected to run past `finish_by` may
   be running per account; *stale*: at most 1 new drain lane per reading (none when a lease came
   after the reading); and the landing guard. With `C ≤ 0` the account takes no lane now: "drain
