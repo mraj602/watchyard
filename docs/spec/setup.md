@@ -978,7 +978,7 @@ from a label. In plain words (the one wording every surface uses: `internal/pick
 `ModeWords`, the board's `components/pick-mode.js`, the phone's `lib/format/pickMode.ts`):
 
 - **Protected**: "Kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and
-  the 5-hour window is under 45%." For the account you use yourself (in Chrome, the app, or
+  the 5-hour window is under 45%, or near its reset for room that would expire unused anyway." For the account you use yourself (in Chrome, the app, or
   interactively in a terminal).
 - **Aggressive**: "Use it up. Sessions go here until 98% of the week or 5 hours." For
   accounts that only run agents.
@@ -1045,8 +1045,21 @@ own readings and token use and moves from the value shown (its fallback) to the 
 | stale guard | 60 min | Age of the newest reading after which an account that ran is stale. |
 | stale lease | 6 h | Age after which an account with a lease since its reading is stale. |
 | unlaunched | 10 min | A lease whose session never started is dropped after this. |
-| last day | 24 h, 5-hour < 90 | An aggressive account whose weekly window resets this soon, with room left, goes before all others. |
-| at risk | slack 3, 5-hour < 90 | An aggressive account whose weekly room needs at least a third of the time left at full 5-hour speed goes next. |
+| drain floor | 24 h | An aggressive account with room left drains within this many hours of its weekly reset. |
+| drain slack | 2 (protected 1, no floor) | ... or when the hours to its reset are at most this times `need` (Drain). |
+| drain minimum room | 0.5 | Weekly points of room under which an account never drains. |
+| drain margin `M` | 1 (2 stale or hub down) | Weekly points a drain keeps under the limit: it aims at 97. |
+| guard | 10 min | `finish_by` = the weekly reset − guard; no drain closer to the reset than this. |
+| at risk | slack 4 | An aggressive account not draining whose reset is within 4 × `need` goes before the other aggressive ones (ordering only). |
+| lane cost `E`, mean | 8 | *Measured.* The p75 and the mean of a finished lane's 5-hour points (Drain, Lane statistics). |
+| lane length | 15 min | *Measured.* The median lane length. |
+| burn window | 15 min | A running lane's burn rate is measured over this. |
+| fresh soon | 15 min | A 5-hour window resetting this soon does not limit a drain. |
+| 5-hour backstop | 95 | No new drain lane at a measured 5-hour level at or over this, unless the window resets within fresh soon. |
+| spill max | 2 | Lanes per account that may run past its weekly reset. |
+| landing guard | 99 | No aggressive lane when `w + E/ρ` is over this. |
+| short wait | 15 min | Rather than use a protected account, wait for an aggressive one whose 5-hour window frees this soon. |
+| hub-down factor | 0.5 | Drain capacities times this when the hub could not be read. |
 | web gap | 15 min | Age of the newest reading after which claude.ai use the meter cannot see is added. |
 
 `cap_5h`, `cap_7d` and `reserve_pct` (taken off both) are the only per-account caps `lanes`
@@ -1138,49 +1151,113 @@ hub read, and a lease it lists as not launched is dropped 10 minutes after its p
 *Eligibility*, after the rules every strategy applies first (logged in on this machine, not
 signed out on the hub, not `exclude`d, inside its `hours` and `days`):
 
-- **aggressive**: not when `w ≥ 98` or `h ≥ 98`. An unknown weekly level does not exclude it:
-  it is ranked after every known account. A stale aggressive account keeps its estimate
-  (accounts used only by `claude -p` never send readings).
+- **aggressive**: not when `w ≥ 98` or `h ≥ 98`, or when one lane's expected cost alone would take it
+  over the landing guard (`w + E/ρ > 99`). An unknown weekly level does not exclude it: it is
+  ranked after every known aggressive account and before every protected one. A stale aggressive
+  account keeps its estimate (accounts used only by `claude -p` never send readings).
 - **protected**: not when `w ≥ min(T, T × (1 − hours_to_reset / 168) + 10)` (the pace line),
   `h ≥ 45`, the reserve level `≥ T` (the running lanes' expected cost would take it over its
   target), it is stale, or its weekly level is unknown (no valid reading).
 - **both**: not when it got burst-cap leases or more in the last 60 minutes.
+- **draining** accounts (Drain, below) follow the drain rules instead: no burst cap, no lease
+  charges, no pace line or target; their drain capacity, the 5-hour backstop, the hard limits and
+  the landing guard on their measured levels.
 
-There is **no fallback onto a protected account**, ever: with no eligible account nothing is
-picked (exit 4).
+There is **no fallback onto a protected account**: a protected account outside drain gets a lane
+only when no aggressive account has room (*Order*); with no eligible account nothing is picked
+(exit 4).
 
-*Order* (`fill_exp`, owner 2026-11-24). Four groups, each eligible account in exactly one, the
-first group first:
+*Order* (`drain`, owner 2026-11-24). Every eligible account is in exactly one class, and the
+classes go first to last:
 
-1. **Last day:** aggressive accounts whose weekly window resets within 24 hours, with room left
-   (`w < 98`) and `h < 90`.
-2. **At risk:** the other aggressive accounts with `h < 90` whose weekly room can only just be
-   used before the reset: `hours to reset <= 3 × need`, where `need = (98 − w) × ratio / 98 × 5`
-   is the hours it takes to use the room at full 5-hour speed (a full 5-hour window is
-   `98 / ratio` weekly points; `ratio` is the account's own calibrated 5-hour-to-weekly ratio).
-   The factor 3 is slack for gaps: lanes never run at full speed without pause.
-3. **The other aggressive accounts.**
-4. **Protected accounts**, only when no aggressive account can take the lane.
+1. **Aggressive drain** accounts with capacity: the largest `deficit` first (`needed − running`,
+   `needed = ⌈R5 / (r × (H − guard))⌉` the lanes that must run without pause to use the room);
+   then the earliest `finish_by`; then the newest lease oldest first; then label. So several
+   draining accounts share a batch in proportion to their room, and one draining account takes
+   every lane its capacity allows.
+2. **Protected drain** accounts with capacity (owner: only when even full speed cannot use their
+   room), in the same order.
+3. **At risk**: aggressive accounts not draining with `H ≤ 4 × need`, the lowest `H / need` first,
+   then turns.
+4. **Aggressive**: turns (the newest lease oldest first, never leased first), then fewer leases in
+   the burst window (so a batch alternates), then the earliest weekly reset, then label.
+5. **Unknown**: aggressive accounts with an unknown weekly level (owner: before protected).
+6. **Protected**, only when no aggressive account has room: every aggressive account is at a hard
+   limit, at drain capacity, behind the landing guard, or excluded. When an aggressive account is
+   blocked only by its burst cap, or its 5-hour window frees it within 15 minutes, the lane waits
+   instead (exit 4 with `next_free`).
 
-Within a group the accounts take turns: the newest lease oldest first, never leased first; then
-fewer leases in the burst window (so a batch alternates); then the time left per hour of `need`,
-lowest (most at risk) first; then label in natural order. `w` and `h` include the running-lane
-reserve and the meter. The burst cap and the 5-hour gate move further lanes on to the next
-account. The reference order `rr_exp` (golden cases: an expiring turn for aggressive accounts
-resetting within 48 hours while `h < 30`, then one round robin over every other eligible account,
-protected ones included) is kept as `ReferenceLaneParams` for the parity test only; it sent lanes
-to protected accounts while an aggressive account about to reset had room (2026-11-23). Aggressive accounts with an unknown weekly level come
-after all others. `score` is shown but does not order: `(1 − h/100) × (100 − w) / max(hours,
-0.5)` for aggressive, `(1 − h/100) × 0.85 × (T − w) / max(hours, 24)` for protected.
+A draining account with no capacity is skipped and does not fall into a later class.
+
+`w` and `h` here are the levels with the lease charges (Effective state); a draining account is
+judged on its *measured* levels instead. `score` is shown but does not order: `(1 − h/100) ×
+(100 − w) / max(hours, 0.5)` for aggressive, `(1 − h/100) × 0.85 × (T − w) / max(hours, 24)` for
+protected.
+
+Two older orders are kept in `internal/picker` for comparison only: the reference `rr_exp`
+(`ReferenceLaneParams`, the golden cases: an expiring turn for aggressive accounts resetting
+within 48 hours while `h < 30`, then one round robin over every other eligible account, protected
+ones included), which on 2026-11-23 sent lanes to protected accounts while an aggressive account
+about to reset had room; and the draft `fill_exp` (`DraftLaneParams`: last-day and at-risk groups
+with the fixed lease charges), which the replay and the simulator compare against.
+
+*Drain.* Weekly room that would expire unused before the weekly reset is used first, up to what
+it can absorb. All levels are *measured*: the reading, the token meter with its margins and the
+unexplained use, never the fixed lease charges (so lanes already started cannot push a draining
+account out of the drain; they only limit how many more it takes).
+
+- *Quantities.* `ρ` the account's ratio; `M` the drain margin (1 weekly point, 2 when stale or the
+  hub could not be read); `R5 = (98 − M − w) × ρ`, the room this week in 5-hour points; `A0 =
+  max(0, 98 − h)` the room in the current 5-hour window (a protected account: its 5-hour floor 45
+  instead of 98); `t5` the hours to the 5-hour reset (5 when no window is open); `H` the hours to
+  the weekly reset; `need` the hours to use `R5` at full 5-hour speed (`5 × R5 / 98` when `R5 ≤
+  A0`, else `t5 + 5 × (R5 − A0) / 98`).
+- *Entry* (all of): the weekly level and its `resets_at` are known from a reading; `98 − w ≥ 0.5`;
+  `H > guard` (10 minutes); and `H ≤ max(24, 2 × need)` for an aggressive account, `H ≤ 1 × need`
+  for a protected one that is not stale (owner: only room that would be wasted even at full
+  speed). It leaves the drain as soon as one fails (no state is kept between calls). A protected
+  account in drain may use its room up to 98 − M (not its target or pace line), with its 5-hour
+  floor kept.
+- *Lane statistics.* From the leases read (this machine's ledger, 8 days; other machines' leases
+  with a hub burn): `E` the p75 and `Ē` the mean of the 5-hour points (`f ×` units) of lanes that
+  ended or are 5 hours old, and `L` the median length of this machine's ended lanes (launched to
+  ended); with `--model`, that model's own lanes when there are at least 10. Fewer than 10:
+  the fallbacks 8 points and 15 minutes. A new lane burns `r = Ē / L` points per hour.
+- *Forward burn* of the running lanes before a time `T`: `F(T) = Σ rate × min(rem, T)` over the
+  account's leases that are not ended and younger than 5 hours (settled and not yet launched ones
+  included), where `rate` = the units the session used in the last 15 minutes `× f` per hour when
+  something measures it and it is at least 5 minutes old, else `r`; `rem = max(L − age, age, 10
+  min)` (a lane that has run 3 hours is likely to run about 3 more), at least `--expect − age`,
+  at most the lease's life left.
+- *Capacity* (new lanes the room absorbs now): with `N1 = min(Ē, r × (H − guard))`, weekly `Cw =
+  ⌊(R5 − F(H − guard) − (E − Ē)) / N1⌋`; with `t5' = min(t5, H)` and `N1₅ = min(Ē, r × t5')`, 5-hour
+  `C5 = ⌊(A0 − F(t5') − (E − Ē)) / N1₅⌋`, not counted when the 5-hour window resets within 15
+  minutes or none is open, and 0 at a measured `h ≥ 95` (the backstop) otherwise, or at `h ≥ 98`
+  always. Many lanes cost about `Ē` each; the spread `E − Ē` is kept once. *End game*: `Cw = 0`,
+  `R5 − F ≥ N1 / 2` and no lane running gives `Cw = 1`. With the hub down both are halved (rounded
+  down, at least 1 when above 0). `C = min(Cw, C5)`; then *spill*: a new lane is a spill lane when
+  `H − guard < L` or `--expect` is longer, and at most 2 lanes expected to run past `finish_by` may
+  be running per account; *stale*: at most 1 new drain lane per reading (none when a lease came
+  after the reading); and the landing guard. With `C ≤ 0` the account takes no lane now: "drain
+  full: N lanes running use the room left before HH:MM" or "drain: 5h full until HH:MM".
+- *Batches.* Each placed pick is a running lane of age 0 for the next pick of the batch, so `F`
+  and `C` count it.
+- `finish_by` = the weekly reset − 10 minutes: the drain pick tells the agent to finish or
+  checkpoint by then (Flags, output).
+- *Shown only*: the room usable before the reset at full speed, and the weekly points that will
+  expire whatever happens (`unavoidable_waste_pct`); the projected weekly level at the reset, `w
+  + F / ρ`.
 
 *Batches.* `--n K` makes K picks one after another under the ledger lock; each adds its lease
 before the next is ranked, so the burst fills the accounts evenly and stops at their limits
 and burst caps. It stops at the first lane no account can take; the picks made before it are
 leased and printed (exit 4).
 
-*`--urgent`.* When no account is eligible, it may pick an aggressive account whose **only**
-reason is its burst cap: the one with the lowest `h`, then `w`. It never passes a weekly or
-5-hour limit, never picks a protected account and has no rate limit. The lease is marked
+*`--urgent`.* When no aggressive account is eligible (draining accounts have no burst cap), it
+may pick an aggressive account whose **only** reason is its burst cap: the one with the lowest
+`h`, then `w`, before a lane would wait or go to a protected account. It never passes a drain
+capacity, a weekly or 5-hour limit or the landing guard, never picks a protected account and has
+no rate limit. The lease is marked
 urgent (in the ledger and on the hub) and stderr names the cap it passed.
 
 *When an account frees up* (`free_at`, and `next_free` = the earliest): the latest of: when
@@ -1188,7 +1265,9 @@ the burst cap is reached, the oldest lease in the window plus 60 minutes; when `
 limit, the 5-hour reset (or 5 hours from now when unknown); a protected account at or over
 `T` (or its reserve level at or over `T`), the weekly reset; a protected account over its
 pace line, the time the line reaches `w`; an aggressive account at its weekly limit, the
-weekly reset. A stale account or one with an unknown level frees up at no known time.
+weekly reset; a draining account with no capacity, the earliest of the end its oldest running lane
+is expected at and (when its 5-hour window limits it) 15 minutes before its 5-hour reset. A stale
+account or one with an unknown level frees up at no known time.
 
 #### Calibration
 
@@ -1355,12 +1434,13 @@ single write and flushed to disk (`fsync`, and the folder when a day file is cre
 the next. Lines:
 
 - `{"v": 1, "op": "lease", "id", "at", "key", "account", "org", "folder", "label", "kind",
-  "session_id", "c5", "cf", "model", "strategy", "urgent", "batch"}`: `id` a ULID, `at` the
+  "session_id", "c5", "cf", "model", "strategy", "urgent", "batch", "drain", "finish_by"}`: `id` a ULID, `at` the
   pick time (RFC 3339 UTC), `key` the seat key, `kind` `aggressive` or `protected`,
   `session_id` from `--session-id` (absent without it), `c5` and `cf` the lane charge and full
   cost in 5-hour points, `model` from `--model` (absent without it), `strategy` the strategy
   that picked, `urgent` true when `--urgent` passed a burst cap, `batch` the id shared by the
-  picks of one call.
+  picks of one call, `drain` true and `finish_by` (RFC 3339 UTC) for a drain pick (both absent
+  otherwise).
 - `{"v": 1, "op": "launched", "at", "session_id"}`: written by `wy hook` on `SessionStart`.
 - `{"v": 1, "op": "ended", "at", "session_id"}`: written by `wy hook` on `SessionEnd`.
 
@@ -1518,13 +1598,15 @@ Unknown fields are reported by `wy doctor` as unknown keys.
 #### Flags, output and exit codes
 
 `wy account next [--strategy <s>] [--model <m>] [--n <K>] [--session-id <uuid>]...
-[--urgent] [--env | --json | --explain] [--no-reserve] [--no-hub] [--exec [-- <cmd>
+[--urgent] [--expect <duration>] [--env | --json | --explain] [--no-reserve] [--no-hub] [--exec [-- <cmd>
 [args...]]]`
 
 - `--n K` (1 to 50): picks for K sessions. Default: the number of `--session-id` values, else 1.
 - `--session-id <uuid>`, repeatable: the id each session will get (`claude --session-id`),
   in pick order; given at all, there must be exactly K. Each must be a UUID (exit 2).
 - `--urgent`: above.
+- `--expect <duration>` (lanes; e.g. `3h`): how long the caller expects the session to run. A
+  drain uses it for the spill check and the new lane's burn (Drain).
 - `--env` and `--exec` need K = 1 (exit 2). With `--exec` and `--session-id`, a `claude`
   command that has no `--session-id`, `--resume`, `-r`, `--continue` or `-c` argument gets
   `--session-id <uuid>` added, so the lease is marked launched.
@@ -1534,9 +1616,12 @@ Unknown fields are reported by `wy doctor` as unknown keys.
 - Default: one line per pick, `<label>  <folder>  (<reason>)`. For `lanes`, e.g.
   `claude-3  ~/.claude-3  (aggressive; 7d 23%, resets Wed 10:00; 5h 12%; 2 leases in 60 min)`:
   the kind, the weekly and 5-hour levels the pick was judged on, `unknown` for a weekly level
-  with no reading, `expiring` for an account taking the expiring turn, `urgent` for a pick
+  with no reading, `urgent` for a pick
   past its burst cap, `local data` or `no usage data`, `data <age> old` when the newest reading
-  is over 60 minutes old, and `session <uuid>` when given. For the projection strategies, e.g.
+  is over 60 minutes old, and `session <uuid>` when given. A drain pick says instead, e.g.
+  `claude-2  ~/.claude-2  (aggressive; drain: 9% of week left, resets 09:30, finish by 09:20; 5h
+  50%; 2 of 5 drain lanes running)` (its measured levels; lanes running now and with its capacity;
+  `runs past reset` for a spill lane). For the projection strategies, e.g.
   `claude-3  ~/.claude-3  (7d 23% → ~41% at reset Wed 10:00; 5h fresh; aggressive)`: the
   weekly windows (`n` → `R` at the reset), the five-hour windows (`fresh` under 1 %),
   `unknown` for a window with no reading, a mode other than normal, `+N reserved`, `local data`
@@ -1547,8 +1632,8 @@ Unknown fields are reported by `wy doctor` as unknown keys.
   `~/.claude/.claude.json`, which may be another login: identity.md 3). For
   `env $(wy account next --env) claude`; a folder with spaces needs `--exec`.
 - `--json`: `{"v": 1, "time", "strategy", "model", "data": "hub"|"local", "hub_error",
-  "reserved", "picked": {"label", "folder", "dir", "env", "reason", "session_id", "urgent"} |
-  null, "picks": [<as picked>...], "waiting", "next_free", "skipped_ledger_lines",
+  "reserved", "picked": {"label", "folder", "dir", "env", "reason", "session_id", "urgent",
+  "drain", "finish_by", "weekly_reset", "spill", "why", "hint"} | null, "picks": [<as picked>...], "waiting", "next_free", "skipped_ledger_lines",
   "accounts": [...], "warnings"}`. `picked` is the first pick, `picks` every pick in order,
   `waiting` the number of the K sessions not placed. Each account has `label`, `folder`,
   `dir`, `default_view`, `seat`, `email`, `seat_matched_by`, `logged_in`, `eligible`,
@@ -1564,11 +1649,22 @@ Unknown fields are reported by `wy doctor` as unknown keys.
   "hours_to_reset", "reading_at", "reading_age_min", "five_hour_resets_at", "meter_5h_pct",
   "meter_7d_pct", "unexplained_5h_pct", "leases", "burst", "burst_cap", "capped",
   "last_lease", "expiring", "stale", "unknown": [...], "skip_level", "weekly_cap",
-  "five_hour_cap", "calibration", "lease_charges": [...]}`
+  "five_hour_cap", "calibration", "lease_charges": [...], "class", "drain"}`
   (`leases` = active leases, `burst` = leases in the last 60 minutes, `meter_*` the token
   meter's points with its margins, `skip_level` 0 for a burst cap only, 1 stale, 2 a protected
   rule, 3 a hard limit; `weekly_cap` and `five_hour_cap` the levels at which it takes no new
-  session now, as in record.md 4.11). `lease_charges` lists the account's leases younger than 5 hours and
+  session now, as in record.md 4.11; `class` one of `drain`, `at_risk`, `aggressive`, `unknown`,
+  `protected`, and `expiring` true for `drain` (kept for one release); `drain` `{"on", "room_pct",
+  "room_pts", "need_hours", "horizon_hours", "capacity", "capacity_weekly", "capacity_5h",
+  "limited_by": "weekly"|"5h"|"spill"|"stale"|"landing", "running", "forward_burn_pts",
+  "projected_at_reset_pct", "unavoidable_waste_pct", "finish_by"}`, Drain: the capacities,
+  projection and `finish_by` null when not draining, `capacity_5h` null when the 5-hour window
+  does not limit it). A drain pick has `drain` true, `finish_by` and `weekly_reset`, `spill`,
+  `why` ("drain: 9.3% of the week resets in 8.3 h and would expire unused") and `hint`, the
+  one-line instruction for the agent: "Weekly room on claude-2 ends at 09:30 (finish by 09:20):
+  plan work to finish or checkpoint by then; if you hit a usage limit before that, stop and
+  start a new session with `wy account next` instead of waiting."; any other pick has `drain`
+  false and `finish_by` and `weekly_reset` null. `lease_charges` lists the account's leases younger than 5 hours and
   older ones that still keep a weekly charge, oldest first: `{"at", "machine": "this"|"other",
   "session_id" (this machine's leases only), "copy" (true: from the kept copy), "launched",
   "state": "active"|"settled"|"ended"|"expired", "burned_from": "local"|"hub"|"none",
@@ -1596,11 +1692,15 @@ Unknown fields are reported by `wy doctor` as unknown keys.
   weights, the margins and the unexplained rate; then one line per lease of `lease_charges`:
   account, pick time, this or another machine (and the kept copy), state, the burned units,
   where they came from (`local`, `hub` or `none`) and `b`, and the lease's 5-hour charge, reserve
-  and kept weekly charge. For the projection strategies: 5 h
+  and kept weekly charge; and per draining account a line "Drain claude-2: room 9.3% (71 pts), need
+  3.6 h at full 5h speed, horizon 24 h; capacity 3 (weekly 6, 5h 3); 2 running, burn 12 pts before
+  reset; projected 96% at reset; unavoidable waste 0.0%; finish by 09:20". For the projection strategies: 5 h
   now→end/cap, 7 d now→reset/cap, other windows, data source and age, why.
 - `--exec [-- <cmd> [args...]]`: runs `<cmd>` (default `claude`) found on `PATH` with the
   pick's `CLAUDE_CONFIG_DIR` (unset for the default view of `~/.claude`), replacing `wy` (on
-  Windows, waiting for it and exiting with its code). It prints the pick line on stderr first.
+  Windows, waiting for it and exiting with its code). It prints the pick line on stderr first. A
+  drain pick also sets `WY_FINISH_BY` and `WY_ACCOUNT_RESET` (RFC 3339 UTC) for the command and
+  prints the `hint` line on stderr; any other pick sets neither (an inherited one is removed).
   It is an explicit action of the caller.
 - `--no-hub`: local data only.
 
