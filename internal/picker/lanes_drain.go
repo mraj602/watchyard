@@ -35,6 +35,7 @@ const (
 type LaneStats struct {
 	Cost  float64
 	Mean  float64 // the mean lane cost (0: Cost)
+	Tail  float64 // the p95 lane cost (0 or under Cost: Cost)
 	Len   time.Duration
 	N     int    // lanes the cost was measured on (0: fallback)
 	NLen  int    // lanes the length was measured on
@@ -50,7 +51,7 @@ type DrainInfo struct {
 	HorizonH    float64 // drain entry horizon: max(floor, slack × need) (protected: 1 × need)
 	Capacity    int     // new lanes the room absorbs now (C)
 	CapWeekly   int
-	Cap5h       int // -1: not limiting (the 5-hour window resets within FreshSoon or has not started)
+	Cap5h       int // -1: not limiting (no 5-hour window open)
 	LimitedBy   string
 	Running     int     // lanes running on it (active, settled and unlaunched leases)
 	ForwardBurn float64 // 5-hour points the running lanes are expected to burn before finish_by
@@ -114,6 +115,15 @@ func (a drainKey) less(b drainKey) bool {
 // laneStats are the lane cost E (the p75, 5-hour points), the mean cost em, the length
 // (hours) and the new-lane burn rate r = em / length. Many lanes cost about their mean each;
 // the capacity adds the spread (E − em) once (setup.md 8.5, Drain).
+// laneTail is the p95 lane cost: one costly lane the 5-hour room must still hold.
+func (p LaneParams) laneTail(st LaneStats) float64 {
+	e, _, _, _ := p.laneStats(st)
+	if st.Tail > e {
+		return st.Tail
+	}
+	return e // unmeasured: the fallback E is already a costly lane
+}
+
 func (p LaneParams) laneStats(st LaneStats) (e, em, lmed, r float64) {
 	e = p.LaneCost
 	if st.Cost > 0 {
@@ -143,6 +153,7 @@ type runLane struct {
 	age, rate, rem float64 // hours, 5-hour points per hour, hours
 	spill          bool
 	since          bool // picked after the reading
+	measured       bool // rate is the lane's measured burn
 }
 
 // past is what the lanes nothing measures (no local session, no hub burn) used since the
@@ -188,8 +199,9 @@ func (p LaneParams) runningLanes(acc LaneAccount, c cleanSample, leases []LaneLe
 			continue
 		}
 		ah := age.Hours()
-		rate := r
+		rate, measured := r, false
 		if L.Seen && L.RecentOK && age >= 5*time.Minute {
+			measured = true
 			win := math.Min(ah, bw.Hours())
 			rate = math.Max(0, L.Recent) * f5 / win
 		}
@@ -198,13 +210,20 @@ func (p LaneParams) runningLanes(acc LaneAccount, c cleanSample, leases []LaneLe
 			rem = math.Max(rem, L.Expect.Hours()-ah)
 		}
 		rem = math.Min(rem, p.LeaseTTL.Hours()-ah)
-		out = append(out, runLane{age: ah, rate: mult * rate, rem: rem, since: L.T0.After(c.ts),
+		out = append(out, runLane{age: ah, rate: mult * rate, rem: rem, since: L.T0.After(c.ts), measured: measured,
 			spill: L.Spill || rem > finishH})
 	}
 	return out, past
 }
 
 // forward is the 5-hour points the running lanes burn in the next t hours.
+// fitLanes is the most new lanes k, each costing n on average, that fit in room with the spread
+// (E − Ē) kept once, or, for the 5-hour window, tail (one costly lane over the mean) if larger:
+// k × n + max(spread, tail) ≤ room. Negative when even the room alone is short.
+func fitLanes(room, n, spread, tail float64) int {
+	return int(math.Floor((room - math.Max(spread, tail)) / n))
+}
+
 func forward(rs []runLane, t float64) float64 {
 	if t <= 0 {
 		return 0
@@ -299,19 +318,27 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 		d.Deficit = int(math.Ceil(R5/(r*hRem))) - d.Running
 	}
 
-	cw := int(math.Floor((R5 - F - spread) / n1))
+	cw := fitLanes(R5-F, n1, spread, 0)
 	if cw <= 0 && R5-F >= 0.5*n1 && d.Running == 0 {
 		cw = 1 // the end game: one last lane uses the tiny room; the margin keeps it under the limit
 	}
 	if cw < 0 {
 		cw = 0
 	}
-	soon := !fiveOpen || v.fiveRst.Sub(now) <= p.FreshSoon
+	// The 5-hour window limits what burns before it resets. A window resetting within FreshSoon
+	// still bounds those last minutes (a lane burns r per hour until then), but the backstop
+	// does not apply to it.
+	soon := fiveOpen && v.fiveRst.Sub(now) <= p.FreshSoon
 	c5 := -1
-	if !soon {
+	if fiveOpen {
 		t5p := math.Min(t5, H)
 		n15 := math.Max(math.Min(em, r*t5p), 1e-6)
-		c5 = int(math.Floor((A0 - past - forward(rs, t5p) - spread) / n15))
+		sp5 := spread
+		if soon {
+			sp5 = math.Min(spread, r*t5p)
+		}
+		tail := math.Max(0, math.Min(p.laneTail(in.Stats), r*t5p)-n15)
+		c5 = fitLanes(A0-p.DrainMargin5h-past-forward(rs, t5p), n15, sp5, tail)
 		if c5 < 0 {
 			c5 = 0
 		}
@@ -319,7 +346,7 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 		if acc.Protected {
 			bs = math.Min(bs, lim5)
 		}
-		if v.hM >= bs {
+		if v.hM >= bs && !soon {
 			c5 = 0
 		}
 	}
@@ -368,7 +395,7 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 			C, by = 1, LimitStale
 		}
 	}
-	if p.LandMax > 0 && v.wM+e/rho > p.LandMax && C > 0 {
+	if p.LandMax > 0 && v.wM+p.laneTail(in.Stats)/rho > p.LandMax && C > 0 {
 		C, by = 0, LimitLanding
 	}
 	d.Capacity, d.LimitedBy = C, by
@@ -380,6 +407,9 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	case Limit5h:
 		if fiveOpen {
 			t := v.fiveRst.Add(-p.FreshSoon)
+			if !t.After(now) {
+				t = v.fiveRst
+			}
 			d.FreeAt = &t
 			d.waitShort = true
 			d.Why = "drain: 5h full until " + v.fiveRst.Local().Format("15:04")
@@ -389,7 +419,7 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	case LimitStale:
 		d.Why = "drain: reading is stale; one drain lane per fresh reading"
 	case LimitLanding:
-		d.Why = fmt.Sprintf("drain: one lane (%s points) would land over %s%%", f0(e), f0(p.LandMax))
+		d.Why = fmt.Sprintf("drain: one costly lane (%s points) would land over %s%%", f0(p.laneTail(in.Stats)), f0(p.LandMax))
 		t := d.Reset
 		d.FreeAt = &t
 	default:

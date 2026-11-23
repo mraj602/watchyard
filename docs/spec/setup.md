@@ -1049,15 +1049,16 @@ own readings and token use and moves from the value shown (its fallback) to the 
 | drain slack | 2 (protected 1, no floor) | ... or when the hours to its reset are at most this times `need` (Drain). |
 | drain minimum room | 0.5 | Weekly points of room under which an account never drains. |
 | drain margin `M` | 1 (2 stale or hub down) | Weekly points a drain keeps under the limit: it aims at 97. |
+| drain 5-hour margin | 2 | 5-hour points a drain's 5-hour capacity keeps under the limit: it aims at 96 (many small lanes together cost more than their mean now and then). |
 | guard | 10 min | `finish_by` = the weekly reset − guard; no drain closer to the reset than this. |
 | at risk | slack 4 | An aggressive account not draining whose reset is within 4 × `need` goes before the other aggressive ones (ordering only). |
-| lane cost `E`, mean | 8 | *Measured.* The p75 and the mean of a finished lane's 5-hour points (Drain, Lane statistics). |
+| lane cost `E`, mean, tail | 8 | *Measured.* The p75, the mean and the p95 (`E95`, the tail; `E` when unmeasured) of a finished lane's 5-hour points (Drain, Lane statistics). |
 | lane length | 15 min | *Measured.* The median lane length. |
 | burn window | 15 min | A running lane's burn rate is measured over this. |
-| fresh soon | 15 min | A 5-hour window resetting this soon does not limit a drain. |
+| fresh soon | 15 min | A 5-hour window resetting this soon still bounds what lanes burn before it resets, but the 5-hour backstop does not apply to it. |
 | 5-hour backstop | 95 | No new drain lane at a measured 5-hour level at or over this, unless the window resets within fresh soon. |
 | spill max | 2 | Lanes per account that may run past its weekly reset. |
-| landing guard | 99 | No aggressive lane when `w + E/ρ` is over this. |
+| landing guard | 99 | No aggressive lane when `w + E95/ρ` is over this. |
 | short wait | 15 min | Rather than use a protected account, wait for an aggressive one whose 5-hour window frees this soon. |
 | hub-down factor | 0.5 | Drain capacities times this when the hub could not be read. |
 | web gap | 15 min | Age of the newest reading after which claude.ai use the meter cannot see is added. |
@@ -1151,8 +1152,11 @@ hub read, and a lease it lists as not launched is dropped 10 minutes after its p
 *Eligibility*, after the rules every strategy applies first (logged in on this machine, not
 signed out on the hub, not `exclude`d, inside its `hours` and `days`):
 
-- **aggressive**: not when `w ≥ 98` or `h ≥ 98`, or when one lane's expected cost alone would take it
-  over the landing guard (`w + E/ρ > 99`). An unknown weekly level does not exclude it: it is
+- **aggressive**: not when `w ≥ 98` or `h ≥ 98`, or when one costly lane alone would take it
+  over the landing guard (`w + E95/ρ > 99`), or, with a 5-hour window open, when the measured `h`
+  plus the past use and what its running lanes will still burn in the window (`F(t5)`, *Drain*,
+  except that a lane nothing measures is taken to run to the median length, without the
+  `rem ≥ age` rule) plus one costly lane (`min(E95, r × t5)`) would pass 98. An unknown weekly level does not exclude it: it is
   ranked after every known aggressive account and before every protected one. A stale aggressive
   account keeps its estimate (accounts used only by `claude -p` never send readings).
 - **protected**: not when `w ≥ min(T, T × (1 − hours_to_reset / 168) + 10)` (the pace line),
@@ -1185,8 +1189,8 @@ classes go first to last:
 5. **Unknown**: aggressive accounts with an unknown weekly level (owner: before protected).
 6. **Protected**, only when no aggressive account has room: every aggressive account is at a hard
    limit, at drain capacity, behind the landing guard, or excluded. When an aggressive account is
-   blocked only by its burst cap, or its 5-hour window frees it within 15 minutes, the lane waits
-   instead (exit 4 with `next_free`).
+   blocked only by its burst cap, or its 5-hour window (its level, or its running lanes' 5-hour
+   burn) frees it within 15 minutes, the lane waits instead (exit 4 with `next_free`).
 
 A draining account with no capacity is skipped and does not fall into a later class.
 
@@ -1220,10 +1224,10 @@ account out of the drain; they only limit how many more it takes).
   account in drain may use its room up to 98 − M (not its target or pace line), with its 5-hour
   floor kept.
 - *Lane statistics.* From the leases read (this machine's ledger, 8 days; other machines' leases
-  with a hub burn): `E` the p75 and `Ē` the mean of the 5-hour points (`f ×` units) of lanes that
+  with a hub burn): `E` the p75, `Ē` the mean and `E95` the p95 of the 5-hour points (`f ×` units) of lanes that
   ended or are 5 hours old, and `L` the median length of this machine's ended lanes (launched to
   ended); with `--model`, that model's own lanes when there are at least 10. Fewer than 10:
-  the fallbacks 8 points and 15 minutes. A new lane burns `r = Ē / L` points per hour.
+  the fallbacks 8 points (all three) and 15 minutes. A new lane burns `r = Ē / L` points per hour.
 - *Forward burn* of the running lanes before a time `T`: `F(T) = Σ rate × min(rem, T)` over the
   account's leases that are not ended and younger than 5 hours (settled and not yet launched ones
   included), where `rate` = the units the session used in the last 15 minutes `× f` per hour when
@@ -1235,9 +1239,10 @@ account out of the drain; they only limit how many more it takes).
   `F` (it replaces the fixed weekly charge kept for unseen lanes).
 - *Capacity* (new lanes the room absorbs now): with `N1 = min(Ē, r × (H − guard))`, weekly `Cw =
   ⌊(R5 − F(H − guard) − (E − Ē)) / N1⌋`; with `t5' = min(t5, H)` and `N1₅ = min(Ē, r × t5')`, 5-hour
-  `C5 = ⌊(A0 − F(t5') − (E − Ē)) / N1₅⌋`, not counted when the 5-hour window resets within 15
-  minutes or none is open, and 0 at a measured `h ≥ 95` (the backstop) otherwise, or at `h ≥ 98`
-  always. Many lanes cost about `Ē` each; the spread `E − Ē` is kept once. *End game*: `Cw = 0`,
+  `C5 = ⌊(A0 − 2 − F(t5') − max(E − Ē, min(E95, r × t5') − N1₅)) / N1₅⌋` (2: the drain 5-hour margin; the 5-hour room also holds one costly lane), not counted when no window is open, and 0 at a measured
+  `h ≥ 95` (the backstop) unless the window resets within 15 minutes, or at `h ≥ 98` always. A window
+  that resets within 15 minutes still counts for its last minutes (`N1₅ = r × t5'` is small), and
+  the spread kept is at most `r × t5'`; such an account is free at the window's reset. Many lanes cost about `Ē` each; the spread `E − Ē` is kept once. *End game*: `Cw = 0`,
   `R5 − F ≥ N1 / 2` and no lane running gives `Cw = 1`. With the hub down both are halved (rounded up) and this
   machine's lanes of the last 60 minutes count twice in `F` (another machine may be draining the
   same room as fast), so a batch places about half. `C = min(Cw, C5)`; then *spill*: a new lane is a spill lane when
@@ -1270,8 +1275,10 @@ the burst cap is reached, the oldest lease in the window plus 60 minutes; when `
 limit, the 5-hour reset (or 5 hours from now when unknown); a protected account at or over
 `T` (or its reserve level at or over `T`), the weekly reset; a protected account over its
 pace line, the time the line reaches `w`; an aggressive account at its weekly limit, the
-weekly reset; a draining account with no capacity, the earliest of the end its oldest running lane
-is expected at and (when its 5-hour window limits it) 15 minutes before its 5-hour reset. A stale
+weekly reset; an aggressive account held by its running lanes' 5-hour burn, the expected end of
+its first running lane to finish, at the latest the 5-hour reset; a draining account with no
+capacity, the earliest of the end its oldest running lane is expected at and (when its 5-hour
+window limits it) 15 minutes before its 5-hour reset, or the reset itself when that is sooner. A stale
 account or one with an unknown level frees up at no known time.
 
 #### Calibration

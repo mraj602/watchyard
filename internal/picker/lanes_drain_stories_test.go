@@ -142,9 +142,14 @@ func TestDrainOwnerStories(t *testing.T) {
 		{"night: X resets at 04:00 with 9% left and no demand; one lane comes", func() LaneInput {
 			return world(1, func(s map[string]LaneSample) { s[dX] = dsmp(89, 0, 8, 0) })
 		}, all(dX)},
-		{"X's 5h window resets in 5 minutes at 96%: drains now", func() LaneInput {
+		{"X's 5h window resets in 5 minutes at 96%: X takes what burns safely before the reset, the rest aggressive", func() LaneInput {
 			return world(3, func(s map[string]LaneSample) { s[dX] = dsmp(80, 96, 6, 5.0/60) })
-		}, all(dX)},
+		}, both(noProt, func(r LaneResult) string {
+			if countOf(r, dX) == 3 || len(r.Picks) != 3 {
+				return fmt.Sprintf("X takes at most what fits (2 points left after the margin), the rest go to aggressive accounts: %v", picksOf(r))
+			}
+			return ""
+		})},
 		{"X's 5h at 96% for two more hours: others take the lanes, not protected", func() LaneInput {
 			return world(3, func(s map[string]LaneSample) { s[dX] = dsmp(80, 96, 6, 2) })
 		}, both(none(dX), noProt)},

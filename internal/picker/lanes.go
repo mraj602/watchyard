@@ -69,6 +69,7 @@ type LaneParams struct {
 	RiskSlack      float64       // at risk (ordering only): hours to reset <= RiskSlack × need
 	Guard          time.Duration // finish_by = weekly reset − Guard; no drain closer to the reset
 	DrainMargin    float64       // weekly points kept under the limit (doubled when stale or hub down)
+	DrainMargin5h  float64       // 5-hour points kept under the 5-hour limit by a drain's capacity
 	LaneCost       float64       // E fallback: a lane's first-5h cost, 5-hour points
 	LaneLen        time.Duration // Lmed fallback: the median lane length
 	BurnWindow     time.Duration // a running lane's burn rate is measured over this
@@ -88,7 +89,7 @@ var DefaultLaneParams = LaneParams{
 	LeaseTTL: 5 * time.Hour, Settle: 10 * time.Minute, StaleGuard: time.Hour, StaleLease: 6 * time.Hour,
 	Unlaunched:   10 * time.Minute,
 	DrainMinRoom: 0.5, DrainFloorH: 24, DrainSlack: 2, ProtDrainSlack: 1, RiskSlack: 4, Guard: 10 * time.Minute,
-	DrainMargin: 1, LaneCost: 8, LaneLen: 15 * time.Minute, BurnWindow: 15 * time.Minute, FreshSoon: 15 * time.Minute,
+	DrainMargin: 1, DrainMargin5h: 2, LaneCost: 8, LaneLen: 15 * time.Minute, BurnWindow: 15 * time.Minute, FreshSoon: 15 * time.Minute,
 	Backstop5h: 95, SpillMax: 2, LandMax: 99, ShortWait: 15 * time.Minute, HubDownFactor: 0.5,
 }
 
@@ -276,6 +277,7 @@ type LaneInput struct {
 
 // LaneRow is one account in the ranking of the first pick.
 type LaneRow struct {
+	fwd5         bool // held by its running lanes' 5-hour burn (counts for the short wait)
 	Key          string
 	Protected    bool
 	Score        float64
@@ -780,6 +782,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 			key := laneKey{group: 1, last: ll, hrs: 0, ord: acc.Ord}
 			var expiring bool
 			var d DrainInfo
+			var fwdFree *time.Time
 			class := ""
 			dk := drainKey{last: ll, n: v.capN, hrs: v.hrs, ord: acc.Ord}
 			switch p.Order {
@@ -812,10 +815,35 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 					class, dk.group = ClassAggressive, 3
 				}
 				if !d.On && !prot && (!skip || level == 0) && len(v.unknown) == 0 && p.LandMax > 0 {
-					e, _, _, _ := p.laneStats(in.Stats)
-					if v.w+e/p.account(acc).ratio() > p.LandMax {
-						skip, why, level = true, fmt.Sprintf("7d %s%%: one lane (%s points) would land over %s%%", f0(v.w), f0(e), f0(p.LandMax)), 3
+					_, _, lmed, r := p.laneStats(in.Stats)
+					if tl := p.laneTail(in.Stats); v.w+tl/p.account(acc).ratio() > p.LandMax {
+						skip, why, level = true, fmt.Sprintf("7d %s%%: one costly lane (%s points) would land over %s%%", f0(v.w), f0(tl), f0(p.LandMax)), 3
 						capped = false // a hard limit: --urgent may not pass it
+					} else if !v.fiveRst.IsZero() && v.fiveRst.After(now) {
+						// The 5-hour window: what the running lanes will still burn in it (the drain
+						// model's forward burn) plus one more lane must stay under the limit.
+						_, lim5 := p.limits(acc)
+						t5 := v.fiveRst.Sub(now).Hours()
+						// A lane nothing measures is taken as a median lane (no Lindy rule: an old
+						// lease with no burn data is more likely over than running).
+						rs, past := p.runningLanes(acc, clean[i], leases, now, r, lmed, t5, false)
+						for j := range rs {
+							if !rs[j].measured {
+								rs[j].rem = math.Max(lmed-rs[j].age, 10.0/60)
+							}
+						}
+						if f := v.hM + past + forward(rs, t5); f+math.Min(p.laneTail(in.Stats), r*t5) > lim5 {
+							skip, why, level = true, fmt.Sprintf("5h %s%%: running lanes will burn %s more, one more lane would land over %s%%", f0(v.hM), f0(f-v.hM), f0(lim5)), 3
+							capped = false
+							// Free when the first running lane is expected to end, at the latest at the reset.
+							t := v.fiveRst
+							for _, x := range rs {
+								if e := now.Add(hoursDur(x.rem)); e.Before(t) {
+									t = e
+								}
+							}
+							fwdFree = &t
+						}
 					}
 				}
 			case OrderFill:
@@ -844,7 +872,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 				Reserve: v.wRes, HoursToReset: v.hrs, Leases: v.leaseN, Burst: v.capN, BurstCap: cp, Capped: capped,
 				Added5: v.add5, Meter5: v.m5, Meter7: v.m7, Margin5: v.g5, Margin7: v.g7, WeeklyCap: cap7, FiveHourCap: cap5, SampleAgeMin: v.ageMin, FiveReset: v.fiveRst,
 				Stale: v.stale, Unknown: v.unknown, SkipLevel: level, Last: last, Expiring: expiring && !skip,
-				LeaseCharges: v.charges, Class: class, Drain: d}
+				LeaseCharges: v.charges, Class: class, Drain: d, fwd5: fwdFree != nil}
 			if !v.noTS {
 				row.SampleAt = v.ts
 			}
@@ -856,6 +884,9 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 					row.ETA = d.FreeAt
 				} else {
 					row.ETA = laneETA(acc, v, p, now, leases)
+					if fwdFree != nil && row.ETA != nil && fwdFree.After(*row.ETA) {
+						row.ETA = fwdFree
+					}
 				}
 			}
 			table = append(table, row)
@@ -977,7 +1008,7 @@ func drainPick(table []LaneRow, groups []int, urgent bool, now time.Time, p Lane
 		if r.SkipLevel == 0 && r.Capped {
 			return -1 // room behind a burst cap: wait (owner Q1)
 		}
-		short := r.Drain.waitShort || (r.Class != ClassDrain && r.FiveHour >= r.FiveHourCap)
+		short := r.Drain.waitShort || r.fwd5 || (r.Class != ClassDrain && r.FiveHour >= r.FiveHourCap)
 		if short && r.ETA != nil && !r.ETA.After(now.Add(p.ShortWait)) {
 			return -1
 		}

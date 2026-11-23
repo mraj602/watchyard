@@ -338,3 +338,83 @@ func TestAccountNextCalibration(t *testing.T) {
 		t.Fatalf("explain:\n%s", r.out)
 	}
 }
+
+// drainSeat is an aggressive seat at weekly 80% whose week resets in 6 hours: it drains.
+func drainSeat() map[string]any {
+	s := seat("seat_2", "a2", "o2", "two@example.test", "", 10, 80)
+	s["windows"].([]map[string]any)[1]["resets_at"] = nextNow.Add(6 * time.Hour).Format(time.RFC3339)
+	return s
+}
+
+// A drain pick carries drain, finish_by (the weekly reset − 10 minutes) and weekly_reset in
+// --json; --exec passes WY_FINISH_BY and WY_ACCOUNT_RESET (RFC 3339 UTC) for it, and nothing
+// for a pick that is not a drain pick (owner Q4).
+func TestAccountNextLanesDrain(t *testing.T) {
+	f := newNextFixture(t)
+	f.seats = []map[string]any{seat("seat_1", "a1", "o1", "one@example.test", "", 10, 30), drainSeat()}
+	r := f.run("--json", "--no-reserve", "--n", "3")
+	var d struct {
+		Picks []struct {
+			Folder      string     `json:"folder"`
+			Drain       bool       `json:"drain"`
+			FinishBy    *time.Time `json:"finish_by"`
+			WeeklyReset *time.Time `json:"weekly_reset"`
+		} `json:"picks"`
+		Accounts []struct {
+			Folder string `json:"folder"`
+			Lanes  *struct {
+				Class string `json:"class"`
+				Drain *struct {
+					Capacity int `json:"capacity"`
+				} `json:"drain"`
+			} `json:"lanes"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal([]byte(r.out), &d); err != nil || r.code != 0 || len(d.Picks) != 3 {
+		t.Fatalf("code %d err %v out %s", r.code, err, r.out)
+	}
+	reset, finish := nextNow.Add(6*time.Hour), nextNow.Add(6*time.Hour-10*time.Minute)
+	for _, p := range d.Picks {
+		if !p.Drain || p.FinishBy == nil || !p.FinishBy.Equal(finish) || p.WeeklyReset == nil || !p.WeeklyReset.Equal(reset) ||
+			!strings.HasSuffix(p.Folder, ".claude-2") {
+			t.Errorf("pick %+v: every lane to the draining account, finish_by %s", p, finish)
+		}
+	}
+	found := false
+	for _, a := range d.Accounts {
+		if strings.HasSuffix(a.Folder, ".claude-2") {
+			found = a.Lanes != nil && a.Lanes.Class == "drain" && a.Lanes.Drain != nil && a.Lanes.Drain.Capacity >= 3
+		}
+	}
+	if !found {
+		t.Errorf("accounts: no drain row for .claude-2:\n%s", r.out)
+	}
+	r = f.run("--exec", "--", "claude")
+	var env []string
+	for _, kv := range r.env {
+		if strings.HasPrefix(kv, "WY_") {
+			env = append(env, kv)
+		}
+	}
+	want := []string{"WY_FINISH_BY=" + finish.Format(time.RFC3339), "WY_ACCOUNT_RESET=" + reset.Format(time.RFC3339)}
+	if r.code != 0 || strings.Join(env, " ") != strings.Join(want, " ") || !strings.Contains(r.errOut, "finish") {
+		t.Errorf("drain exec: code %d env %v err %q", r.code, env, r.errOut)
+	}
+	// Not a drain pick: no WY_ variables.
+	f.seats = []map[string]any{seat("seat_1", "a1", "o1", "one@example.test", "", 10, 30)}
+	r = f.run("--exec", "--", "claude")
+	for _, kv := range r.env {
+		if strings.HasPrefix(kv, "WY_") {
+			t.Errorf("non-drain exec got %s", kv)
+		}
+	}
+	// --expect: lanes only, not negative.
+	for _, args := range [][]string{{"--expect", "-1h"}, {"--strategy", "smart", "--expect", "2h"}} {
+		if r := f.run(args...); r.code != 2 {
+			t.Errorf("%v: code %d", args, r.code)
+		}
+	}
+	if r := f.run("--no-reserve", "--expect", "3h"); r.code != 0 {
+		t.Errorf("--expect 3h: code %d err %q", r.code, r.errOut)
+	}
+}

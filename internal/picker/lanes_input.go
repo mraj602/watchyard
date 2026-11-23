@@ -928,7 +928,7 @@ func measureLanes(ledger []leases.Lease, local, remote []LaneLease, f5Of map[str
 		for _, c := range cs {
 			sum += c
 		}
-		st.Cost, st.Mean, st.N = quantile(cs, 0.75), sum/float64(len(cs)), len(cs)
+		st.Cost, st.Mean, st.Tail, st.N = quantile(cs, 0.75), sum/float64(len(cs)), quantile(cs, 0.95), len(cs)
 	}
 	if ls := pickOf(lens); len(ls) >= laneStatsMin {
 		sort.Float64s(ls)

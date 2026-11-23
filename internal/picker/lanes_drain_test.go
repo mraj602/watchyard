@@ -114,14 +114,15 @@ func TestDrainScenarios(t *testing.T) {
 			in.Leases = []LaneLease{dlease(dX, 18), dlease(dX, 18), dlease(dX, 18)}
 			r := rank(t, in)
 			// Unmeasured lanes 18 minutes old: their use since the reading (5 min at 32 pts/h) and
-			// their expected rest (18 min more) count: 3 × 12.3 = 37 of the 53 5-hour points left.
+			// their expected rest (18 min more) count: 3 × 12.3 = 37 of the 53 5-hour points left,
+			// less the 2-point 5-hour margin.
 			d := drainOf(t, r, dX)
-			if !d.On || d.Capacity != 2 || d.LimitedBy != Limit5h {
+			if !d.On || d.Capacity != 1 || d.LimitedBy != Limit5h {
 				t.Fatalf("drain %+v", d)
 			}
 			got := picksOf(r)
-			if len(got) != 6 || countOf(r, dX) != 2 || got[0] != dX || got[1] != dX || protPicks(r) != 0 {
-				t.Errorf("picks %v: X to its 5-hour capacity (2), the rest aggressive, never protected", got)
+			if len(got) != 6 || countOf(r, dX) != 1 || got[0] != dX || protPicks(r) != 0 {
+				t.Errorf("picks %v: X to its 5-hour capacity (1), the rest aggressive, never protected", got)
 			}
 			if !r.Picks[0].Drain || !r.Picks[0].FinishBy.Equal(hrs(9).Add(-10*time.Minute)) {
 				t.Errorf("finish_by %v", r.Picks[0].FinishBy)
@@ -220,11 +221,11 @@ func TestDrainScenarios(t *testing.T) {
 				t.Errorf("eta %v", row.ETA)
 			}
 		}},
-		{"S12 lease charges would demote X (h 68 measured, 92 charged): X stays first", func(t *testing.T) {
+		{"S12 lease charges would demote X (h 67 measured, 90 charged; its 3 lanes burn 2 pts/h): X stays first", func(t *testing.T) {
 			s := dworld()
-			s[dX] = dsmp(80, 66, 20, 4)
+			s[dX] = dsmp(80, 67, 20, 4)
 			in := laneIn(s, 1)
-			in.Leases = []LaneLease{dlease(dX, 2), dlease(dX, 2), dlease(dX, 2)}
+			in.Leases = []LaneLease{seenLease(dX, 6, 2), seenLease(dX, 6, 2), seenLease(dX, 6, 2)}
 			r := rank(t, in)
 			if r.Picks[0].Key != dX || rowOf(r, dX).FiveHour < 90 {
 				t.Errorf("pick %s, charged h %.1f", r.Picks[0].Key, rowOf(r, dX).FiveHour)
@@ -234,12 +235,21 @@ func TestDrainScenarios(t *testing.T) {
 				t.Errorf("the draft unexpectedly kept X first")
 			}
 		}},
-		{"S13 X h96, 5h resets in 9 min: the next window counts, X drains", func(t *testing.T) {
+		{"S13 X h96, 5h resets in 9 min: the last minutes still bound X (no backstop); free at the reset", func(t *testing.T) {
+			// The week simulator showed that ignoring a window that resets soon runs lanes into
+			// the 5-hour limit: a fresh lane burns r = 32 points an hour, 4.8 in 9 minutes, over
+			// the 2 points left.
 			s := dworld()
 			s[dX] = dsmp(80, 96, 6, 0.15)
 			r := rank(t, laneIn(s, 1))
-			if r.Picks[0].Key != dX || drainOf(t, r, dX).Cap5h != -1 {
-				t.Errorf("pick %s drain %+v", r.Picks[0].Key, drainOf(t, r, dX))
+			d := drainOf(t, r, dX)
+			rst := hrs(0.15)
+			if d.Cap5h != 0 || d.LimitedBy != Limit5h || d.FreeAt == nil || !d.FreeAt.Equal(rst) || protPicks(r) != 0 {
+				t.Errorf("pick %v drain %+v", picksOf(r), d)
+			}
+			s[dX] = dsmp(80, 90, 6, 0.15) // 8 points left: one lane fits, the backstop does not apply
+			if d := drainOf(t, rank(t, laneIn(s, 1)), dX); d.Cap5h != 1 {
+				t.Errorf("h90: drain %+v", d)
 			}
 		}},
 		{"S14 X h0 w85 H10: weekly capacity, no burst cap", func(t *testing.T) {
@@ -908,4 +918,34 @@ func toLedger(xs []leasesLease) []leases.Lease {
 			Launched: x.launched, Ended: x.ended})
 	}
 	return out
+}
+
+// Found by the week simulator: an aggressive account outside drain whose long running lanes will
+// still burn most of its 5-hour window is skipped before a new lane runs it into the limit, and
+// frees when its first running lane is expected to end.
+func TestLanesForward5h(t *testing.T) {
+	s := dworld()
+	s[dX] = dsmp(30, 60, 140, 3) // 3 hours left in the window
+	in := laneIn(s, 1)
+	// two long lanes, 2 hours old, each burning 8 points an hour: about 2 × 8 × 2 = 32 more
+	in.Leases = append(in.Leases, seenLease(dX, 120, 8), seenLease(dX, 120, 8))
+	r := rank(t, in)
+	row := rowOf(r, dX)
+	if !row.Skip || row.SkipLevel != 3 || !strings.Contains(row.Reason, "running lanes will burn") || countOf(r, dX) != 0 {
+		t.Fatalf("row %+v picks %v", row, picksOf(r))
+	}
+	if row.ETA == nil || !row.ETA.Equal(hrs(2)) {
+		t.Errorf("free at %v, want the lanes' expected end in 2 hours", row.ETA)
+	}
+	// One lane burning 8 an hour leaves room: X is eligible again.
+	in.Leases = in.Leases[:len(in.Leases)-1]
+	if row := rowOf(rank(t, in), dX); row.Skip {
+		t.Errorf("one lane: %+v", row)
+	}
+	// rr_exp has no such check.
+	in.Leases = append(in.Leases, seenLease(dX, 120, 8))
+	in.Params = ReferenceLaneParams
+	if row := rowOf(rank(t, in), dX); row.Skip {
+		t.Errorf("rr_exp skipped: %s", row.Reason)
+	}
 }

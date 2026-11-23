@@ -8,14 +8,23 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Changed
 
-- `wy account next` (lanes) orders accounts by how much unused weekly room is at risk:
-  aggressive accounts in their last 24 hours with room left first; then aggressive accounts that
-  could not use their room before the reset even running at full 5-hour speed (with 3x slack, on
-  each account's own 5-hour-to-weekly ratio); then the other aggressive accounts; protected
-  accounts only when no aggressive account has room. Accounts in the same group take turns. The
-  early groups need the 5-hour window under 90% (was 30% for the old 48-hour turn, which dropped
-  an account from the front as soon as it was busy). Before, one round robin over all eligible
-  accounts sent lanes to protected accounts while an account about to reset still had room.
+- `wy account next` (lanes) **drains** weekly room before it resets. An aggressive account whose
+  week resets within 24 hours, or within twice the time it needs to use its room at full 5-hour
+  speed, goes first and takes as many lanes as its room absorbs before the reset: the capacity
+  comes from the measured lane cost (p75 and mean) and length and from the burn of the lanes
+  already running, not from fixed per-lane charges, and the hourly cap does not apply. Drain picks
+  carry `drain`, `finish_by` (the reset − 10 minutes) and `weekly_reset` in `--json`, a "drain: …"
+  reason, and `WY_FINISH_BY` / `WY_ACCOUNT_RESET` in the `--exec` environment. A protected account
+  drains only when its room would expire even at full speed, after every aggressive drain
+  account. Outside drain: at-risk aggressive accounts, then the others in turn, then aggressive
+  accounts with an unknown weekly level, then protected ones. A batch blocked only by aggressive
+  hourly caps waits (exit 4) instead of using a protected account. On 2026-11-23 the old round
+  robin sent three of six lanes to protected accounts while claude-2 had 12% of its week left
+  hours before its reset; now all six go to claude-2.
+- `wy account next` (lanes) skips an aggressive account whose running lanes will still burn its
+  5-hour window to the limit, until the first of them is expected to end.
+- New `--expect <duration>` (lanes): how long the session is expected to run.
+- Leases record `drain` and `finish_by` in the ledger and in `account_lease` records.
 
 ## [1.3.1] - 2026-11-23
 
