@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -80,10 +81,13 @@ const nextAuthFresh = time.Minute
 
 func nextUsage(w io.Writer) {
 	fmt.Fprint(w, `usage: wy account next [--strategy lanes|smart|expiring|most-room|spread|fill|sticky] [--model <m>]
-                       [--n <K>] [--session-id <uuid>]... [--urgent] [--expect <duration>]
+                       [--n <K>] [--session-id <uuid>]... [--urgent] [--expect short|medium|long|<duration>]
+                       [--expect-minutes <N>] [--expect-tokens <N>]
                        [--env | --json | --explain] [--no-reserve] [--no-hub]
        wy account next [flags] --exec [-- <command> [args...]]     (default command: claude)
---n, --session-id and --urgent are for the lanes strategy (the default).
+--n, --session-id, --urgent and the --expect flags are for the lanes strategy (the default).
+--expect says how big each new session will be (short: under 25 min, medium: up to 2 h, long:
+over 2 h); a long session is kept off accounts whose week or 5-hour window resets first.
 Exit 0: every session asked for was placed. Exit 4: fewer were placed (none for one);
 launch only the printed picks. Exit 3: a --session-id is already leased or given twice.
 `)
@@ -126,7 +130,9 @@ func accountNext(e nextEnv, args []string) error {
 	doExec := fs.Bool("exec", false, "start the command after -- (default claude) with the pick's CLAUDE_CONFIG_DIR")
 	n := fs.Int("n", 0, "picks for this many sessions, 1 to 50 (default: the number of --session-id, else 1)")
 	urgent := fs.Bool("urgent", false, "lanes: may pass an aggressive account's burst cap when nothing else is free")
-	expect := fs.Duration("expect", 0, "lanes: how long the session is expected to run, e.g. 3h (drain: spill check)")
+	expect := fs.String("expect", "", "lanes: the session's expected size, short, medium or long, or its wall time, e.g. 3h")
+	expectMin := fs.Float64("expect-minutes", 0, "lanes: the session's expected wall time in minutes")
+	expectTok := fs.Float64("expect-tokens", 0, "lanes: the session's expected tokens (input + output + cache)")
 	var sids []string
 	fs.Func("session-id", "the session id (a UUID) each session will get, repeatable, in pick order", func(v string) error {
 		sids = append(sids, v)
@@ -173,8 +179,9 @@ func accountNext(e nextEnv, args []string) error {
 			return bad(fmt.Sprintf("--session-id %q is not a UUID", sid))
 		}
 	}
-	if *expect < 0 {
-		return bad("--expect must not be negative")
+	x, xerr := parseExpect(*expect, *expectMin, *expectTok)
+	if xerr != nil {
+		return bad(xerr.Error())
 	}
 	if k > 1 && (*envOut || *doExec) {
 		return bad("--env and --exec start one session: use them without --n or with --n 1")
@@ -198,7 +205,7 @@ func accountNext(e nextEnv, args []string) error {
 		strat = settings.Strategy
 	}
 	lanes := strat == config.NextStrategyLanes
-	if !lanes && (k > 1 || len(sids) > 0 || *urgent || *expect > 0) {
+	if !lanes && (k > 1 || len(sids) > 0 || *urgent || x != (picker.LaneExpect{})) {
 		return bad("--n above 1, --session-id, --urgent and --expect are for the lanes strategy (strategy is " + strat + ")")
 	}
 	now := e.now()
@@ -228,7 +235,10 @@ func accountNext(e nextEnv, args []string) error {
 	}
 	src.Local = ob.Samples
 	in := picker.Input{Now: now, Strategy: strat, Model: *model, Settings: settings, Candidates: picker.Candidates(slots, src),
-		Outbox: ob, N: k, SIDs: sids, Urgent: *urgent, Expect: *expect, HubDown: hubErr != ""}
+		Outbox: ob, N: k, SIDs: sids, Urgent: *urgent, Expect: x.Dur, HubDown: hubErr != ""}
+	if x != (picker.LaneExpect{}) {
+		in.Expects = []picker.LaneExpect{x}
+	}
 	// The seats' hub modes: kept after each hub read, used when the hub could not be read (a
 	// setting: no age limit; setup.md 8.5, Kind).
 	modesPath := filepath.Join(e.dirs.State.Path, "next", "modes.json")
@@ -356,6 +366,35 @@ func accountNext(e nextEnv, args []string) error {
 		return exitWith(exitNoAccount, nil)
 	}
 	return nil
+}
+
+// parseExpect reads --expect (a class or a wall time), --expect-minutes and --expect-tokens.
+func parseExpect(v string, minutes, tokens float64) (picker.LaneExpect, error) {
+	var x picker.LaneExpect
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+	case picker.ExpectShort, picker.ExpectMedium, picker.ExpectLong:
+		x.Class = strings.ToLower(strings.TrimSpace(v))
+	default:
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return x, fmt.Errorf("--expect %q: use short, medium, long or a wall time such as 90m", v)
+		}
+		x.Dur = d
+	}
+	switch {
+	case minutes < 0 || math.IsNaN(minutes) || math.IsInf(minutes, 0):
+		return x, errors.New("--expect-minutes must be a positive number")
+	case minutes > 0 && x.Dur > 0:
+		return x, errors.New("give the wall time once: --expect <duration> or --expect-minutes")
+	case minutes > 0:
+		x.Dur = time.Duration(minutes * float64(time.Minute))
+	}
+	if tokens < 0 || math.IsNaN(tokens) || math.IsInf(tokens, 0) {
+		return x, errors.New("--expect-tokens must be a positive number")
+	}
+	x.Tokens = tokens
+	return x, nil
 }
 
 // nextDuplicate reports a --session-id that is already leased or given twice (exit 3).

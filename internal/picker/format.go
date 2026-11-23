@@ -79,12 +79,16 @@ type Picked struct {
 	Spill       bool       `json:"spill"`
 	Why         string     `json:"why,omitempty"`
 	Hint        string     `json:"hint,omitempty"`
+	// Expect is the lane size class used (short, medium, long, measured); Over: placed past a
+	// soft limit (burst cap, protected gate, drain capacity) because no account was free under them.
+	Expect string `json:"expect,omitempty"`
+	Over   bool   `json:"over"`
 }
 
 // pickedOf is a pick in Doc.
 func pickedOf(p Pick) Picked {
 	x := Picked{Label: p.Label, Folder: p.Folder, Dir: p.Dir, Env: EnvArgs(p.Ranked), Reason: p.Reason,
-		SessionID: p.SessionID, Urgent: p.Urgent, Drain: p.Drain, Spill: p.Spill}
+		SessionID: p.SessionID, Urgent: p.Urgent, Drain: p.Drain, Spill: p.Spill, Expect: p.Expect, Over: p.Over}
 	if p.Drain {
 		fb, rs := p.FinishBy.UTC(), p.Reset.UTC()
 		x.FinishBy, x.WeeklyReset, x.Hint = &fb, &rs, p.Hint()

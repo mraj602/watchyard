@@ -169,17 +169,20 @@ func TestAccountNextLanesCapsAndUrgent(t *testing.T) {
 	f := newNextFixture(t)
 	f.seats = []map[string]any{seat("seat_1", "a1", "o1", "one@example.test", "", 10, 30),
 		seat("seat_2", "a2", "o2", "two@example.test", "", 10, 30)}
+	// No stalling (setup.md 8.5): past both burst caps (6 an hour each) the lanes still go to
+	// the aggressive accounts, marked over; nothing waits.
 	r := f.run("--n", "14")
 	lines := strings.Split(strings.TrimSpace(r.out), "\n")
-	if r.code != exitNoAccount || len(lines) != 12 || !strings.Contains(r.errOut, "12 of 14 sessions placed") {
-		t.Fatalf("code %d, %d lines, err %q", r.code, len(lines), r.errOut)
+	if r.code != 0 || len(lines) != 14 || strings.Contains(lines[11], "over (") || !strings.Contains(lines[12], "over (") ||
+		!strings.Contains(lines[13], "over (") {
+		t.Fatalf("code %d, %d lines, out %q err %q", r.code, len(lines), r.out, r.errOut)
 	}
-	if n := len(f.ledger()); n != 12 {
-		t.Fatalf("%d leases, want the 12 placed", n)
+	if n := len(f.ledger()); n != 14 {
+		t.Fatalf("%d leases, want the 14 placed", n)
 	}
 	r = f.run("--json", "--no-reserve")
 	d := decodeLanes(t, r.out)
-	if r.code != exitNoAccount || len(d.Picks) != 0 || d.Picked != nil || d.NextFree == nil || !d.NextFree.Equal(nextNow.Add(time.Hour)) {
+	if r.code != 0 || len(d.Picks) != 1 || d.Picked == nil {
 		t.Fatalf("capped: code %d doc %+v", r.code, d)
 	}
 	r = f.run("--urgent", "--session-id", sidA)
@@ -201,16 +204,22 @@ func TestAccountNextLanesCapsAndUrgent(t *testing.T) {
 	}
 }
 
-// Nothing ever falls back onto a protected account.
+// A protected account takes lanes only when no aggressive account can under the hard limits;
+// past its gate it is still used rather than making the lanes wait (no stalling).
 func TestAccountNextLanesProtected(t *testing.T) {
 	f := newNextFixture(t)
 	f.set("next.accounts.claude-2.mode", "protected")
 	f.seats = []map[string]any{seat("seat_1", "a1", "o1", "one@example.test", "", 10, 99),
-		seat("seat_2", "a2", "o2", "two@example.test", "", 50, 30)} // protected: 5h 50 >= 45
+		seat("seat_2", "a2", "o2", "two@example.test", "", 99, 30)} // protected at its 5h hard limit
 	r := f.run("--json", "--n", "3")
 	d := decodeLanes(t, r.out)
 	if r.code != exitNoAccount || len(d.Picks) != 0 || d.Waiting != 3 || len(f.leaseFiles()) != 0 {
 		t.Fatalf("code %d doc %+v", r.code, d)
+	}
+	f.seats[1] = seat("seat_2", "a2", "o2", "two@example.test", "", 50, 30) // past its 45% gate
+	r = f.run("--json", "--no-reserve", "--n", "3")
+	if d = decodeLanes(t, r.out); r.code != 0 || len(d.Picks) != 3 || !strings.Contains(d.Picks[0].Reason, "protected, over (") {
+		t.Fatalf("past the gate: code %d doc %+v", r.code, d)
 	}
 	var kinds []string
 	for _, a := range d.Accounts {
@@ -219,10 +228,11 @@ func TestAccountNextLanesProtected(t *testing.T) {
 	if !strings.Contains(strings.Join(kinds, " "), "~/.claude-2=protected") {
 		t.Errorf("kinds %v", kinds)
 	}
-	// Under its floor and its pace line, the protected account takes lanes: at most 2 an hour.
+	// Under its floor and its pace line, the protected account takes lanes: 2 an hour within
+	// its burst cap, the third over it.
 	f.seats[1] = seat("seat_2", "a2", "o2", "two@example.test", "", 10, 30)
 	r = f.run("--n", "3")
-	if r.code != exitNoAccount || strings.Count(r.out, "~/.claude-2") != 2 || !strings.Contains(r.out, "protected") {
+	if r.code != 0 || strings.Count(r.out, "~/.claude-2") != 3 || strings.Count(r.out, "over (") != 1 {
 		t.Errorf("code %d out %q", r.code, r.out)
 	}
 }
@@ -416,5 +426,38 @@ func TestAccountNextLanesDrain(t *testing.T) {
 	}
 	if r := f.run("--no-reserve", "--expect", "3h"); r.code != 0 {
 		t.Errorf("--expect 3h: code %d err %q", r.code, r.errOut)
+	}
+}
+
+// --expect: a class or a wall time, --expect-minutes and --expect-tokens; the pick line and
+// --json show the class used.
+func TestAccountNextLanesExpect(t *testing.T) {
+	f := newNextFixture(t)
+	f.seats = []map[string]any{seat("seat_1", "a1", "o1", "one@example.test", "", 10, 30), drainSeat()}
+	for _, args := range [][]string{{"--expect", "huge"}, {"--expect", "0s"}, {"--expect-minutes", "-5"},
+		{"--expect-tokens", "-1"}, {"--expect", "2h", "--expect-minutes", "30"}, {"--strategy", "smart", "--expect", "long"}} {
+		if r := f.run(append([]string{"--no-reserve"}, args...)...); r.code != 2 {
+			t.Errorf("%v: code %d err %q", args, r.code, r.errOut)
+		}
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{{[]string{"--expect", "short"}, "short"}, {[]string{"--expect", "LONG"}, "long"}, {[]string{"--expect", "40m"}, "medium"},
+		{[]string{"--expect-minutes", "200"}, "long"}, {[]string{"--expect", "medium", "--expect-tokens", "2000000"}, "medium"}} {
+		r := f.run(append([]string{"--no-reserve"}, c.args...)...)
+		if r.code != 0 || !strings.Contains(r.out, "; expect "+c.want) {
+			t.Errorf("%v: code %d out %q err %q", c.args, r.code, r.out, r.errOut)
+		}
+		r = f.run(append([]string{"--no-reserve", "--json"}, c.args...)...)
+		var d struct {
+			Picks []struct {
+				Expect string `json:"expect"`
+				Over   *bool  `json:"over"`
+			} `json:"picks"`
+		}
+		if err := json.Unmarshal([]byte(r.out), &d); err != nil || len(d.Picks) != 1 || d.Picks[0].Expect != c.want || d.Picks[0].Over == nil {
+			t.Errorf("%v json: %v %s", c.args, err, r.out)
+		}
 	}
 }

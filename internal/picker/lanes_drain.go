@@ -40,6 +40,9 @@ type LaneStats struct {
 	N     int    // lanes the cost was measured on (0: fallback)
 	NLen  int    // lanes the length was measured on
 	Model string // the model the stats are for ("" pooled)
+	// Classes: each size class's measured median wall time and mean cost, from lanes leased
+	// with that --expect class (at least laneStatsMin of them).
+	Classes map[string]LaneClass
 }
 
 // DrainInfo is what the drain rules worked out for one account (LaneRow.Drain).
@@ -65,12 +68,14 @@ type DrainInfo struct {
 	Why         string  // the reason when Capacity <= 0
 	WM, HM      float64 // the measured weekly and 5-hour levels it was judged on
 	waitShort   bool    // blocked by its 5-hour window (counts for the short wait)
+	over        bool    // no capacity, but one more lane stays under the hard limits (NoStall)
 }
 
 // drainKey orders the accounts in the drain order: lower first.
 type drainKey struct {
 	group   int  // 0 aggressive drain, 1 protected drain, 2 at risk, 3 aggressive, 4 unknown, 5 protected
 	batched bool // drain: already picked in this batch (every draining account gets one first)
+	late    bool // estimates: the lane would run past this account's weekly reset (ordered after the others, protected still last)
 	deficit int
 	finish  float64 // finish_by, unix seconds
 	risk    float64 // hours to reset per hour of need
@@ -80,7 +85,29 @@ type drainKey struct {
 	ord     int
 }
 
+// pos places the classes; a lane that would outlast an aggressive account's week (late) moves
+// that account after the other aggressive ones of its kind: a late drain account after the
+// other aggressive drain accounts, a late at-risk, aggressive or unknown one after every
+// aggressive and unknown account. Protected accounts keep their places.
+func (a drainKey) pos() float64 {
+	switch {
+	case !a.late || a.group == 5:
+		return float64(a.group)
+	case a.group == 0:
+		return 3.5
+	case a.group == 1:
+		return 5
+	}
+	return 4.5
+}
+
 func (a drainKey) less(b drainKey) bool {
+	if pa, pb := a.pos(), b.pos(); pa != pb {
+		return pa < pb
+	}
+	if a.late != b.late {
+		return !a.late
+	}
 	if a.group != b.group {
 		return a.group < b.group
 	}
@@ -154,6 +181,7 @@ type runLane struct {
 	spill          bool
 	since          bool // picked after the reading
 	measured       bool // rate is the lane's measured burn
+	est            bool // rate and length are the agent's estimate (EstRate)
 }
 
 // past is what the lanes nothing measures (no local session, no hub burn) used since the
@@ -192,16 +220,26 @@ func (p LaneParams) runningLanes(acc LaneAccount, c cleanSample, leases []LaneLe
 				if L.Ended {
 					sinceH = math.Min(sinceH, lmed)
 				}
-				past += mult * r * sinceH
+				pr := r
+				if L.EstRate > 0 && !p.EstFloor {
+					pr = L.EstRate
+				}
+				past += mult * pr * sinceH
 			}
 		}
 		if L.Ended {
 			continue
 		}
 		ah := age.Hours()
-		rate, measured := r, false
+		rate, measured, isEst := r, false, false
+		if L.EstRate > 0 {
+			rate, isEst = L.EstRate, true
+			if p.EstFloor { // the Lindy rule still holds for its length
+				isEst = false
+			}
+		}
 		if L.Seen && L.RecentOK && age >= 5*time.Minute {
-			measured = true
+			measured, isEst = true, false
 			win := math.Min(ah, bw.Hours())
 			rate = math.Max(0, L.Recent) * f5 / win
 		}
@@ -209,8 +247,11 @@ func (p LaneParams) runningLanes(acc LaneAccount, c cleanSample, leases []LaneLe
 		if L.Expect > 0 {
 			rem = math.Max(rem, L.Expect.Hours()-ah)
 		}
+		if isEst && L.Expect > 0 {
+			rem = math.Max(L.Expect.Hours()-ah, 10.0/60) // the agent's length, not the Lindy rule
+		}
 		rem = math.Min(rem, p.LeaseTTL.Hours()-ah)
-		out = append(out, runLane{age: ah, rate: mult * rate, rem: rem, since: L.T0.After(c.ts), measured: measured,
+		out = append(out, runLane{age: ah, rate: mult * rate, rem: rem, since: L.T0.After(c.ts), measured: measured, est: isEst,
 			spill: L.Spill || rem > finishH})
 	}
 	return out, past
@@ -313,6 +354,12 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	if in.Expect > 0 {
 		n1 = math.Min(math.Max(em, r*in.Expect.Hours()), r*hRem)
 	}
+	// With estimates the new lane is the agent's: its cost, burnt evenly over its wall time.
+	var est laneEst
+	if p.UseEstimate {
+		est = p.estimate(in.cur, acc, in.Stats)
+		n1 = math.Min(est.cost, est.rate()*hRem)
+	}
 	n1 = math.Max(n1, 1e-6)
 	if hRem > 0 {
 		d.Deficit = int(math.Ceil(R5/(r*hRem))) - d.Running
@@ -330,15 +377,21 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	// does not apply to it.
 	soon := fiveOpen && v.fiveRst.Sub(now) <= p.FreshSoon
 	c5 := -1
+	fit5 := true // one more lane fits under the 5-hour hard limit and the backstop (NoStall)
 	if fiveOpen {
 		t5p := math.Min(t5, H)
 		n15 := math.Max(math.Min(em, r*t5p), 1e-6)
+		if p.UseEstimate {
+			n15 = math.Max(math.Min(est.cost, est.rate()*t5p), 1e-6)
+		}
+		f5 := past + forward(rs, t5p)
+		fit5 = v.hM+f5+n15 <= full && (v.hM < p.Backstop5h || soon)
 		sp5 := spread
 		if soon {
 			sp5 = math.Min(spread, r*t5p)
 		}
 		tail := math.Max(0, math.Min(p.laneTail(in.Stats), r*t5p)-n15)
-		c5 = fitLanes(A0-p.DrainMargin5h-past-forward(rs, t5p), n15, sp5, tail)
+		c5 = fitLanes(A0-p.DrainMargin5h-f5, n15, sp5, tail)
 		if c5 < 0 {
 			c5 = 0
 		}
@@ -371,6 +424,9 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	}
 	// Spill lanes: a new lane that would run past the reset.
 	d.Spill = hRem < lmed || (in.Expect > 0 && in.Expect.Hours() > hRem)
+	if p.UseEstimate {
+		d.Spill = est.dur > hRem
+	}
 	if d.Spill && C > 0 {
 		sp := 0
 		for _, x := range rs {
@@ -395,10 +451,18 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 			C, by = 1, LimitStale
 		}
 	}
-	if p.LandMax > 0 && v.wM+p.laneTail(in.Stats)/rho > p.LandMax && C > 0 {
+	land := p.laneTail(in.Stats)
+	if p.UseEstimate && est.given && (!p.EstFloor || est.cost > land) {
+		land = est.cost
+	}
+	landed := p.LandMax > 0 && v.wM+land/rho > p.LandMax
+	if landed && C > 0 {
 		C, by = 0, LimitLanding
 	}
 	d.Capacity, d.LimitedBy = C, by
+	// Overflow (NoStall): full by its drain capacity, but one more lane stays under the hard
+	// limits (weekly 98, the 5-hour limit and backstop, the landing guard).
+	d.over = C <= 0 && !landed && v.wM+(F+n1)/rho <= full && fit5 && v.hM < full
 	if C > 0 {
 		return d
 	}

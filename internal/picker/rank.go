@@ -42,6 +42,9 @@ type Input struct {
 	// that a hub is set up but could not be read (lanes drain rules).
 	Expect  time.Duration
 	HubDown bool
+	// Expects are the agents' estimates per lane, in pick order (--expect, --expect-minutes,
+	// --expect-tokens; the last one holds for the rest); none: medium or the measured median.
+	Expects []LaneExpect
 }
 
 // Ranked is one account in the result.
@@ -99,6 +102,10 @@ type Pick struct {
 	Spill    bool
 	FinishBy time.Time
 	Reset    time.Time
+	// Expect is the lane size class the pick used (short, medium, long, measured; "" without
+	// estimates); Over: placed past a soft limit because no account was free under them.
+	Expect string
+	Over   bool
 }
 
 // Hint is the one-line instruction for the agent on a drain pick ("" otherwise).

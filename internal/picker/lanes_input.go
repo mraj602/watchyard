@@ -624,7 +624,7 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		f5Of[a.Key] = p.account(a).F5
 	}
 	lin := LaneInput{Now: now, Params: p, Accounts: accts, Leases: ls, N: n, SIDs: in.SIDs, Urgent: in.Urgent,
-		Stats: measureLanes(in.Leases, ls[:nLocal], ls[nLocal:], f5Of, res.Model, now), Expect: in.Expect, HubDown: in.HubDown}
+		Stats: measureLanes(in.Leases, ls[:nLocal], ls[nLocal:], f5Of, res.Model, now), Expect: in.Expect, HubDown: in.HubDown, Expects: in.Expects}
 	lr, err := RankLanes(lin)
 	if err != nil {
 		return res, err
@@ -704,9 +704,12 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		r := rs[g.rep]
 		row := rows[pk.Key]
 		r.Reason = laneReason(r, row, earlier[pk.Key], pk.SID, pk.Forced, now)
+		if pk.Over || pk.Expect != "" {
+			r.Reason = laneNote(r.Reason, pk)
+		}
 		earlier[pk.Key]++
 		res.Picks = append(res.Picks, Pick{Ranked: r, SessionID: pk.SID, Urgent: pk.Forced, LaneKind: r.Kind, C5: pk.C5, CF: pk.CF,
-			Drain: pk.Drain, Spill: pk.Spill, FinishBy: pk.FinishBy, Reset: pk.Reset})
+			Drain: pk.Drain, Spill: pk.Spill, FinishBy: pk.FinishBy, Reset: pk.Reset, Expect: pk.Expect, Over: pk.Over})
 	}
 	if len(res.Picks) > 0 {
 		res.Pick = &res.Picks[0].Ranked
@@ -819,6 +822,22 @@ func laneReason(r Ranked, row LaneRow, earlier int, sid string, urgent bool, now
 		parts = append(parts, fmt.Sprintf("%d %s in 60 min", b, word))
 	}
 	return strings.Join(append(parts, laneTail(r, row, sid, now)...), "; ")
+}
+
+// laneNote adds the lane's size class and an over-soft-limit note after the reason's head:
+// "aggressive, over (no account free under its soft limits); expect long; 7d 40% ...".
+func laneNote(reason string, pk LanePick) string {
+	head, rest, _ := strings.Cut(reason, "; ")
+	if pk.Over {
+		head += ", over (no account free under its soft limits)"
+	}
+	if pk.Expect != "" {
+		head += "; expect " + pk.Expect
+	}
+	if rest == "" {
+		return head
+	}
+	return head + "; " + rest
 }
 
 // laneTail is the end of laneReason: the data source and age, and the session id.

@@ -59,7 +59,7 @@ func world(aggrW, protW float64) map[string]LaneSample {
 }
 
 func laneIn(s map[string]LaneSample, n int) LaneInput {
-	in := LaneInput{Now: lnow, Params: DefaultLaneParams, N: n}
+	in := LaneInput{Now: lnow, Params: V3LaneParams, N: n}
 	for i, a := range allNames {
 		sm, ok := s[a]
 		if !ok {

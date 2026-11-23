@@ -101,6 +101,19 @@ func genCases(seed int64) []genCase {
 		hubDown := rng.Intn(8) == 0
 		c := genCase{id: i, lanesOf: map[string]string{}, reading: map[string]string{}, smallAcc: map[string]bool{}}
 		in := LaneInput{Now: lnow, Params: DefaultLaneParams, N: genBatch[rng.Intn(4)], Urgent: rng.Intn(4) == 0, HubDown: hubDown}
+		// The agents' estimates (owner change 2): none, or a class with or without minutes.
+		for j := 0; j < in.N; j++ {
+			switch rng.Intn(5) {
+			case 1:
+				in.Expects = append(in.Expects, LaneExpect{Class: ExpectShort})
+			case 2:
+				in.Expects = append(in.Expects, LaneExpect{Class: ExpectMedium, Dur: 40 * time.Minute})
+			case 3:
+				in.Expects = append(in.Expects, LaneExpect{Class: ExpectLong, Dur: 4 * time.Hour})
+			default:
+				in.Expects = append(in.Expects, LaneExpect{})
+			}
+		}
 		switch rng.Intn(3) {
 		case 1:
 			in.Stats = LaneStats{Cost: 2, Mean: 1.2, Len: 10 * time.Minute, N: 40, NLen: 40}
@@ -169,6 +182,10 @@ func stepwise(t *testing.T, in LaneInput) ([]LaneResult, []LanePick) {
 		one := in
 		one.N, one.Leases = 1, ls
 		one.prior = picks
+		x := in.expectAt(k)
+		if len(in.Expects) > 0 {
+			one.Expects = []LaneExpect{x}
+		}
 		r := rank(t, one)
 		tables = append(tables, r)
 		if len(r.Picks) == 0 {
@@ -177,7 +194,12 @@ func stepwise(t *testing.T, in LaneInput) ([]LaneResult, []LanePick) {
 		p := r.Picks[0]
 		picks = append(picks, p)
 		c5, cf := p.C5, p.CF
-		ls = append(ls, LaneLease{Key: p.Key, T0: in.Now, SID: p.SID, C5: &c5, CF: &cf, Spill: p.Spill, Expect: in.Expect})
+		L := LaneLease{Key: p.Key, T0: in.Now, SID: p.SID, C5: &c5, CF: &cf, Spill: p.Spill, Expect: in.Expect}
+		if in.Params.UseEstimate {
+			e := in.Params.estimate(x, accOf(in, p.Key), in.Stats)
+			L.Expect, L.EstRate = hoursDur(e.dur), e.rate()
+		}
+		ls = append(ls, L)
 	}
 	return tables, picks
 }
@@ -191,7 +213,7 @@ func accOf(in LaneInput, key string) LaneAccount {
 	return LaneAccount{}
 }
 
-// checkInvariants checks I1-I10 on one case; it returns the violations.
+// checkInvariants checks I1-I11 on one case; it returns the violations.
 func checkInvariants(t *testing.T, in LaneInput) []string {
 	t.Helper()
 	p := in.Params
@@ -215,6 +237,12 @@ func checkInvariants(t *testing.T, in LaneInput) []string {
 	for _, row := range r.Table {
 		start[row.Key] = row.Drain
 	}
+	// late: lane i is estimated to outlast x's weekly reset (runway, owner change 2): x goes
+	// after the aggressive accounts that are not late.
+	late := func(i int, x LaneRow) bool {
+		return p.UseEstimate && len(x.Unknown) == 0 && x.HoursToReset > 0 &&
+			p.estimate(in.expectAt(i), accOf(in, x.Key), in.Stats).dur > x.HoursToReset-p.Guard.Hours()
+	}
 	burst := map[string]int{}
 	for _, row := range r.Table {
 		burst[row.Key] = row.Burst
@@ -232,12 +260,14 @@ func checkInvariants(t *testing.T, in LaneInput) []string {
 			// The exception (owner Q3): a protected account in 1x drain, after every aggressive
 			// drain account is at capacity.
 			for _, x := range tb.Table {
-				if !x.Protected && x.Class == ClassDrain && x.Drain.Capacity > 0 {
+				if !x.Protected && x.Class == ClassDrain && x.Drain.Capacity > 0 && !late(i, x) {
 					fail("I1: protected drain %s picked while aggressive drain %s had capacity %d", pk.Key, x.Key, x.Drain.Capacity)
 				}
 			}
 		}
 		if acc.Protected && row.Class != ClassDrain {
+			// (owner change 2) protected only when no aggressive account can take the lane under
+			// the hard limits: not eligible, and (NoStall) not held only by a soft limit.
 			for _, x := range tb.Table {
 				if x.Protected {
 					continue
@@ -245,10 +275,13 @@ func checkInvariants(t *testing.T, in LaneInput) []string {
 				if !x.Skip {
 					fail("I1: protected %s picked while aggressive %s was eligible (%s)", pk.Key, x.Key, x.Class)
 				}
-				if x.Skip && x.SkipLevel == 0 && x.Capped && row.Class != ClassDrain {
+				if x.Skip && x.soft {
+					fail("I1: protected %s picked while aggressive %s was held only by a soft limit (%s)", pk.Key, x.Key, x.Reason)
+				}
+				if !p.NoStall && x.Skip && x.SkipLevel == 0 && x.Capped && row.Class != ClassDrain {
 					fail("I1: protected %s picked while aggressive %s was only burst-capped", pk.Key, x.Key)
 				}
-				if x.Class == ClassDrain && x.Drain.Capacity > 0 {
+				if x.Class == ClassDrain && x.Drain.Capacity > 0 && !late(i, x) {
 					fail("I1: protected %s picked while aggressive drain %s had capacity %d", pk.Key, x.Key, x.Drain.Capacity)
 				}
 			}
@@ -258,14 +291,14 @@ func checkInvariants(t *testing.T, in LaneInput) []string {
 					continue
 				}
 				x := rowOf(tb, a.Key)
-				if x.Class != ClassDrain && x.Weekly < 90 && x.FiveHour < 80 && x.Burst < p.BurstAggr && !x.Stale {
+				if x.Class != ClassDrain && x.Weekly < 90 && x.FiveHour < 80 && (p.NoStall || x.Burst < p.BurstAggr) && !x.Stale && !x.fwd5 {
 					fail("I1: protected %s picked while aggressive %s had clear room (w %.0f h %.0f burst %d)", pk.Key, a.Key, x.Weekly, x.FiveHour, x.Burst)
 				}
 			}
 		}
 		// I2: an aggressive drain account with capacity takes the pick.
 		for _, x := range tb.Table {
-			if !x.Protected && x.Class == ClassDrain && x.Drain.Capacity > 0 && pk.Class != ClassDrain {
+			if !x.Protected && x.Class == ClassDrain && x.Drain.Capacity > 0 && pk.Class != ClassDrain && !late(i, x) {
 				fail("I2: pick %s (%s) while aggressive drain %s had capacity %d", pk.Key, pk.Class, x.Key, x.Drain.Capacity)
 			}
 		}
@@ -273,7 +306,7 @@ func checkInvariants(t *testing.T, in LaneInput) []string {
 		if pk.Drain {
 			d := row.Drain
 			lim5 := 98.0
-			if acc.Protected {
+			if acc.Protected && !pk.Over {
 				lim5 = p.Cap5h - p.Lane5h
 			}
 			soon := row.FiveReset.IsZero() || !row.FiveReset.After(in.Now) || row.FiveReset.Sub(in.Now) <= p.FreshSoon
@@ -283,7 +316,7 @@ func checkInvariants(t *testing.T, in LaneInput) []string {
 			if d.WM+e/p.account(acc).ratio() > p.LandMax {
 				fail("I4: drain pick %s lands over %.0f", pk.Key, p.LandMax)
 			}
-		} else if !acc.Protected {
+		} else if !acc.Protected || p.NoStall {
 			if row.Weekly >= 98 || row.FiveHour >= 98 {
 				fail("I4: pick %s at w %.1f h %.1f", pk.Key, row.Weekly, row.FiveHour)
 			}
@@ -296,8 +329,13 @@ func checkInvariants(t *testing.T, in LaneInput) []string {
 			if pk.FinishBy.IsZero() || !pk.FinishBy.Equal(pk.Reset.Add(-p.Guard)) || pk.Reset.Sub(in.Now.Add(hoursDur(row.HoursToReset))).Abs() > time.Second {
 				fail("I10: drain pick %s finish_by %v reset %v", pk.Key, pk.FinishBy, pk.Reset)
 			}
-			if pk.Spill {
+			if pk.Spill && !pk.Over {
 				spills[pk.Key]++
+			}
+			// I5 per step: a drain pick within capacity uses a row that had capacity then (the
+			// capacity depends on the lane's estimate, so it can differ from step to step).
+			if !pk.Over && row.Drain.Capacity < 1 {
+				fail("I5: drain pick %s at step %d with capacity %d", pk.Key, i+1, row.Drain.Capacity)
 			}
 		} else if !pk.FinishBy.IsZero() || !pk.Reset.IsZero() {
 			fail("I10: non-drain pick %s carries finish_by", pk.Key)
@@ -305,7 +343,7 @@ func checkInvariants(t *testing.T, in LaneInput) []string {
 		// I7: a non-drain account keeps its burst cap (urgent passes only an aggressive one).
 		if !pk.Drain {
 			cp := p.burstCap(acc.Protected)
-			if burst[pk.Key]+got[pk.Key]-1 >= cp && !(pk.Forced && !acc.Protected) {
+			if burst[pk.Key]+got[pk.Key]-1 >= cp && !(pk.Forced && !acc.Protected) && !pk.Over {
 				fail("I7: %s past its burst cap %d without --urgent", pk.Key, cp)
 			}
 		}
@@ -331,6 +369,14 @@ func checkInvariants(t *testing.T, in LaneInput) []string {
 			fail("I7: drain %s held by its burst cap", row.Key)
 		}
 	}
+	// I11 (owner change 2): no wait while any account can take the lane under the hard limits.
+	if p.NoStall && len(steps) < in.N && len(tables) > len(steps) {
+		for _, x := range tables[len(steps)].Table {
+			if !x.Skip || x.soft {
+				fail("I11: lane %d waits while %s could take it (%s)", len(steps)+1, x.Key, x.Reason)
+			}
+		}
+	}
 	// I5: drain lanes within capacity; spill lanes within SpillMax.
 	for k, d := range start {
 		if !d.On {
@@ -338,12 +384,18 @@ func checkInvariants(t *testing.T, in LaneInput) []string {
 		}
 		n := 0
 		for _, pk := range steps {
-			if pk.Key == k && pk.Drain {
+			if pk.Key == k && pk.Drain && !pk.Over {
 				n++
 			}
 		}
-		if n > max(d.Capacity, 0) {
-			fail("I5: %s got %d drain lanes, capacity %d", k, n, d.Capacity)
+		if len(in.Expects) == 0 && n > max(d.Capacity, 0) {
+			var ov []bool
+			for _, pk := range steps {
+				if pk.Key == k {
+					ov = append(ov, pk.Over)
+				}
+			}
+			fail("I5: %s got %d drain lanes, capacity %d over %v", k, n, d.Capacity, ov)
 		}
 		if spills[k] > p.SpillMax {
 			fail("I5: %s got %d spill lanes", k, spills[k])
@@ -356,9 +408,21 @@ func checkInvariants(t *testing.T, in LaneInput) []string {
 			withCap = append(withCap, row.Key)
 		}
 	}
-	if len(steps) >= len(withCap) {
+	// With estimates the capacity is per lane size; the check needs lanes of one size.
+	same := true
+	for j := 1; j < len(steps); j++ {
+		same = same && p.estimate(in.expectAt(j), LaneAccount{}, in.Stats) == p.estimate(in.expectAt(0), LaneAccount{}, in.Stats)
+	}
+	if len(steps) >= len(withCap) && same {
 		for _, k := range withCap {
-			if got[k] == 0 {
+			// Runway (owner change 2): a lane estimated to outlast the account's reset goes
+			// elsewhere first; the account is owed a lane only if some lane fits before it.
+			fits := !p.UseEstimate
+			for j := 0; j < len(steps) && !fits; j++ {
+				row := rowOf(r, k)
+				fits = p.estimate(in.expectAt(j), accOf(in, k), in.Stats).dur <= row.HoursToReset-p.Guard.Hours()
+			}
+			if got[k] == 0 && fits {
 				fail("I3: drain %s with capacity %d starved (%v)", k, start[k].Capacity, picksOf(r))
 			}
 		}
@@ -408,8 +472,12 @@ func TestDrainInvariantsGenerated(t *testing.T) {
 		t.Fatalf("%d cases", len(cases))
 	}
 	fails, picks, drainPicks, protPicksN, waits := 0, 0, 0, 0, 0
+	byInv := map[string]int{}
 	for _, c := range cases {
 		bad := checkInvariants(t, c.in)
+		for _, b := range bad {
+			byInv[strings.SplitN(b, ":", 2)[0]]++
+		}
 		r := rank(t, c.in)
 		picks += len(r.Picks)
 		waits += r.Waiting
@@ -428,7 +496,7 @@ func TestDrainInvariantsGenerated(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("generated: %d cases, %d picks (%d drain, %d protected), %d waiting; %d cases with a violation", len(cases), picks, drainPicks, protPicksN, waits, fails)
+	t.Logf("generated: %d cases, %d picks (%d drain, %d protected), %d waiting; %d cases with a violation %v", len(cases), picks, drainPicks, protPicksN, waits, fails, byInv)
 }
 
 // I6: twenty tiny lanes running on a draining account with room left do not block it.

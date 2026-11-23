@@ -42,7 +42,7 @@ func TestAccountNextVerdicts(t *testing.T) {
 	f := newNextFixture(t)
 	f.set("next.accounts.claude-2.mode", "protected")
 	f.seats = []map[string]any{seat("seat_1", "a1", "o1", "one@example.test", "", 99, 99),
-		seat("seat_2", "a2", "o2", "two@example.test", "", 50, 30)} // protected: 5h 50 >= 45
+		seat("seat_2", "a2", "o2", "two@example.test", "", 96, 30)} // protected at 5h 96: one more lane lands over the hard limit (level 3)
 	r := f.run("--json")
 	if r.code != exitNoAccount {
 		t.Fatalf("code %d err %s", r.code, r.errOut)
@@ -60,8 +60,8 @@ func TestAccountNextVerdicts(t *testing.T) {
 		byAcct[a.Account] = a
 	}
 	p := byAcct["a2"]
-	if p.Eligible || p.Kind != "protected" || p.Org != "o2" || p.Reason == "" || p.SkipLevel == nil || *p.SkipLevel != 2 ||
-		p.Rank != nil || p.FiveHourPct == nil || *p.FiveHourPct != 50 || p.BurstCap == nil {
+	if p.Eligible || p.Kind != "protected" || p.Org != "o2" || p.Reason == "" || p.SkipLevel == nil || *p.SkipLevel != 3 ||
+		p.Rank != nil || p.FiveHourPct == nil || *p.FiveHourPct != 96 || p.BurstCap == nil {
 		t.Errorf("protected account %+v", p)
 	}
 	if a := byAcct["a1"]; a.Eligible || a.SkipLevel == nil || *a.SkipLevel != 3 {

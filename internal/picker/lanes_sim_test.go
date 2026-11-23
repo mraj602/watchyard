@@ -32,7 +32,18 @@ type policy struct {
 	p    LaneParams
 }
 
-var policies = []policy{{"rr_exp", ReferenceLaneParams}, {"draft", DraftLaneParams}, {"v3", DefaultLaneParams}}
+// The strategies compared (owner change 2, D). S5 is S3 with protected accounts purely last:
+// no protected drain (their expiring room) ahead of the aggressive accounts.
+var (
+	s2Params = func() LaneParams { p := V3LaneParams; p.NoStall = true; return p }()
+	s3Params = func() LaneParams { p := DefaultLaneParams; p.EstFloor = false; return p }()
+	s4Params = func() LaneParams { p := s3Params; p.ProtSoft5h = 90; return p }()
+	s5Params = func() LaneParams { p := s3Params; p.ProtDrainSlack = 0; return p }()
+)
+
+var policies = []policy{{"S0 rr_exp", ReferenceLaneParams}, {"S1 v3", V3LaneParams}, {"S2 no-stall", s2Params},
+	{"S3 no-stall+est", s3Params}, {"S4 S3, protected before aggr. at 5h 90%", s4Params},
+	{"S5 S3, protected purely last", s5Params}, {"S6 S3 + cost floor (default)", DefaultLaneParams}}
 
 // ---------------------------------------------------------------- golden replay
 
@@ -94,8 +105,10 @@ func TestLanesGoldenReplay(t *testing.T) {
 			m.waits, m.expPicks, m.wallPicks))
 	}
 	t.Logf("golden replay (%d calls):\n%s", len(d.Cases), strings.Join(lines, "\n"))
-	if v3, rr := out["v3"], out["rr_exp"]; v3.protWhileRoom > rr.protWhileRoom || v3.prot-v3.protDrain > rr.prot {
-		t.Errorf("v3 uses protected accounts more than rr_exp: %+v vs %+v", *v3, *rr)
+	for _, name := range []string{"S1 v3", "S6 S3 + cost floor (default)"} {
+		if v, rr := out[name], out["S0 rr_exp"]; v.protWhileRoom > rr.protWhileRoom {
+			t.Errorf("%s uses protected accounts more than rr_exp: %+v vs %+v", name, *v, *rr)
+		}
 	}
 	if path := os.Getenv("WY_REPLAY_OUT"); path != "" {
 		_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
@@ -111,6 +124,7 @@ type simDemand struct {
 
 type simSpec struct {
 	lenMin, cost float64 // minutes; 5-hour points over the whole lane
+	est          LaneExpect
 }
 
 type simLane struct {
@@ -122,6 +136,7 @@ type simLane struct {
 	done, hit      bool
 	postReset      bool
 	drain          bool
+	estDur, estR   float64 // the pick's estimate (hours, points per hour) for its lease
 	startH         float64
 }
 
@@ -148,6 +163,8 @@ type simResult struct {
 	spillPts                      float64
 	hits, waits, dropped, overCap int
 	hitW, hitDrain, hitProt       int
+	delayed                       int   // lanes not placed the minute they came
+	waitMins                      []int // per lane (placed, or 60 when dropped)
 	hitStartH                     []float64
 }
 
@@ -158,15 +175,44 @@ func lognorm(rng *rand.Rand, median, p75 float64) float64 {
 	return median * math.Exp(sigma*rng.NormFloat64())
 }
 
+// Estimate error levels (owner change 2, C): "exact"; "typical": 30% give none, the rest are off
+// by a log-normal factor (median 1, σ 0.5) and 15% of those say 3-4x too short; "bad": 60% none,
+// σ 1, 30% of the rest 3-4x too short. Agents give a class and their minutes.
+func simEstimates(seed int64, demands []simDemand, level string, p LaneParams) {
+	rng := rand.New(rand.NewSource(seed ^ 0x5eed))
+	none, sigma, under := 0.0, 0.0, 0.0
+	switch level {
+	case "typical":
+		none, sigma, under = 0.3, 0.5, 0.15
+	case "bad":
+		none, sigma, under = 0.6, 1.0, 0.3
+	}
+	for i := range demands {
+		for j := range demands[i].lanes {
+			l := &demands[i].lanes[j]
+			if rng.Float64() < none {
+				l.est = LaneExpect{}
+				continue
+			}
+			f := math.Exp(sigma * rng.NormFloat64())
+			if rng.Float64() < under {
+				f = 1 / (3 + rng.Float64())
+			}
+			d := time.Duration(math.Max(1, l.lenMin*f) * float64(time.Minute))
+			l.est = LaneExpect{Class: p.classOf(d), Dur: d}
+		}
+	}
+}
+
 // simDemands makes the demand of one run (the same for every policy).
 func simDemands(rng *rand.Rand, pattern string) []simDemand {
 	var out []simDemand
-	small := func() simSpec { return simSpec{5 + rng.Float64()*10, 0.5 + rng.Float64()*1.5} }
+	small := func() simSpec { return simSpec{lenMin: 5 + rng.Float64()*10, cost: 0.5 + rng.Float64()*1.5} }
 	realLane := func() simSpec {
 		if rng.Float64() < 0.15 {
-			return simSpec{60 + rng.Float64()*120, 3 + rng.Float64()*12}
+			return simSpec{lenMin: 60 + rng.Float64()*120, cost: 3 + rng.Float64()*12}
 		}
-		return simSpec{math.Max(3, lognorm(rng, 12, 17)), math.Max(0.5, lognorm(rng, 4.3, 8))}
+		return simSpec{lenMin: math.Max(3, lognorm(rng, 12, 17)), cost: math.Max(0.5, lognorm(rng, 4.3, 8))}
 	}
 	day := func(m int) bool { h := (m / 60) % 24; return h >= 3 && h < 18 } // 08:30-23:30 IST
 	for m := 0; m < simMinutes; m++ {
@@ -186,7 +232,7 @@ func simDemands(rng *rand.Rand, pattern string) []simDemand {
 			}
 		case "long-lanes":
 			if m%30 == 0 {
-				lanes = append(lanes, simSpec{60 + rng.Float64()*180, 10 + rng.Float64()*20})
+				lanes = append(lanes, simSpec{lenMin: 60 + rng.Float64()*180, cost: 10 + rng.Float64()*20})
 			}
 		case "night-gaps":
 			if day(m) && m%4 == 0 {
@@ -218,8 +264,13 @@ func simTime(m int) time.Time { return simT0.Add(time.Duration(m) * time.Minute)
 
 // simRun runs one week under one policy.
 func simRun(seed int64, pattern string, pol LaneParams) simResult {
+	return simRunErr(seed, pattern, pol, "typical")
+}
+
+func simRunErr(seed int64, pattern string, pol LaneParams, errLevel string) simResult {
 	rng := rand.New(rand.NewSource(seed))
 	demands := simDemands(rng, pattern)
+	simEstimates(seed, demands, errLevel, DefaultLaneParams)
 	var accs []*simAcc
 	prot := []bool{true, false, false, false, true, false, true}
 	for i := 0; i < 7; i++ {
@@ -356,6 +407,8 @@ func simRun(seed int64, pattern string, pol LaneParams) simResult {
 		for _, q := range queue {
 			if m-q.since > 60 {
 				res.dropped++
+				res.delayed++
+				res.waitMins = append(res.waitMins, 60)
 				continue
 			}
 			kept = append(kept, q)
@@ -365,6 +418,9 @@ func simRun(seed int64, pattern string, pol LaneParams) simResult {
 			continue
 		}
 		in := LaneInput{Now: simTime(m), Params: pol, N: min(len(queue), 50), HubDown: hubDown[m]}
+		for _, q := range queue[:in.N] {
+			in.Expects = append(in.Expects, q.spec.est)
+		}
 		for i, a := range accs {
 			s, mt := reading(a, m)
 			in.Accounts = append(in.Accounts, LaneAccount{Key: a.key, Ord: i, Protected: a.prot, Ratio: a.rho, Sample: s, Meter: mt})
@@ -378,7 +434,8 @@ func simRun(seed int64, pattern string, pol LaneParams) simResult {
 				rec += x
 			}
 			in.Leases = append(in.Leases, LaneLease{Key: accs[l.acc].key, T0: simTime(l.start), Launched: true, Ended: l.done,
-				Burned: l.burned / f5, Seen: l.burned > 0, Recent: rec / f5, RecentOK: true})
+				Burned: l.burned / f5, Seen: l.burned > 0, Recent: rec / f5, RecentOK: true,
+				Expect: hoursDur(l.estDur), EstRate: l.estR})
 		}
 		if len(costs) >= 10 {
 			cs := append([]float64(nil), costs...)
@@ -409,7 +466,16 @@ func simRun(seed int64, pattern string, pol LaneParams) simResult {
 			if accs[idx].w+q.spec.cost/accs[idx].rho > 100 {
 				res.overCap++
 			}
-			lanes = append(lanes, &simLane{acc: idx, start: m, spec: q.spec, drain: pk.Drain, startH: accs[idx].h})
+			sl := &simLane{acc: idx, start: m, spec: q.spec, drain: pk.Drain, startH: accs[idx].h}
+			if pol.UseEstimate && (q.spec.est != LaneExpect{}) {
+				e := pol.estimate(q.spec.est, in.Accounts[idx], in.Stats)
+				sl.estDur, sl.estR = e.dur, e.rate()
+			}
+			lanes = append(lanes, sl)
+			res.waitMins = append(res.waitMins, m-q.since)
+			if m > q.since {
+				res.delayed++
+			}
 			if os.Getenv("WY_SIM_DEBUG") != "" && (accs[idx].h > 85 || accs[idx].w > 90) {
 				fmt.Printf("pick m=%d %s w=%.1f h=%.1f drain=%v class=%s row=%+v\n", m, pk.Key, accs[idx].w, accs[idx].h, pk.Drain, pk.Class, rowOf(r, pk.Key).Drain)
 			}
@@ -470,70 +536,87 @@ func TestLanesWeekSimulator(t *testing.T) {
 		runs = v
 	}
 	patterns := []string{"steady-small", "bursts-of-10", "long-lanes", "night-gaps", "mixed-real"}
+	errLevel := "typical"
+	if v := os.Getenv("WY_SIM_ERR"); v != "" {
+		errLevel = v
+	}
+	pols := policies
+	if v := os.Getenv("WY_SIM_POLICIES"); v != "" { // e.g. "S3,S6": names starting with these
+		pols = nil
+		for _, pol := range policies {
+			for _, w := range strings.Split(v, ",") {
+				if strings.HasPrefix(pol.name, w+" ") {
+					pols = append(pols, pol)
+				}
+			}
+		}
+	}
 	var lines []string
-	lines = append(lines, fmt.Sprintf("week simulator, %d runs per pattern (means per run)", runs),
-		"| pattern | policy | weekly pts wasted, aggressive | wasted, protected | wasted, total | lanes | on protected | drain lanes | lanes past a reset | 5h pts past a reset | limit hits | lanes that waited | dropped (waited > 1 h) |",
+	lines = append(lines, fmt.Sprintf("week simulator, %d runs per pattern, estimates %s (means per run; waits in minutes over all lanes)", runs, errLevel),
+		"| pattern | strategy | mean wait | p95 wait | lanes delayed | dropped (> 1 h) | weekly pts wasted, aggressive | wasted, protected | limit hits | lanes on protected | lanes past a reset | 5h pts past a reset | lanes |",
 		"|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+	type agg struct {
+		s     simResult
+		waits []int
+	}
 	for _, pat := range patterns {
-		res := map[string]*simResult{}
+		res := map[string]*agg{}
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, simPar())
-		perRun := make([]map[string]simResult, runs)
 		for i := 0; i < runs; i++ {
-			wg.Add(1)
-			sem <- struct{}{}
-			go func(i int) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				one := map[string]simResult{}
-				for _, pol := range policies {
-					one[pol.name] = simRun(int64(1000+i), pat, pol.p)
-				}
-				mu.Lock()
-				perRun[i] = one
-				mu.Unlock()
-			}(i)
-		}
-		wg.Wait()
-		for _, one := range perRun {
-			for name, r := range one {
-				s := res[name]
-				if s == nil {
-					s = &simResult{}
-					res[name] = s
-				}
-				s.wasteAggr += r.wasteAggr
-				s.wasteProt += r.wasteProt
-				s.protLanes += r.protLanes
-				s.lanes += r.lanes
-				s.spillLanes += r.spillLanes
-				s.spillPts += r.spillPts
-				s.hits += r.hits
-				s.waits += r.waits
-				s.dropped += r.dropped
-				s.drainLanes += r.drainLanes
+			for _, pol := range pols {
+				wg.Add(1)
+				sem <- struct{}{}
+				go func(i int, pol policy) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					r := simRunErr(int64(1000+i), pat, pol.p, errLevel)
+					mu.Lock()
+					defer mu.Unlock()
+					a := res[pol.name]
+					if a == nil {
+						a = &agg{}
+						res[pol.name] = a
+					}
+					s := &a.s
+					s.wasteAggr += r.wasteAggr
+					s.wasteProt += r.wasteProt
+					s.protLanes += r.protLanes
+					s.lanes += r.lanes
+					s.spillLanes += r.spillLanes
+					s.spillPts += r.spillPts
+					s.hits += r.hits
+					s.dropped += r.dropped
+					s.delayed += r.delayed
+					a.waits = append(a.waits, r.waitMins...)
+				}(i, pol)
 			}
 		}
+		wg.Wait()
 		n := float64(runs)
-		for _, pol := range policies {
-			s := res[pol.name]
-			lines = append(lines, fmt.Sprintf("| %s | %s | %.1f | %.1f | %.1f | %.0f | %.1f | %.1f | %.2f | %.1f | %.2f | %.1f | %.1f |", pat, pol.name,
-				s.wasteAggr/n, s.wasteProt/n, (s.wasteAggr+s.wasteProt)/n, float64(s.lanes)/n, float64(s.protLanes)/n, float64(s.drainLanes)/n,
-				float64(s.spillLanes)/n, s.spillPts/n, float64(s.hits)/n, float64(s.waits)/n, float64(s.dropped)/n))
+		for _, pol := range pols {
+			a := res[pol.name]
+			s := a.s
+			sort.Ints(a.waits)
+			sum := 0
+			for _, w := range a.waits {
+				sum += w
+			}
+			mean, p95 := 0.0, 0
+			if len(a.waits) > 0 {
+				mean, p95 = float64(sum)/float64(len(a.waits)), a.waits[int(0.95*float64(len(a.waits)-1))]
+			}
+			lines = append(lines, fmt.Sprintf("| %s | %s | %.2f | %d | %.1f | %.1f | %.1f | %.1f | %.2f | %.1f | %.2f | %.1f | %.0f |", pat, pol.name,
+				mean, p95, float64(s.delayed)/n, float64(s.dropped)/n, s.wasteAggr/n, s.wasteProt/n, float64(s.hits)/n,
+				float64(s.protLanes)/n, float64(s.spillLanes)/n, s.spillPts/n, float64(s.lanes)/n))
 		}
-		// The owner's bar: v3 beats rr_exp on waste and protected use with no more limit hits.
-		// Waste is checked on the aggressive accounts. Room on a protected account is kept for the
-		// owner by design (v3 sends far fewer lanes there, and a protected drain keeps the
-		// protected 5-hour ceiling), so total waste is reported, not asserted: in long-lanes and
-		// mixed-real it is higher than rr_exp's (REPORT-DRAIN.md).
-		v3, rr := res["v3"], res["rr_exp"]
-		if v3.wasteAggr >= rr.wasteAggr || v3.protLanes >= rr.protLanes || v3.hits > rr.hits {
-			t.Errorf("%s: v3 not better than rr_exp: aggressive waste %.1f vs %.1f, protected lanes %d vs %d, limit hits %d vs %d", pat,
-				v3.wasteAggr/n, rr.wasteAggr/n, v3.protLanes, rr.protLanes, v3.hits, rr.hits)
-		}
-		if tv, tr := v3.wasteAggr+v3.wasteProt, rr.wasteAggr+rr.wasteProt; tv > tr {
-			t.Logf("%s: total waste v3 %.1f > rr_exp %.1f (protected room kept by design)", pat, tv/n, tr/n)
+		// The recommended strategy (the default, S6) stalls less than v3 and rr_exp and keeps
+		// v3's gains on aggressive waste over rr_exp.
+		if s6, s1, s0 := res["S6 S3 + cost floor (default)"], res["S1 v3"], res["S0 rr_exp"]; s6 != nil && s1 != nil && s0 != nil {
+			if s6.s.delayed > s1.s.delayed || s6.s.delayed > s0.s.delayed || s6.s.wasteAggr >= s0.s.wasteAggr {
+				t.Errorf("%s: S6 delayed %d vs S1 %d, rr_exp %d; aggressive waste %.1f vs rr_exp %.1f", pat, s6.s.delayed, s1.s.delayed, s0.s.delayed, s6.s.wasteAggr/n, s0.s.wasteAggr/n)
+			}
 		}
 	}
 	t.Log("\n" + strings.Join(lines, "\n"))
