@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -517,5 +518,57 @@ func TestDrainI6SmallLanes(t *testing.T) {
 	in.Params = DraftLaneParams
 	if p := rank(t, in).Picks[0].Key; p == dX {
 		t.Logf("the draft also picked X")
+	}
+}
+
+// TestDrainGeneratorStrategies runs every strategy of the simulator (owner change 2, D) on the
+// 6,480 generated cases: placed and waiting lanes, lanes on protected accounts, lanes whose
+// estimate outlasts the account's weekly reset, and over picks. WY_SIM_OUT appends the table.
+func TestDrainGeneratorStrategies(t *testing.T) {
+	if testing.Short() {
+		t.Skip("strategy comparison: run without -short")
+	}
+	cases := genCases(20261124)
+	var b strings.Builder
+	fmt.Fprintf(&b, "generator, %d cases (seed 20261124), estimates as generated\n", len(cases))
+	b.WriteString("| strategy | lanes asked | placed | waiting | cases with a wait | on protected | of them protected drain | past the weekly reset (estimate) | over picks |\n|---|---|---|---|---|---|---|---|---|\n")
+	for _, pol := range policies {
+		asked, placed, waiting, waitCases, prot, protDrain, late, over := 0, 0, 0, 0, 0, 0, 0, 0
+		for _, c := range cases {
+			in := c.in
+			in.Params = pol.p
+			r := rank(t, in)
+			asked += in.N
+			placed += len(r.Picks)
+			waiting += r.Waiting
+			if r.Waiting > 0 {
+				waitCases++
+			}
+			for k, pk := range r.Picks {
+				acc := accOf(in, pk.Key)
+				if acc.Protected {
+					prot++
+					if pk.Drain {
+						protDrain++
+					}
+				}
+				if pk.Over {
+					over++
+				}
+				row := rowOf(r, pk.Key)
+				if len(row.Unknown) == 0 && row.HoursToReset > 0 && DefaultLaneParams.estimate(in.expectAt(k), acc, in.Stats).dur > row.HoursToReset {
+					late++
+				}
+			}
+		}
+		fmt.Fprintf(&b, "| %s | %d | %d | %d | %d | %d | %d | %d | %d |\n", pol.name, asked, placed, waiting, waitCases, prot, protDrain, late, over)
+	}
+	t.Log("\n" + b.String())
+	if path := os.Getenv("WY_SIM_OUT"); path != "" {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err == nil {
+			_, _ = f.WriteString(b.String())
+			_ = f.Close()
+		}
 	}
 }

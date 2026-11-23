@@ -33,8 +33,9 @@ All notable changes to Watchyard are recorded here. The format follows
   under 25 minutes, about 1.2 5-hour points; medium up to 2 hours, about 3.2; long, about 14).
   The estimate (never below the measured mean lane) sets drain capacity, the landing guard and
   the 5-hour check, and a long lane goes to accounts that do not reset before it would finish.
-  The pick line says `expect <class>` and `--json` has `expect`. In the week simulator this cuts
-  lanes running past a weekly reset in the long-lanes pattern from 4.3 to about 1.2 per week.
+  The pick line says `expect <class>` and `--json` has `expect`. In the week simulator (300 runs,
+  typical estimate errors) this cuts lanes running past a weekly reset in the long-lanes pattern
+  from 4.2 to 0.9 per week (the old round robin: 1.5).
 - Leases record `drain` and `finish_by` in the ledger and in `account_lease` records.
 
 ## [1.3.1] - 2026-11-23
