@@ -322,7 +322,16 @@ func Note(from, to string, at time.Time, mv Move, chain ...string) string {
 	}
 	s += "."
 	if mv.MidTurn {
-		return s + " Your last step may not have finished: check its result before redoing it. Helper agents that were running" +
+		step := " Your last step may not have finished: check its result before redoing it."
+		switch {
+		case mv.StepEnded:
+			step = " Your last step finished before the move."
+		case mv.StepTool != "" && mv.StepCmd != "":
+			step = fmt.Sprintf(" It was stopped inside a step (%s: %s) that may still be running: check its result before redoing it.", mv.StepTool, mv.StepCmd)
+		case mv.StepTool != "":
+			step = fmt.Sprintf(" It was stopped inside a step (%s) that may still be running: check its result before redoing it.", mv.StepTool)
+		}
+		return s + step + " Helper agents that were running" +
 			" were stopped: restart them if you still need them. Background shells keep running (listed as stopped; check" +
 			" their output files). Carry on with your task."
 	}

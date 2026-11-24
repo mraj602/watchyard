@@ -1,6 +1,7 @@
 package mover
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -46,7 +47,7 @@ var Settle = 5 * time.Second
 // AfterWatch is how long a background move goes on watching the old account once the session
 // runs on the new one: its supervisor restarted a job killed mid-turn 6 s after the resume
 // (e2e v2). Reap covers a copy that comes back later still.
-var AfterWatch = 20 * time.Second
+var AfterWatch = 60 * time.Second
 
 // watchOld stops, for AfterWatch, any copy of l that the old account's supervisor restarts.
 func watchOld(h Host, l Launch) {
@@ -54,11 +55,25 @@ func watchOld(h Host, l Launch) {
 		if len(h.Copies(l.Slot, l.SessionID, l.PID)) == 0 {
 			continue
 		}
-		_ = h.StopJob(l.Slot, l.SessionID)
-		time.Sleep(time.Second)
-		for _, pid := range h.Copies(l.Slot, l.SessionID, l.PID) {
+		stopCopies(h, l.Slot, l.SessionID, l.PID)
+	}
+}
+
+// stopCopies stops the copies of a session that an account's supervisor restarted: claude
+// stop, then a wait of up to StopWait for them to end. Only a copy that outlives it is
+// killed, and the supervisor told again: a killed job is restarted, a stopped one stays
+// stopped (e2e v2: a copy killed after claude stop came back and ran two steps again).
+func stopCopies(h Host, dir, sid string, except int) {
+	_ = h.StopJob(dir, sid)
+	for deadline := time.Now().Add(StopWait); len(h.Copies(dir, sid, except)) > 0 && time.Now().Before(deadline); {
+		time.Sleep(250 * time.Millisecond)
+	}
+	if cs := h.Copies(dir, sid, except); len(cs) > 0 {
+		for _, pid := range cs {
 			_ = h.Kill(pid)
 		}
+		time.Sleep(500 * time.Millisecond)
+		_ = h.StopJob(dir, sid)
 	}
 }
 
@@ -183,19 +198,30 @@ func Execute(h Host, l Launch, t Target, template, note, log string) ([]string, 
 // kills it.
 var StopWait = 10 * time.Second
 
+// MidTurnStopWait is StopWait for a session stopped mid-turn. claude stop interrupts its turn
+// and the process exits on its own: within seconds between steps, after one to three minutes
+// inside one (e2e v2). A kill is the last resort: its supervisor restarts a killed job, which
+// then redoes steps (e2e v2: one step ran four times).
+var MidTurnStopWait = 4 * time.Minute
+
 // stopOld stops a background session on its old account: claude stop there (its background
-// shells keep running), SIGKILL only when the process outlives StopWait, then for Settle no
-// copy of it may run there (a supervisor that restarted it is stopped again, then killed).
+// shells keep running), SIGKILL only when the process outlives StopWait (MidTurnStopWait
+// mid-turn), then for Settle no copy of it may run there (a supervisor that restarted it is
+// stopped again, then killed).
 func stopOld(h Host, l Launch) error {
 	// An error here (an older claude without stop) is not fatal: the kill and the copy check
 	// decide.
 	_ = h.StopJob(l.Slot, l.SessionID)
-	for deadline := time.Now().Add(StopWait); h.Alive(l) && time.Now().Before(deadline); {
+	wait := StopWait
+	if l.MidTurn {
+		wait = MidTurnStopWait
+	}
+	for deadline := time.Now().Add(wait); h.Alive(l) && time.Now().Before(deadline); {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if h.Alive(l) {
-		// Mid-turn, claude stop does not end the job at once (e2e v2): kill it, then stop the
-		// job again, so its supervisor marks it stopped instead of restarting it.
+		// The process outlived claude stop: kill it, then stop the job again, so its
+		// supervisor marks it stopped instead of restarting it.
 		if err := h.Kill(l.PID); err != nil {
 			return err
 		}
@@ -205,13 +231,7 @@ func stopOld(h Host, l Launch) error {
 	deadline := time.Now().Add(Settle)
 	for {
 		if cs := h.Copies(l.Slot, l.SessionID, l.PID); len(cs) > 0 {
-			_ = h.StopJob(l.Slot, l.SessionID)
-			time.Sleep(time.Second)
-			for _, pid := range h.Copies(l.Slot, l.SessionID, l.PID) {
-				_ = h.Kill(pid)
-			}
-			time.Sleep(500 * time.Millisecond)
-			_ = h.StopJob(l.Slot, l.SessionID)
+			stopCopies(h, l.Slot, l.SessionID, l.PID)
 			time.Sleep(500 * time.Millisecond)
 			if cs := h.Copies(l.Slot, l.SessionID, l.PID); len(cs) > 0 {
 				return fmt.Errorf("the old account's supervisor keeps a copy running (pid %d); not resumed elsewhere: stop it with CLAUDE_CONFIG_DIR=%s claude stop %s", cs[0], l.Slot, l.SessionID)
@@ -279,12 +299,28 @@ func Reap(h Host, st State, now time.Time) []LogEntry {
 		if len(h.Copies(e.FromDir, e.SessionID, 0)) == 0 {
 			continue
 		}
-		_ = h.StopJob(e.FromDir, e.SessionID)
-		time.Sleep(time.Second)
-		for _, pid := range h.Copies(e.FromDir, e.SessionID, 0) {
-			_ = h.Kill(pid)
-		}
+		stopCopies(h, e.FromDir, e.SessionID, 0)
 		out = append(out, e)
 	}
 	return out
+}
+
+// JobID is the id `claude stop` takes for session sid: the job's id in `claude agents --json`
+// (agents), else the session id's first 8 characters, which is what Claude Code uses.
+func JobID(sid string, agents []byte) string {
+	var list []struct {
+		ID        string `json:"id"`
+		SessionID string `json:"sessionId"`
+	}
+	if json.Unmarshal(agents, &list) == nil {
+		for _, a := range list {
+			if a.SessionID == sid && a.ID != "" {
+				return a.ID
+			}
+		}
+	}
+	if len(sid) > 8 {
+		return sid[:8]
+	}
+	return sid
 }

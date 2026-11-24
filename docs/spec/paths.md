@@ -148,6 +148,8 @@ one folder.
   move/moves.jsonl             Smart Account Switch: every move, mode 0600 (setup.md 8.6)
   move/notes/<session>.json    the one-line note the moved session's SessionStart hook prints once
   move/runs/<pid>.json, move/orders/<pid>.json  wy run wrappers and their relaunch orders
+  move/steps/<session>/<id>    one tool call of a session: start and end (step hooks; ended ones kept a day)
+  move/pass.lock               held by the running Smart Account Switch pass (one at a time)
   move/pins.json               sessions pinned to their account (wy move --pin-account)
   move/logs/<session>.log      output of a moved headless session
   move.stamp                   wy tick's last Smart Account Switch pass (every 2 minutes)

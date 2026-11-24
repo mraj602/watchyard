@@ -1882,6 +1882,7 @@ weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
 | No return | never back to the account it left within `move_no_return_min` 60 min, unless that account's 5-hour window reset since | no ping-pong |
 | Account rate limit | at most `move_account_moves` 3 moves into one account per `move_account_window_min` 15 min | a burst of moves must not overfill one account |
 | Once per window | none: a long session may move many times | owner: long sessions may need several moves |
+| Between steps | a mid-turn session is stopped once no step runs, waiting up to `move_step_wait_min` 3 min, never past one minute before the hit | a step stopped half-way is often run again after the resume |
 | Owner grace | `move_owner_grace_min`, default 0 (off): an interactive session the owner typed into within it stays | the simulator shows no clear gain (below); off |
 
 **Interactive sessions.** A session is *interactive* (a person uses it) when it is: a plain
@@ -1930,18 +1931,20 @@ no move to an account not logged in, stale or its own; every moved interactive s
 message and runs on the new account; under an owner grace, none typed into within it moves; no idle
 session with no burn moved; a destination's projections with the planned burn within its caps −
 5; the cooldown, no-return and account rate limits; the same seed gives the same result.
-Result (300 runs per pattern, per day per run): stopped lane-minutes M0 4,532, M5 381, V2 443;
-limit hits 13.96, 7.25, 3.85; moves 0, 12.9, 44.4 (30.0 of them mid-turn); context re-read 0,
-5.1, 17.1 Mtok; protected 5h max 71.8, 93.8, 87.0; interactive sessions moved 0, 0.18, 1.76 (each
+Result (300 runs per pattern, per day per run): stopped lane-minutes M0 4,532, M5 381, V2 394;
+limit hits 13.96, 7.25, 3.41; moves 0, 12.9, 43.8 (28.7 of them mid-turn); context re-read 0,
+5.1, 16.8 Mtok; protected 5h max 71.8, 93.8, 85.8; interactive sessions moved 0, 0.18, 1.72 (each
 with its message delivered, on the new account); moves to an account not logged in 0 in all.
-With interactive sessions moved, the owner's stopped minutes in the protected-owner pattern fall
-from 211 (when they were only told) to 4 a day, at about 8 moves per owner session a day. A 2-min
-owner grace spares about 5% of owner moves for about 25% more owner stopped minutes: off. Caps 98
-or 92 change little (about 1%); without the spike filter 34% more moves; moving idle sessions
-only adds cost; `move_orgs` any 555, same-first 572, same 1,053 stopped lane-minutes in the
-two-organisation pattern. **Picker pairing:** with V2 the picker's forward hold at 100 (as in
-1.3.2), no hold while the switch is on, and a hold at 110 are within about 1% (443, 448, 445
-stopped lane-minutes): the picker is unchanged.
+Steps (tool calls of 2 s to 10 min, model gaps of 5-30 s): stopping sessions inside steps
+(StepWait 0) repeats 18.8 steps a day, waiting between steps (3 min) 6.8, with slightly fewer
+stopped minutes (394 against 409) and no session stopped by a limit while it waited. In the
+protected-owner pattern the owner's own stopped minutes are 1.8 a day with V2; a 2-min owner
+grace raises them to 3.8 and spares about 3% of owner moves: off. Caps 98 or 92 change little
+(about 1%); without the spike filter 33% more moves; moving idle sessions only adds cost;
+`move_orgs` any 489, same-first 515, same 995 stopped lane-minutes in the two-organisation
+pattern. **Picker pairing:** with V2 the picker's forward hold at 100 (as in 1.3.2), no hold
+while the switch is on, and a hold at 110 are within 0.5% (394, 396, 396 stopped lane-minutes):
+the picker is unchanged.
 
 **Mechanics, by kind.** Every move first checks the pid is still the same process, then stops
 claude with SIGKILL (a clean exit would stop its background shells; they keep running and the
@@ -1965,7 +1968,7 @@ this environment without `CLAUDE_CONFIG_DIR`, `CLAUDECODE` and `CLAUDE_CODE_*`.
 | --- | --- | --- |
 | tmux | a tmux pane's process is the session's or above it | `remain-on-exit on`, SIGKILL, `respawn-pane -k -c <cwd> "bash -ic '<command>'"`, `remain-on-exit` unset |
 | `wy run` | a `wy run` wrapper within 4 levels above it (`<state>/move/runs/<pid>.json`) | an order in `<state>/move/orders/<wrapper pid>.json`, SIGKILL; the wrapper starts the command in the same terminal |
-| background | registry kind `bg` or `--bg` | `claude stop <id>` under the old folder (its supervisor ends the job and keeps its background shells running), SIGKILL only if the process outlives 10 s (mid-turn, `claude stop` does not end it at once), then `claude stop` again; then for 5 s no copy may run there (the supervisor restarts a job whose process just died: a copy is stopped again, then killed; one that stays blocks the move, nothing is resumed); then `<command> --resume <id> --bg "<note>"`, detached (`--bg` needs a prompt: the note is it), and for 20 s more any copy the old supervisor brings back is stopped (e2e v2: one came back 6 s after the resume); every pass for 30 min after a background move stops such a copy too ("stopped a copy of ... that the supervisor of ... restarted"). The resumed job shows in the new account's `claude agents` |
+| background | registry kind `bg` or `--bg` | `claude stop <job id>` under the old folder (the short id `claude agents --json` lists; the session id matches nothing) (its supervisor ends the job and keeps its background shells running), SIGKILL only if the process outlives 10 s (mid-turn 4 min: there `claude stop` ends the turn and the process exits on its own, and a killed job is restarted by its supervisor; Between steps, below), then `claude stop` again; then for 5 s no copy may run there (the supervisor restarts a job whose process just died: a copy is stopped again, then killed; one that stays blocks the move, nothing is resumed); then `<command> --resume <id> --bg "<note>"`, detached (`--bg` needs a prompt: the note is it), and for 60 s more any copy the old supervisor brings back is stopped (e2e v2: one came back 6 s after the resume); every pass for 30 min after a background move stops such a copy too ("stopped a copy of ... that the supervisor of ... restarted"). The resumed job shows in the new account's `claude agents` |
 | headless | `-p`/`--print` | SIGKILL, then `<command> -p ... --resume <id> "<note>"`, detached, its output appended to `<state>/move/logs/<id>.log` (whoever read the old one's output does not get it) |
 | plain terminal | none of the above | SIGKILL, then `<command> --resume <id> --bg "<note>"`, detached; the message is written to its terminal (Interactive, above) |
 | claude.ai (`--sdk-url`) | its command line | not movable from the machine |
@@ -1998,8 +2001,8 @@ a turn). The hook marks such a prompt (it starts "Watchyard moved this session")
 `move_prompt`, so it never counts as the owner typing. The line:
 
 > Watchyard moved this session from claude-3 to claude-2 mid-turn at 14:05: claude-3's 5h would
-> hit 100% at 14:40 at its current burn (P5 104%). Your last step may not have finished: check
-> its result before redoing it. Helper agents that were running were stopped: restart them if you
+> hit 100% at 14:40 at its current burn (P5 104%). Your last step finished before the move.
+> Helper agents that were running were stopped: restart them if you
 > still need them. Background shells keep running (listed as stopped; check their output files).
 > Carry on with your task.
 
@@ -2018,10 +2021,33 @@ second move in 7 days the line carries the whole path once, "(move 3: claude-6 �
 claude-5 → claude-3)", so the latest note alone tells the history and nothing stacks. Nothing
 about the feature is added to any other session's SessionStart text.
 
-A finding of the e2e: SIGKILL ends claude, not the foreground command its last tool call ran;
-that command finishes on its own a little later. A resumed session that checks at once may not
-see the result yet and redo the step (e2e v2: one step logged twice in 3 of 4 mid-turn moves).
-Steps that are safe to repeat, or that check before they write, are not affected.
+**Between steps.** A mid-turn move does not stop a session inside a step (one tool call).
+The plugin's step hooks (`wy hook --step` on `PreToolUse`, `PostToolUse` and
+`PostToolUseFailure`, every tool; states.md 2) record each call's start and end in
+`<state>/move/steps/<session>/<tool_use_id>`; a call started with `run_in_background` is not a
+step (its shell keeps running after a move). Before it stops a mid-turn session, the pass waits
+until no step is running, up to `move_step_wait_min` (default 3 min) or until one minute before
+the projected hit, whichever is sooner, then stops it at once. The note then says "Your last step
+finished before the move."; a session still inside a step when the wait runs out is stopped
+anyway, and its note names the step, "It was stopped inside a step (Bash: npm test) that may
+still be running: check its result before redoing it." (the tool's command, path or pattern,
+at most 80 characters, left out when the secret filter of peers.md matches it). A session with
+no step hooks (an older plugin) is stopped as before, with "Your last step may not have finished:
+check its result before redoing it." The wait runs in the pass, which `wy tick` starts detached
+(one pass at a time: `<state>/move/pass.lock`), so the tick is never held up.
+
+Why: SIGKILL ends claude, not the foreground command of its running tool call, which finishes
+on its own a little later; a resumed session that checks at once may not see its result and runs
+the step again (e2e v2: one step logged twice in 3 of 4 mid-turn moves). With the wait, every
+step of the e2e (agent tmux, headless, interactive tmux, background; 60 s Bash steps) ran
+exactly once; the simulator (300 runs of 9 patterns) puts repeated steps at 6.8 a day against 18.8
+when the switch stops sessions inside steps, with no more stopped minutes or limit hits.
+
+A background session is never killed first: its old account's supervisor restarts a job whose
+process died, and the copy redoes steps (e2e v2: one step ran four times). The move runs
+`claude stop` (it ends the turn; between steps nothing is lost) and waits for the process to exit,
+which takes seconds between steps and one to three minutes inside one, up to 4 minutes; only a
+process that outlives that is killed, and the job stopped again.
 
 **Who is told.** *The session that started it* (its parent): `wy account next` records the
 calling session's id on the lease (`parent`: `--parent <id>`, else the nearest Claude Code
@@ -2120,7 +2146,8 @@ move_cap_7d = 98            #   move_cap_5h_protected 80, move_cap_7d_protected 
                             #   move_burn_min 10, move_week_span_h 5, move_spike_passes 2,
                             #   move_spike_near_min 30, move_cooldown_min 20, move_no_return_min 60,
                             #   move_account_moves 3, move_account_window_min 15,
-                            #   move_stopped_wait_min 20, move_owner_grace_min 0
+                            #   move_stopped_wait_min 20, move_owner_grace_min 0,
+                            #   move_step_wait_min 3
 ```
 
 `config.toml` is backed up as `config.toml.bak` before `wy setup` first writes it (paths.md 2)

@@ -9,7 +9,7 @@ import (
 
 // The eleven events of docs/spec/states.md section 2.
 var wantEvents = []string{
-	"Notification", "PermissionDenied", "PermissionRequest", "PreCompact", "PreToolUse",
+	"Notification", "PermissionDenied", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "PreCompact", "PreToolUse",
 	"SessionEnd", "SessionStart", "Stop", "StopFailure", "SubagentStop", "UserPromptSubmit",
 }
 

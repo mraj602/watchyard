@@ -361,3 +361,43 @@ func TestMoveLoggedInOnly(t *testing.T) {
 		t.Fatalf("by hand to a logged-out account: %d %q", code, errOut)
 	}
 }
+
+// Between steps (setup.md 8.6): a mid-turn move waits for the tool call in flight to end and
+// says so in the note; when the wait runs out it names the step it was killed inside.
+func TestMoveWaitsForStep(t *testing.T) {
+	const sid = "5e55a0a0-0000-4000-8000-000000000001"
+	defer func(d time.Duration) { mover.StepPoll = d }(mover.StepPoll)
+	mover.StepPoll = 10 * time.Millisecond
+	f, h, run := moveFixture(t, 60, "busy")
+	f.hookEvents(sid, "UserPromptSubmit")
+	f.fiveReset(3 * time.Hour)
+	injectRates(t, f, `{"rates":{"5e55a0a0":20},"spike_passes":1}`)
+	f.set("account.smart_switch", "on")
+	st := mover.NewState(f.dirs.State.Path)
+	_ = st.RecordStep(sid, "toolu_1", "pre", "Bash", "sleep 60 && echo x >> f", time.Now())
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		_ = st.RecordStep(sid, "toolu_1", "post", "Bash", "", time.Now())
+	}()
+	out, errOut, code := run("--auto")
+	resp := strings.Join(h.calls, "\n")
+	if code != 0 || !strings.Contains(out, "moved 5e55") || !strings.Contains(resp, "Your last step finished before the move.") {
+		t.Fatalf("waited: %d %q %q\n%s", code, out, errOut, resp)
+	}
+	// The wait runs out (account.move_step_wait_min): moved inside the step, named.
+	f2, h2, run2 := moveFixture(t, 60, "busy")
+	f2.hookEvents(sid, "UserPromptSubmit")
+	f2.fiveReset(3 * time.Hour)
+	injectRates(t, f2, `{"rates":{"5e55a0a0":20},"spike_passes":1}`)
+	f2.set("account.smart_switch", "on")
+	f2.set("account.move_step_wait_min", "0.01")
+	_ = mover.NewState(f2.dirs.State.Path).RecordStep(sid, "toolu_2", "pre", "Bash", "git push origin main", time.Now())
+	out, _, _ = run2("--auto")
+	resp = strings.Join(h2.calls, "\n")
+	if !strings.Contains(out, "still inside a step (Bash)") || !strings.Contains(resp, "stopped inside a step (Bash: git push origin main) that may still be running") {
+		t.Fatalf("ran out: %q\n%s", out, resp)
+	}
+	if s := mover.NewState(f2.dirs.State.Path).StepNow(sid, time.Now()); s.In {
+		t.Error("the killed process's step is still in flight")
+	}
+}

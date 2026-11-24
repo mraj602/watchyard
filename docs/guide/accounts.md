@@ -199,6 +199,9 @@ What it does, in short:
 - Background, headless and agent tmux sessions move even in the middle of a turn: Claude Code
   stops and resumes under the new account with a note that tells the session what happened, and
   it goes on by itself. Its peers handles keep working, and the session that started it is told.
+- A session in the middle of a turn is moved between two steps (tool calls), not inside one: the
+  move waits up to 3 minutes (`account.move_step_wait_min`) for the running step to end, so a
+  step is not cut short and run again after the move.
 - Sessions you work in move too, and you see a message where they ran: a tmux pane or a `wy run`
   terminal gets the session back in place under the new account, with the message printed above
   it; a plain terminal's session goes on as a background agent on the new account, and the

@@ -26,7 +26,6 @@ import (
 const (
 	simDays      = 2
 	simRatio     = 7.2
-	simMidTurn   = 3   // busy minutes a lane loses when it is killed mid-turn (the step is redone)
 	simCostFixed = 0.2 // the true cost of a move, 5-hour points: fixed plus per million context tokens
 	simCostMTok  = 1.2
 	simCacheTTL  = 60 // minutes: the prompt cache of a subscription
@@ -164,7 +163,14 @@ type simLane struct {
 	last5                  [5]float64
 	age, movedAt, movedFrm int
 	typed                  int // the minute the owner last typed into it (-1: never)
-	idleFor, turnAge       int
+	// The turn's steps (seconds): a tool call in flight (inTool; stepLeft to go, stepDone so
+	// far) or the model's gap before the next one. sr draws them (its own stream).
+	sr                 *rand.Rand
+	inTool             bool
+	stepLeft, stepDone float64
+	// A mid-turn move waiting for the step in flight to end: to pendTo at minute pendAt (-1: none).
+	pendTo, pendAt   int
+	idleFor, turnAge int
 }
 
 // rate10 is the lane's measured burn over the last 10 minutes, points per hour.
@@ -195,7 +201,7 @@ type simAcc struct {
 
 type simResult struct {
 	StoppedMin, IntStoppedMin, Hits, Moves, MidTurn, MidTurnMTok, ReReadMTok, WeeklyWaste, resets7 float64
-	NoDest, IntMoved, IntDelivered, NotLoggedIn                                                    float64
+	NoDest, IntMoved, IntDelivered, NotLoggedIn, Repeats, StepWaits, WaitStopped                   float64
 	MaxProt5, MaxProt7                                                                             float64 // sums over runs of the run's max
 	RunsOver80                                                                                     float64 // runs whose protected level went over 80
 	Over80Min, Over80Owner, Over80NoRoom, Over80Other                                              float64 // protected minutes over 80, by cause
@@ -214,6 +220,9 @@ func (r *simResult) add(o simResult) {
 	r.resets7 += o.resets7
 	r.NoDest += o.NoDest
 	r.IntMoved += o.IntMoved
+	r.Repeats += o.Repeats
+	r.StepWaits += o.StepWaits
+	r.WaitStopped += o.WaitStopped
 	r.IntDelivered += o.IntDelivered
 	r.NotLoggedIn += o.NotLoggedIn
 	r.MaxProt5 += o.MaxProt5
@@ -264,6 +273,7 @@ var simStrategies = func() []simStrat {
 		v2("V2 no spike filter", func(p *Params) { p.SpikePasses = 0 }),
 		v2("V2 idle moves too", func(p *Params) { p.IdleMoves = true }),
 		v2("V2 + 2-min owner grace", func(p *Params) { p.OwnerGrace = 2 * time.Minute }),
+		v2("V2 kill inside steps (before)", func(p *Params) { p.StepWait = 0 }),
 		pickB, pickC, same1, same,
 	}
 }()
@@ -307,7 +317,8 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 	lanes := make([]*simLane, len(specs))
 	byID := map[string]*simLane{}
 	for i, s := range specs {
-		l := &simLane{laneSpec: s, id: fmt.Sprintf("s%03d", i), r: rand.New(rand.NewPCG(s.seed, 4)), movedFrm: -1, typed: -1, ctx: 30_000}
+		l := &simLane{laneSpec: s, id: fmt.Sprintf("s%03d", i), r: rand.New(rand.NewPCG(s.seed, 4)), movedFrm: -1, typed: -1, ctx: 30_000,
+			sr: rand.New(rand.NewPCG(s.seed, 5)), pendTo: -1}
 		lanes[i], byID[l.id] = l, l
 	}
 	accIdx := map[string]int{}
@@ -442,6 +453,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 					l.acc = place(m, l.est)
 				}
 				l.on, l.busy = true, 4+l.r.IntN(20)
+				l.newTurn()
 				if l.owner {
 					l.typed = m // the owner starts it with a prompt
 				}
@@ -467,6 +479,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 					l.idleFor++
 					if l.idle <= 0 {
 						l.idleFor, l.turnAge = 0, 0
+						l.newTurn()
 						if l.owner {
 							l.typed = m // every owner turn starts with the owner typing
 						}
@@ -500,6 +513,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 				}
 				l.work--
 				l.busy--
+				l.steps(60)
 				if l.work <= 0 {
 					l.done = true
 				} else if l.busy == 0 {
@@ -548,6 +562,21 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 					}
 				}
 			}
+		}
+		// Mid-turn moves that waited for their step to end land now, between steps.
+		for _, l := range lanes {
+			if l.pendTo < 0 || m < l.pendAt {
+				continue
+			}
+			to := l.pendTo
+			l.pendTo = -1
+			if l.done {
+				continue
+			}
+			if l.stopped {
+				res.WaitStopped++ // the limit stopped it while it waited
+			}
+			execMove(&res, l, accs, to, m, burnAcc, false)
 		}
 		if st.off || m%pass != 0 {
 			continue
@@ -636,7 +665,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 					continue
 				}
 				m5recs = append(m5recs, m5.Record{Session: mv.Session, From: mv.From, To: mv.To, At: simAt(m)})
-				execMove(&res, byID[mv.Session], accs, accIdx[mv.To], m, burnAcc)
+				execMove(&res, byID[mv.Session], accs, accIdx[mv.To], m, burnAcc, false)
 			}
 			continue
 		}
@@ -674,8 +703,27 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 				res.NoDest++
 				continue
 			}
+			l := byID[mv.Session]
+			if l.pendTo >= 0 {
+				continue // already waiting for its step to end
+			}
 			recs = append(recs, Record{Session: mv.Session, From: mv.From, To: mv.To, At: in.Now})
-			execMove(&res, byID[mv.Session], accs, accIdx[mv.To], m, burnAcc)
+			// Mid-turn with a tool call in flight: wait for it to end if it does within
+			// min(StepWait, time to the projected hit - 1 min), else kill inside it (a repeat).
+			repeat := false
+			if l.busy > 0 && !l.stopped && l.restart == 0 && l.inTool {
+				capS := st.p.StepWait.Seconds()
+				if !mv.HitAt.IsZero() {
+					capS = math.Min(capS, mv.HitAt.Sub(in.Now).Seconds()-60)
+				}
+				if l.stepLeft <= capS {
+					l.pendTo, l.pendAt = accIdx[mv.To], m+int(math.Ceil(l.stepLeft/60))
+					res.StepWaits++
+					continue
+				}
+				repeat = true
+			}
+			execMove(&res, l, accs, accIdx[mv.To], m, burnAcc, repeat)
 		}
 		if len(recs) > 400 {
 			recs = recs[len(recs)-200:]
@@ -691,7 +739,10 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 // loses its helpers; the re-read of its context (uncached unless its cache went cold) is
 // burnt on the destination. An interactive (owner) session is moved the same way and its
 // owner gets the message in its pane; it then runs on the destination, not stopped.
-func execMove(res *simResult, l *simLane, accs []*simAcc, to, m int, burnAcc func(*simAcc, float64, int, bool)) {
+//
+// repeat: it was killed inside a tool call: the resumed session repeats that step (its time
+// so far is redone on the destination). Killed between steps, nothing is redone.
+func execMove(res *simResult, l *simLane, accs []*simAcc, to, m int, burnAcc func(*simAcc, float64, int, bool), repeat bool) {
 	if l.owner {
 		res.IntMoved++
 		defer func() {
@@ -714,8 +765,14 @@ func execMove(res *simResult, l *simLane, accs []*simAcc, to, m int, burnAcc fun
 	}
 	if mid {
 		res.MidTurn++
-		l.work += simMidTurn
-		l.burst = 0
+		l.burst = 0 // its helpers are stopped
+		if repeat {
+			res.Repeats++
+			l.work += int(math.Ceil(l.stepDone / 60))
+		}
+	}
+	if l.inTool && !repeat {
+		l.inTool, l.stepLeft = false, 0 // it moved between steps: the next one starts there
 	}
 	l.movedFrm, l.movedAt = l.acc, m
 	burnAcc(accs[to], cost, m, true)
@@ -732,8 +789,8 @@ func envInt(k string, def int) int {
 	return def
 }
 
-const simHeader = "| strategy | stopped | of which interactive | hits | moves | mid-turn | mid-turn Mtok | re-read Mtok | prot 5h max | prot 7d max | runs prot>80 % | prot>80 min (owner/no room/other) | waste | interactive moved | to not logged in | no room |\n" +
-	"|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+const simHeader = "| strategy | stopped | of which interactive | hits | moves | mid-turn | repeated steps | step waits | stopped while waiting | mid-turn Mtok | re-read Mtok | prot 5h max | prot 7d max | runs prot>80 % | prot>80 min (owner/no room/other) | waste | interactive moved | to not logged in | no room |\n" +
+	"|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
 
 func writeRow(b *strings.Builder, name string, s simResult) {
 	days := s.runs * simDays
@@ -741,8 +798,8 @@ func writeRow(b *strings.Builder, name string, s simResult) {
 	if s.resets7 > 0 {
 		waste = s.WeeklyWaste / s.resets7
 	}
-	fmt.Fprintf(b, "| %s | %.1f | %.1f | %.2f | %.2f | %.2f | %.2f | %.2f | %.1f | %.1f | %.1f | %.1f (%.1f/%.1f/%.1f) | %.1f | %.2f | %.2f | %.2f |\n", name,
-		s.StoppedMin/days, s.IntStoppedMin/days, s.Hits/days, s.Moves/days, s.MidTurn/days, s.MidTurnMTok/days, s.ReReadMTok/days,
+	fmt.Fprintf(b, "| %s | %.1f | %.1f | %.2f | %.2f | %.2f | %.2f | %.2f | %.2f | %.2f | %.2f | %.1f | %.1f | %.1f | %.1f (%.1f/%.1f/%.1f) | %.1f | %.2f | %.2f | %.2f |\n", name,
+		s.StoppedMin/days, s.IntStoppedMin/days, s.Hits/days, s.Moves/days, s.MidTurn/days, s.Repeats/days, s.StepWaits/days, s.WaitStopped/days, s.MidTurnMTok/days, s.ReReadMTok/days,
 		s.MaxProt5/s.runs, s.MaxProt7/s.runs, 100*s.RunsOver80/s.runs, s.Over80Min/days, s.Over80Owner/days, s.Over80NoRoom/days,
 		s.Over80Other/days, waste, s.IntMoved/days, s.NotLoggedIn/days, s.NoDest/days)
 }
@@ -781,7 +838,7 @@ func TestSimulateStrategies(t *testing.T) {
 	runs, par := envInt("WY_SIM_RUNS", 2), envInt("WY_SIM_PAR", 2)
 	var b strings.Builder
 	fmt.Fprintf(&b, "Mover simulator v2: %d seeded runs per pattern, %d days each, %d accounts (claude-1..3 protected). V2 passes every minute, M5 every 2.\n"+
-		"Per day per run: stopped = lane-minutes stopped at a limit (primary); hits = lanes stopped by a limit; mid-turn = moves that killed a turn; "+
+		"Per day per run: stopped = lane-minutes stopped at a limit (primary); hits = lanes stopped by a limit; mid-turn = moves that killed a turn; repeated steps = mid-turn kills inside a tool call (the resumed session repeats that step; its time is redone on the destination); step waits = mid-turn moves that waited for the tool call in flight to end (at most StepWait, and 1 min before the projected hit) and landed between steps; stopped while waiting = of those, lanes a limit stopped before the move landed; "+
 		"mid-turn Mtok = context re-read uncached by those; re-read Mtok = all uncached re-reads; interactive moved = the owner's sessions moved (each with its message delivered); prot 5h/7d max = "+
 		"the run's highest protected level (mean over runs); runs prot>80 = share of runs where a protected level went over 80; prot>80 min = protected "+
 		"account-minutes over 80, split by cause (the owner's interactive session burning on it / no aggressive account here had room / other: "+
@@ -985,5 +1042,36 @@ func TestSimPatternsUnique(t *testing.T) {
 		if ns[i] == ns[i-1] {
 			t.Fatalf("pattern %q twice", ns[i])
 		}
+	}
+}
+
+// newTurn starts a turn's steps: the model's first gap.
+func (l *simLane) newTurn() { l.inTool, l.stepLeft, l.stepDone = false, uniform(l.sr, 5, 30), 0 }
+
+// steps advances the turn by secs seconds of tool calls (60% 2-10 s, 30% 30-90 s, 10% 3-10
+// min builds and tests) and model gaps (5-30 s) between them.
+func (l *simLane) steps(secs float64) {
+	for secs > 0 {
+		if l.stepLeft <= 0 {
+			if l.inTool {
+				l.inTool, l.stepLeft = false, uniform(l.sr, 5, 30)
+			} else {
+				l.inTool, l.stepDone = true, 0
+				switch x := l.sr.Float64(); {
+				case x < 0.6:
+					l.stepLeft = uniform(l.sr, 2, 10)
+				case x < 0.9:
+					l.stepLeft = uniform(l.sr, 30, 90)
+				default:
+					l.stepLeft = uniform(l.sr, 180, 600)
+				}
+			}
+		}
+		d := math.Min(secs, l.stepLeft)
+		l.stepLeft -= d
+		if l.inTool {
+			l.stepDone += d
+		}
+		secs -= d
 	}
 }

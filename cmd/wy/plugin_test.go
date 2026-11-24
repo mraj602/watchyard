@@ -35,11 +35,28 @@ func TestPluginHooksJSON(t *testing.T) {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"Notification", "PermissionDenied", "PermissionRequest", "PreCompact", "PreToolUse", "SessionEnd",
-		"SessionStart", "Stop", "StopFailure", "SubagentStop", "UserPromptSubmit"}
+	want := []string{"Notification", "PermissionDenied", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "PreCompact",
+		"PreToolUse", "SessionEnd", "SessionStart", "Stop", "StopFailure", "SubagentStop", "UserPromptSubmit"}
 	var got []string
 	for ev, groups := range doc.Hooks {
 		got = append(got, ev)
+		// The step entries (setup.md 8.6, Between steps): `wy hook --step <Event>`, async, for
+		// every tool. PostToolUse and PostToolUseFailure have only that one; PreToolUse has it
+		// after its AskUserQuestion|ExitPlanMode group.
+		if ev == "PreToolUse" || ev == "PostToolUse" || ev == "PostToolUseFailure" {
+			sg := groups[len(groups)-1]
+			if len(sg.Hooks) != 1 || sg.Matcher != "*" || !sg.Hooks[0].Async ||
+				sg.Hooks[0].Command != "command -v wy >/dev/null 2>&1 && wy hook --step "+ev+" || true" {
+				t.Errorf("%s step entry: %+v", ev, sg)
+			}
+			if ev != "PreToolUse" {
+				if len(groups) != 1 {
+					t.Errorf("%s: %d groups", ev, len(groups))
+				}
+				continue
+			}
+			groups = groups[:len(groups)-1]
+		}
 		// The seven title events (docs/spec/terminal.md T6) carry a second group: the
 		// synchronous `wy hook --title <Event>` entry with timeout 1.
 		wantGroups := 1

@@ -258,7 +258,7 @@ func TestBackgroundMoveStopsOldCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(h.calls, "|")
-	if !strings.HasPrefix(got, "stop s1 in /h/.claude-4|stop s1 in /h/.claude-4|stop s1 in /h/.claude-4|carry s1") || !strings.Contains(got, "|start /w:") {
+	if !strings.HasPrefix(got, "stop s1 in /h/.claude-4|stop s1 in /h/.claude-4|carry s1") || !strings.Contains(got, "|start /w:") {
 		t.Fatalf("steps %s", got)
 	}
 	// claude stop that does not end it: killed after StopWait.
@@ -374,3 +374,44 @@ type orderHost struct {
 }
 
 func (h *orderHost) Order(pid int, o RunOrder) error { h.order = o; return nil }
+
+// Mid-turn, a background session is stopped, never killed first: its supervisor restarts a
+// killed job (e2e v2). It is killed only when it outlives MidTurnStopWait.
+func TestBackgroundMidTurnStopsFirst(t *testing.T) {
+	defer func(d time.Duration) { Settle = d }(Settle)
+	Settle = 0
+	defer func(d time.Duration) { AfterWatch = d }(AfterWatch)
+	AfterWatch = 0
+	tg := Target{Key: "acct:b/o", Label: "claude-2", Dir: "/h/.claude-2"}
+	l := Launch{PID: 42, SessionID: "s1", Slot: "/h/.claude-4", CWD: "/w", Kind: KindBackground, MidTurn: true}
+	h := &fakeHost{}
+	if _, err := Execute(h, l, tg, "", "N", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(h.calls, "|"); !strings.HasPrefix(got, "stop s1 in /h/.claude-4|carry") {
+		t.Errorf("steps %s", got)
+	}
+	defer func(d time.Duration) { MidTurnStopWait = d }(MidTurnStopWait)
+	MidTurnStopWait = 50 * time.Millisecond
+	h = &fakeHost{stopIgnored: true}
+	if _, err := Execute(h, l, tg, "", "N", ""); err != nil || !strings.HasPrefix(strings.Join(h.calls, "|"), "stop s1 in /h/.claude-4|kill 42|stop s1 in /h/.claude-4|carry") {
+		t.Fatalf("stop ignored: %v %q", err, h.calls)
+	}
+}
+
+// claude stop takes the job's short id: with the session id it matches nothing (e2e v2).
+func TestJobID(t *testing.T) {
+	agents := []byte(`[{"id":"b4c4db81","sessionId":"b4c4db81-fae9-401e-9961-db0875b0c674","kind":"background"},{"pid":3,"sessionId":"x"}]`)
+	for _, c := range []struct{ sid, want string }{
+		{"b4c4db81-fae9-401e-9961-db0875b0c674", "b4c4db81"},
+		{"14cbe57e-1688-4224-9d88-63598181b252", "14cbe57e"},
+		{"short", "short"},
+	} {
+		if got := JobID(c.sid, agents); got != c.want {
+			t.Errorf("%s: %q, want %q", c.sid, got, c.want)
+		}
+	}
+	if got := JobID("abcdefgh-1", []byte("not json")); got != "abcdefgh" {
+		t.Errorf("bad json: %q", got)
+	}
+}

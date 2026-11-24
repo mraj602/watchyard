@@ -13,6 +13,7 @@ const hookUsage = `usage: wy hook [<Event>]            record one Claude Code ho
        wy hook --title <Event>      print the tab title hook JSON, or nothing (terminal.titles)
        wy hook --peers-context <Event>
                                     on SessionStart, print the peers context hook JSON, or nothing
+       wy hook --step <Event>       record a tool call's start or end (Smart Account Switch)
 
 Run by Claude Code's hooks; it always exits 0 and never blocks or decides anything (the
 peers context only tells a new session that other sessions are reachable).
@@ -32,6 +33,9 @@ func runHook(args []string, stdout, _ io.Writer) error {
 			return nil
 		case hook.PeersContextFlag:
 			hook.RunPeersContext(args[1:], os.Stdin, stdout, os.Getenv)
+			return nil
+		case hook.StepFlag:
+			hook.RunStep(args[1:], os.Stdin, os.Getenv)
 			return nil
 		}
 	}

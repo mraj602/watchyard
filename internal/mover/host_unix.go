@@ -65,9 +65,26 @@ func (h RealHost) Start(dir string, argv []string, log string) error {
 }
 
 func (h RealHost) StopJob(dir, sid string) error {
-	cmd := exec.Command("claude", "stop", sid)
-	cmd.Env = append(CleanEnv(os.Environ()), "CLAUDE_CONFIG_DIR="+dir)
-	out, err := cmd.CombinedOutput()
+	run := func(args ...string) ([]byte, error) {
+		cmd := exec.Command("claude", args...)
+		cmd.Env = append(CleanEnv(os.Environ()), "CLAUDE_CONFIG_DIR="+dir)
+		return cmd.CombinedOutput()
+	}
+	// claude stop takes the job's short id, not the session id: with the session id it says
+	// "No session matching" and exits 0 (e2e v2), and the job runs on. The short id is the
+	// session id's first 8 characters; `claude agents --json` (seconds, in which the session
+	// may start its next step) is asked only when that does not match.
+	nomatch := func(out []byte) bool { return strings.Contains(string(out), "No session matching") }
+	out, err := run("stop", JobID(sid, nil))
+	if err == nil && nomatch(out) {
+		agents, _ := run("agents", "--json")
+		if id := JobID(sid, agents); id != JobID(sid, nil) {
+			out, err = run("stop", id)
+		}
+	}
+	if err == nil && nomatch(out) {
+		err = errors.New(strings.TrimSpace(string(out)))
+	}
 	if err != nil && len(out) > 0 {
 		return errors.New(strings.TrimSpace(string(out)))
 	}

@@ -14,7 +14,7 @@ All notable changes to Watchyard are recorded here. The format follows
   the same over at most 5 hours), and when an account will pass its cap (95/98, protected 80/80)
   it moves the sessions that burn it, the biggest burner first, until the account is back under
   its cap − 5. Background, headless and agent tmux sessions move even mid-turn: stopped with
-  SIGKILL (background shells keep running) and resumed under the new account with a note as the
+  SIGKILL, a background session with `claude stop` (background shells keep running) and resumed under the new account with a note as the
   prompt, so they carry on by themselves (in their tmux pane, in their terminal under `wy run`,
   as a background session `--resume <id> --bg`, or headless `-p --resume`). Interactive
   sessions move the same way, and the person sees a message where the session ran: printed in
@@ -32,9 +32,19 @@ All notable changes to Watchyard are recorded here. The format follows
   is a setting (`account.move_*`). `wy move --plan` shows each account's projection, the moves
   and the notices; `wy move <session> [<account>]` moves one by hand; `--pin-account` or the
   peers tag `no-move` opts a session out. In the simulator (9 patterns, 300 runs each) it cuts
-  limit hits from 7.3 to 3.9 a day against the decision this release had before (M5) and keeps
+  limit hits from 7.3 to 3.4 a day against the decision this release had before (M5) and keeps
   protected accounts lower, for about 3x the moves and context re-read; stopped lane-minutes
-  443 against M5's 381 (the rest is accounts with no room for the moved burn).
+  394 against M5's 381 (the rest is accounts with no room for the moved burn).
+- Mid-turn moves happen between steps, not inside one. New plugin hooks (`wy hook --step` on
+  `PreToolUse`, `PostToolUse` and `PostToolUseFailure`) record when each tool call starts and
+  ends; before it stops a session mid-turn, the move waits until no tool call runs, up to
+  `account.move_step_wait_min` (3 minutes) or one minute before the projected hit, then stops it
+  at once. Background shells do not count. The note says the last step finished, or names the
+  step it was stopped inside (its tool and command, at most 80 characters, never when it looks
+  like a secret). A background session is stopped with `claude stop` and given up to 4 minutes
+  to exit instead of being killed, since its supervisor restarts a killed job. `wy tick` starts
+  the pass detached, one at a time, so the wait never holds the tick up. `claude stop` is given the job's short
+  id (`claude agents --json`): with the session id it matched nothing and the job ran on.
 - Everyone involved learns about a move. The moved session's note carries its whole path of
   accounts once it has moved more than once. The session that started a lane through `wy
   account next --exec` (recorded as the lease's `parent`, or `--parent <id>`) gets one short

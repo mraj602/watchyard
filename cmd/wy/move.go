@@ -179,6 +179,15 @@ func moveCmd(e moveEnv, args []string) error {
 		}
 		return nil
 	case *auto:
+		unlock, ok, err := st.PassLock()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			fmt.Fprintln(e.stdout, "Another Smart Account Switch pass is running (it may be waiting for a step to end).")
+			return nil
+		}
+		defer unlock()
 		return w.autoPass(e, cfg, st)
 	}
 	l, err := w.find(pos[0])
@@ -226,6 +235,9 @@ func moveCmd(e moveEnv, args []string) error {
 	mv.ByHand = true
 	if l.Status == "busy" && *now {
 		mv.MidTurn, l.MidTurn = true, true // it resumes with the note as its prompt
+		if !*dry {
+			w.betweenSteps(e, st, l, &mv)
+		}
 	}
 	from := w.labelOfDir[l.Slot]
 	note := mover.Note(from, t.Label, e.now(), mv, w.chainLabels(st, l.SessionID, e.now())...)
@@ -659,7 +671,7 @@ func moveParams(cfg config.Config) mover.Params {
 	p.SpikePasses, p.SpikeNear = int(a.MoveSpikePasses), mins(a.MoveSpikeNearMin)
 	p.Cooldown, p.NoReturn = mins(a.MoveCooldownMin), mins(a.MoveNoReturnMin)
 	p.AccountMoves, p.AccountWindow = int(a.MoveAccountMoves), mins(a.MoveAccountWindowMin)
-	p.StoppedWait, p.OwnerGrace = mins(a.MoveStoppedWaitMin), mins(a.MoveOwnerGraceMin)
+	p.StoppedWait, p.OwnerGrace, p.StepWait = mins(a.MoveStoppedWaitMin), mins(a.MoveOwnerGraceMin), mins(a.MoveStepWaitMin)
 	if a.MoveOrgs != "" {
 		p.Orgs = a.MoveOrgs
 	}
@@ -877,6 +889,9 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State) error
 			continue
 		}
 		l.MidTurn = m.MidTurn
+		if m.MidTurn {
+			w.betweenSteps(e, st, l, &m)
+		}
 		note := mover.Note(w.accLabel(m.From), w.targets[m.To].Label, e.now(), m, w.chainLabels(st, m.Session, e.now())...)
 		n, err := w.carryOut(e, cfg, st, l, w.targets[m.To], note, m.Reason, true, m)
 		if err != nil {
@@ -895,6 +910,34 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State) error
 	return first
 }
 
+// betweenSteps waits until session l is between two tool calls (setup.md 8.6, Between
+// steps), up to account.move_step_wait_min or until the projected hit, whichever is sooner,
+// and records on mv what the note says: the last step ended, or the step it is stopped inside.
+func (w *moveWorld) betweenSteps(e moveEnv, st mover.State, l mover.Launch, mv *mover.Move) {
+	max := w.input.Params.StepWait
+	if !mv.HitAt.IsZero() {
+		if until := mv.HitAt.Sub(e.now()) - time.Minute; until < max {
+			max = until
+		}
+	}
+	if max < 0 {
+		max = 0
+	}
+	host := moveHost(e, st)
+	start := time.Now()
+	s, between := st.WaitStep(l.SessionID, max, func() bool { return host.Alive(l) })
+	switch {
+	case between:
+		mv.StepEnded = true
+		if d := time.Since(start); d > time.Second {
+			fmt.Fprintf(e.stdout, "%s %s: waited %s for its step to end\n", short(l.SessionID), l.Name, d.Round(time.Second))
+		}
+	case s.In:
+		mv.StepTool, mv.StepCmd = s.Tool, s.Cmd
+		fmt.Fprintf(e.stdout, "%s %s: still inside a step (%s) after %s: moved anyway\n", short(l.SessionID), l.Name, s.Tool, time.Since(start).Round(time.Second))
+	}
+}
+
 // moveHost is the host that stops and starts sessions (tests set e.host).
 func moveHost(e moveEnv, st mover.State) mover.Host {
 	if e.host != nil {
@@ -907,6 +950,9 @@ func moveHost(e moveEnv, st mover.State) mover.Host {
 // a new one on t carries the session) and the note.
 func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mover.Launch, t mover.Target, note, reason string, auto bool, mv mover.Move) (laneNotice, error) {
 	host := moveHost(e, st)
+	// The steps in flight now are the old process's: it is stopped next, and no PostToolUse
+	// comes for them.
+	st.EndSteps(l.SessionID, e.now())
 	switch l.Kind {
 	case mover.KindTmux, mover.KindWrapped, mover.KindTerminal:
 		l.Message = w.humanMessage(cfg, l, t, mv, e.now())

@@ -1,5 +1,5 @@
 {
-  "description": "Watchyard: record session events with `wy hook` (async, never blocks, always exits 0; SessionEnd is synchronous with a 2 s timeout so a closing session still records `ended`). Events from docs/spec/states.md section 2. Seven further synchronous entries (`wy hook --title <Event>`, timeout 1) print the tab title as hook JSON and stay silent unless `terminal.titles` is on (docs/spec/terminal.md T6). One more synchronous SessionStart entry (`wy hook --peers-context SessionStart`, timeout 1) tells a new session that it can reach sessions of other accounts and machines, and stays silent unless peers are enabled and the local matrix lets this account reach another (docs/spec/peers.md 2.5).",
+  "description": "Watchyard: record session events with `wy hook` (async, never blocks, always exits 0; SessionEnd is synchronous with a 2 s timeout so a closing session still records `ended`). Events from docs/spec/states.md section 2. Seven further synchronous entries (`wy hook --title <Event>`, timeout 1) print the tab title as hook JSON and stay silent unless `terminal.titles` is on (docs/spec/terminal.md T6). One more synchronous SessionStart entry (`wy hook --peers-context SessionStart`, timeout 1) tells a new session that it can reach sessions of other accounts and machines, and stays silent unless peers are enabled and the local matrix lets this account reach another (docs/spec/peers.md 2.5). PreToolUse, PostToolUse and PostToolUseFailure of every tool also run `wy hook --step <Event>` (async), which only records the tool call as a step of the session for Smart Account Switch, so a move waits for the step to end (docs/spec/setup.md 8.6).",
   "hooks": {
     "SessionStart": [
       {
@@ -97,6 +97,40 @@
           {
             "type": "command",
             "command": "command -v wy >/dev/null 2>&1 && wy hook PreToolUse || true",
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v wy >/dev/null 2>&1 && wy hook --step PreToolUse || true",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v wy >/dev/null 2>&1 && wy hook --step PostToolUse || true",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v wy >/dev/null 2>&1 && wy hook --step PostToolUseFailure || true",
             "async": true
           }
         ]

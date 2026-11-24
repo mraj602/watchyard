@@ -44,6 +44,9 @@ type Params struct {
 	// StoppedWait: a session a limit stopped moves only when that window resets at least this
 	// far ahead (nearer, waiting costs less than a restart and a re-read).
 	StoppedWait time.Duration
+	// StepWait: a mid-turn move waits at most this long for the step in flight to end (or
+	// less, when the hit comes sooner); then it kills inside the step.
+	StepWait time.Duration
 	// OwnerGrace: an interactive session the owner typed into this recently is left alone (0:
 	// off, the default; the simulator compares 2 minutes).
 	OwnerGrace time.Duration
@@ -67,7 +70,7 @@ var DefaultParams = Params{
 	Hysteresis: 5, BurnWindow: 10 * time.Minute, Pass: time.Minute, WeekSpan: 5 * time.Hour,
 	SpikePasses: 2, SpikeNear: 30 * time.Minute,
 	Cooldown: 20 * time.Minute, NoReturn: time.Hour, AccountMoves: 3, AccountWindow: 15 * time.Minute,
-	StoppedWait: 20 * time.Minute, Orgs: OrgsAny,
+	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, Orgs: OrgsAny,
 }
 
 // Window kinds.
@@ -207,8 +210,14 @@ type Move struct {
 	OrgChanged bool
 	// Interactive: a human-facing session (it gets a message in its pane or terminal).
 	Interactive bool
-	Rate        float64
-	Reason      string
+	// StepEnded: a mid-turn move waited for the session's tool call in flight to end and
+	// killed it between steps. StepTool and StepCmd: the step it was killed inside when the
+	// wait ran out ("" none, or unknown).
+	StepEnded bool
+	StepTool  string
+	StepCmd   string
+	Rate      float64
+	Reason    string
 }
 
 // Skip is a session on a triggered account the pass leaves where it is, and why.

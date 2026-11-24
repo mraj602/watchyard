@@ -99,12 +99,24 @@ func runTick(args []string, stdout, stderr io.Writer) error {
 	keep("flush", runFlush(fa, out, errw))
 	// Smart Account Switch (setup.md 8.6): one pass every moveEvery while it is on.
 	if cfg.Account.SmartSwitch && detach.Debounce(filepath.Join(d.State.Path, "move.stamp"), moveEvery, time.Now()) {
-		keep("smart account switch", runMove([]string{"--auto"}, out, errw))
+		keep("smart account switch", tickMove(out, errw))
 	}
 	keep("direct push", tickDirectPush(ctx, d, cfg, errw))
 	keep("title files", tickPruneTitles(d.State.Path, time.Now()))
 	peerspkg.PruneSessionFiles(d.State.Path, time.Now())
 	return quietErr(*quiet, first)
+}
+
+// tickMove starts one Smart Account Switch pass in the background: a pass may wait minutes
+// for a session's step to end (setup.md 8.6, Between steps), and tick must not wait with it.
+// Its moves go to <state>/move/moves.jsonl. WY_NO_SPAWN=1 runs it here instead (tests).
+func tickMove(out, errw io.Writer) error {
+	if os.Getenv("WY_NO_SPAWN") != "1" {
+		if exe, err := os.Executable(); err == nil {
+			return detach.Start(exe, []string{"move", "--auto"}, nil)
+		}
+	}
+	return runMove([]string{"--auto"}, out, errw)
 }
 
 // titleFileTTL is how long `wy hook --title`'s per-session file is kept after its last
