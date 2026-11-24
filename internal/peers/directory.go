@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Session is one live session in the directory (peers.md 3.1): of this machine (the local
@@ -16,13 +17,20 @@ type Session struct {
 	Handle       string
 	// Aliases are other handles that name the session too (peers.md 3.3): the ones with an
 	// account label other than the canonical one that a machine shows for it.
-	Aliases     []string
-	Name        string
-	Project     string
-	Mode        Mode // from the session file; prompting when there is none
-	File        SessionFile
-	HasFile     bool
-	MachineName string
+	Aliases []string
+	// MovedFrom are the handles the session had under accounts it left (identity.md 5.3),
+	// newest first; they are in Aliases too. A send to one of them tells the sender the new
+	// handle (SendResult.Via).
+	MovedFrom []string
+	// PastAccounts are the accounts the session left (local: its past slots; the hub's stale
+	// account for it): a message addressed to it under one of them is still its (Receive).
+	PastAccounts []string
+	Name         string
+	Project      string
+	Mode         Mode // from the session file; prompting when there is none
+	File         SessionFile
+	HasFile      bool
+	MachineName  string
 	// Remote: the session runs on another machine; Device is that machine's agent device
 	// ("" when it runs none, so it cannot be reached) and State the hub's session state.
 	Remote bool
@@ -40,7 +48,9 @@ type ListEntry struct {
 	Session string `json:"session"`
 	Handle  string `json:"handle"`
 	// Aliases: other handles of the same session that wy peers send accepts (peers.md 3.3).
-	Aliases      []string `json:"aliases,omitempty"`
+	Aliases []string `json:"aliases,omitempty"`
+	// MovedFrom: the aliases from accounts the session left (it moved, identity.md 5.3).
+	MovedFrom    []string `json:"moved_from,omitempty"`
 	Name         string   `json:"name"`
 	Account      string   `json:"account"`
 	AccountLabel string   `json:"account_label"`
@@ -80,12 +90,14 @@ func (e Env) accountLabel(slotName string) string {
 func (e Env) Directory() []Session {
 	var out []Session
 	login := e.loginReader()
+	slots := map[string]slotName{}
 	for _, slot := range e.Slots() {
 		label := e.accountLabel(slot.Name)
 		acct := ""
 		if l, err := login(slot); err == nil && l.HasSeat {
 			acct = l.Seat.Account
 		}
+		slots[slot.Dir] = slotName{label: label, account: acct}
 		for _, ent := range ReadRegistry(e.fs(), slot) {
 			if e.Proc != nil {
 				live, err := e.Proc.StartTime(ent.PID)
@@ -116,9 +128,12 @@ func (e Env) Directory() []Session {
 		}
 		return a.PID < b.PID
 	})
-	e.nameLocal(out)
+	e.nameLocal(out, slots)
 	return out
 }
+
+// slotName is a slot's local label and account, for the handles of sessions that left it.
+type slotName struct{ label, account string }
 
 // nameLocal gives the local sessions their handles (peers.md 3.2). A session the hub named
 // takes the hub's canonical handle, so this machine shows and sends the handle every other
@@ -126,7 +141,10 @@ func (e Env) Directory() []Session {
 // hub knows exactly one, else with this machine's label, and made unique by -2, -3 on the
 // name part. Whenever the canonical label differs from this machine's own label for the
 // slot, the handle with the local label stays an alias.
-func (e Env) nameLocal(out []Session) {
+//
+// A session that moved here from another slot of this machine (Env.PastSlots) keeps the
+// handles it had there as aliases and in MovedFrom.
+func (e Env) nameLocal(out []Session, slots map[string]slotName) {
 	machine := HandlePart(e.Machine.Name)
 	var names map[string]HubName
 	if e.Remote != nil {
@@ -144,10 +162,18 @@ func (e Env) nameLocal(out []Session) {
 		hubLabel[n.Account] = n.Label
 	}
 	taken := map[string]bool{}
+	stale := map[int]HubName{} // sessions the hub still shows under the account they left
 	for i := range out {
 		n, ok := names[out[i].Entry.SessionID]
 		if ok && n.Mine {
 			out[i].Tags = NormTags(n.Tags)
+		}
+		if ok && n.Mine && n.Account != "" && out[i].Account != "" && n.Account != out[i].Account {
+			// The session runs under another account than the hub saw (identity.md 5.3: resumed
+			// with another config folder): it is named here for its account now, and the hub's
+			// handle stays an alias until the hub moves it too.
+			stale[i] = n
+			continue
 		}
 		if !ok || !n.Mine || n.Handle == "" || taken[strings.ToLower(n.Handle)] {
 			continue
@@ -158,6 +184,7 @@ func (e Env) nameLocal(out []Session) {
 			out[i].AccountLabel = n.Label
 		}
 		out[i].Aliases = addAlias(append([]string(nil), n.Aliases...), n.Handle, MakeHandle(n.Name, local, machine))
+		out[i].MovedFrom = append([]string(nil), n.MovedFrom...)
 		taken[strings.ToLower(n.Handle)] = true
 	}
 	for i := range out {
@@ -182,7 +209,90 @@ func (e Env) nameLocal(out []Session) {
 		}
 		out[i].AccountLabel = label
 		out[i].Aliases = addAlias(nil, out[i].Handle, MakeHandle(out[i].Name, local, machine))
+		if n, ok := stale[i]; ok {
+			out[i].PastAccounts = append(out[i].PastAccounts, n.Account)
+			out[i].Aliases = addAlias(out[i].Aliases, out[i].Handle, append([]string{n.Handle}, n.Aliases...)...)
+			out[i].MovedFrom = addAlias(out[i].MovedFrom, out[i].Handle, append([]string{n.Handle}, n.MovedFrom...)...)
+		}
 	}
+	for i := range out {
+		for _, dir := range e.pastSlots(out[i].Entry.SessionID, out[i].Entry.Slot.Dir, slots) {
+			sn, ok := slots[dir]
+			if !ok || dir == out[i].Entry.Slot.Dir {
+				continue
+			}
+			if sn.account != "" && sn.account != out[i].Account {
+				out[i].PastAccounts = append(out[i].PastAccounts, sn.account)
+			}
+			var old []string
+			if l, ok := hubLabel[sn.account]; ok && !mixed[sn.account] && sn.account != out[i].Account {
+				old = append(old, MakeHandle(out[i].Name, l, machine))
+			}
+			old = append(old, MakeHandle(out[i].Name, sn.label, machine))
+			for _, h := range old {
+				if !strings.EqualFold(h, out[i].Handle) && !taken[strings.ToLower(h)] {
+					out[i].Aliases = addAlias(out[i].Aliases, out[i].Handle, h)
+					out[i].MovedFrom = addAlias(out[i].MovedFrom, out[i].Handle, h)
+				}
+			}
+		}
+	}
+}
+
+// pastSlots are the slots of this machine the session ran in before its current one (cur),
+// newest first: those wy move recorded (Env.PastSlots) and those where Claude Code keeps a
+// folder of the session (session-env/<id>, file-history/<id>), which a move by hand, without
+// wy move, leaves behind as well (identity.md 5.3). A folder that is the current slot's own
+// (shared through a symlink) shows nothing. Only folder names are looked at.
+func (e Env) pastSlots(sid, cur string, slots map[string]slotName) []string {
+	var out []string
+	seen := map[string]bool{cur: true}
+	if e.PastSlots != nil {
+		for _, d := range e.PastSlots(sid) {
+			if !seen[d] {
+				seen[d] = true
+				out = append(out, d)
+			}
+		}
+	}
+	if sid == "" || filepath.Base(sid) != sid || strings.HasPrefix(sid, ".") {
+		return out
+	}
+	fsys := e.fs()
+	real := func(p string) string {
+		if r, err := fsys.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return p
+	}
+	type found struct {
+		dir string
+		at  time.Time
+	}
+	var traces []found
+	dirs := make([]string, 0, len(slots))
+	for d := range slots {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	for _, d := range dirs {
+		if seen[d] {
+			continue
+		}
+		for _, sub := range []string{"session-env", "file-history"} {
+			fi, err := fsys.Stat(filepath.Join(d, sub, sid))
+			if err != nil || !fi.IsDir() || real(filepath.Join(d, sub)) == real(filepath.Join(cur, sub)) {
+				continue
+			}
+			traces = append(traces, found{d, fi.ModTime()})
+			break
+		}
+	}
+	sort.SliceStable(traces, func(i, j int) bool { return traces[i].at.After(traces[j].at) })
+	for _, t := range traces {
+		out = append(out, t.dir)
+	}
+	return out
 }
 
 // addAlias appends each alias that differs from the handle and from the ones already there.
@@ -271,7 +381,7 @@ func (e Env) Entries(dir []Session, from *Session, all bool) []ListEntry {
 			continue
 		}
 		le := ListEntry{
-			Session: s.Entry.SessionID, Handle: s.Handle, Aliases: s.Aliases, Name: s.Name, Account: s.Account,
+			Session: s.Entry.SessionID, Handle: s.Handle, Aliases: s.Aliases, MovedFrom: s.MovedFrom, Name: s.Name, Account: s.Account,
 			AccountLabel: s.AccountLabel, Machine: s.MachineName, Project: s.Project,
 			State: s.Entry.Status, Local: !s.Remote && from != nil && from.Account != "" && from.Account == s.Account,
 			Can: "none", Tags: NormTags(s.Tags), SameHost: !s.Remote,

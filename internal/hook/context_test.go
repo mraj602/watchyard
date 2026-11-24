@@ -12,6 +12,8 @@ import (
 
 	"github.com/mraj602/watchyard/internal/keys"
 	"github.com/mraj602/watchyard/internal/peers"
+
+	"github.com/mraj602/watchyard/internal/mover"
 )
 
 // The account of the sandbox's slot (testdata/auth/oauth-3.json).
@@ -132,5 +134,30 @@ func TestReachesOther(t *testing.T) {
 	b.Paused = true
 	if peers.ReachesOther(b, "a") {
 		t.Error("paused reaches")
+	}
+}
+
+// A session Smart Account Switch moved gets its one-line note once, on its resume, with peers
+// off too; other sessions get nothing about the feature (setup.md 8.6, The moved session).
+func TestMoveNoteOnResume(t *testing.T) {
+	sb := newSandbox(t)
+	note := "Watchyard moved this session from claude-4 to claude-2 at 10:31 (5h would have hit at 10:48, before its 13:59 reset). Background shells started before are still running but no longer tracked here: check their output files."
+	if err := mover.NewState(sb.state()).WriteNote("sess-m1", note, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if out := sb.context([]string{"SessionStart"}, `{"session_id":"sess-other","hook_event_name":"SessionStart","source":"startup"}`); out != "" {
+		t.Fatalf("another session: %q", out)
+	}
+	out := sb.context([]string{"SessionStart"}, `{"session_id":"sess-m1","hook_event_name":"SessionStart","source":"resume"}`)
+	var got struct {
+		HookSpecificOutput struct {
+			AdditionalContext string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil || got.HookSpecificOutput.AdditionalContext != note {
+		t.Fatalf("resume: %q (%v)", out, err)
+	}
+	if out := sb.context([]string{"SessionStart"}, `{"session_id":"sess-m1","hook_event_name":"SessionStart","source":"resume"}`); out != "" {
+		t.Fatalf("the note is said once: %q", out)
 	}
 }

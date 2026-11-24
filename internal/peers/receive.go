@@ -2,6 +2,7 @@ package peers
 
 import (
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -48,7 +49,9 @@ func (e Env) Receive(in Incoming) ReceiveResult {
 		return ReceiveResult{Status: CodeTargetGone, Detail: CodeTargetGone}
 	}
 	res := ReceiveResult{HumanAt: newestHuman(target, target)}
-	if env.To.Account != "" && target.Account != "" && env.To.Account != target.Account {
+	// Addressed under an account the session left (the sender's directory has not seen the
+	// move, made by wy move or by hand): still this session.
+	if env.To.Account != "" && target.Account != "" && env.To.Account != target.Account && !slices.Contains(target.PastAccounts, env.To.Account) {
 		res.Status, res.Detail = CodeRejected, "account_mismatch"
 		return res
 	}

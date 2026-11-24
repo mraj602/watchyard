@@ -3,8 +3,10 @@ package hook
 import (
 	"encoding/json"
 	"io"
+	"time"
 
 	"github.com/mraj602/watchyard/internal/clientenv"
+	"github.com/mraj602/watchyard/internal/mover"
 	"github.com/mraj602/watchyard/internal/peers"
 )
 
@@ -25,7 +27,8 @@ type sessionStartOutput struct {
 // is true and the local matrix lets this session's account reach another account, it prints
 // the SessionStart hook JSON with peers.StartContextText as additionalContext; otherwise it
 // prints nothing. It reads only local files (config, the slot's cached login, the off file,
-// the accepted matrix), never connects to anything, never writes a record, and swallows every
+// the accepted matrix) and the move note Smart Account Switch left for this session (which it
+// removes), never connects to anything, never writes a record, and swallows every
 // error and panic (the hook is synchronous, with a 1 s timeout). args are the arguments after
 // the flag.
 func RunPeersContext(args []string, stdin io.Reader, stdout io.Writer, getenv func(string) string) {
@@ -49,10 +52,21 @@ func RunPeersContext(args []string, stdin io.Reader, stdout io.Writer, getenv fu
 		return
 	}
 	env, err := clientenv.Load(getenv)
-	if err != nil || !env.Config.Peers.Enabled || !env.Login.HasSeat {
+	if err != nil {
 		return
 	}
-	text := peers.StartContext(env.Dirs.State.Path, env.Login.Seat.Account)
+	var text string
+	if env.Config.Peers.Enabled && env.Login.HasSeat {
+		text = peers.StartContext(env.Dirs.State.Path, env.Login.Seat.Account)
+	}
+	// A session Smart Account Switch moved gets its one line once, on the resume (setup.md
+	// 8.6, The moved session); nothing about the feature is said to any other session.
+	if note := mover.NewState(env.Dirs.State.Path).TakeNote(p.SessionID, time.Now()); note != "" {
+		if text != "" {
+			text += "\n"
+		}
+		text += note
+	}
 	if text == "" {
 		return
 	}

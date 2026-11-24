@@ -23,20 +23,69 @@ type PeerSession struct {
 	SlotFolder             string // the slot's folder ("~/.claude-2"), "" when none
 	State                  string // session_state.state, "" when none yet
 	Live                   bool   // not ended or gone, on a machine that was not removed
+	// MovedFromAccount, MovedFromLabel: the seat the session had before it moved to another
+	// account (identity.md 5.3), "" when it never moved.
+	MovedFromAccount string
+	MovedFromLabel   string
+	// Past are the seats the session left in earlier moves (session_move), newest first,
+	// without the one in MovedFrom*.
+	Past []PastSeat
+}
+
+// PastSeat is a seat a session ran under before a move.
+type PastSeat struct{ Account, Label string }
+
+// pastSeats fills Past for the moved sessions of ps from session_move.
+func (s *Store) pastSeats(ctx context.Context, ps []PeerSession) error {
+	idx := map[string]int{}
+	for i, p := range ps {
+		if p.MovedFromAccount != "" {
+			idx[p.ID] = i
+		}
+	}
+	if len(idx) == 0 {
+		return nil
+	}
+	rows, err := s.r.QueryContext(ctx, `SELECT m.session_id, coalesce(se.account_uuid, ''), coalesce(se.label, '')
+		FROM session_move m JOIN seat se ON se.id = m.from_seat ORDER BY m.session_id, m.at DESC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var x PastSeat
+		if err := rows.Scan(&id, &x.Account, &x.Label); err != nil {
+			return err
+		}
+		i, ok := idx[id]
+		if !ok || x.Account == "" || x.Account == ps[i].Account || x.Account == ps[i].MovedFromAccount {
+			continue
+		}
+		dup := false
+		for _, y := range ps[i].Past {
+			dup = dup || y.Account == x.Account
+		}
+		if !dup {
+			ps[i].Past = append(ps[i].Past, x)
+		}
+	}
+	return rows.Err()
 }
 
 const peerSessionSelect = `SELECT s.id, coalesce(s.name, ''), coalesce(s.project, ''), coalesce(s.cwd, ''),
 	coalesce(se.account_uuid, ''), coalesce(se.label, ''), coalesce(s.machine_id, ''), coalesce(m.name, ''),
 	coalesce(sl.folder, ''), coalesce(st.state, ''),
-	(s.ended_at IS NULL AND coalesce(st.state, '') NOT IN ('ended', 'gone') AND m.removed_at IS NULL)
-	FROM session s LEFT JOIN seat se ON se.id = s.seat_id LEFT JOIN machine m ON m.id = s.machine_id
+	(s.ended_at IS NULL AND coalesce(st.state, '') NOT IN ('ended', 'gone') AND m.removed_at IS NULL),
+	coalesce(mf.account_uuid, ''), coalesce(mf.label, '')
+	FROM session s LEFT JOIN seat se ON se.id = s.seat_id LEFT JOIN seat mf ON mf.id = s.moved_from_seat LEFT JOIN machine m ON m.id = s.machine_id
 	LEFT JOIN slot sl ON sl.id = s.slot_id LEFT JOIN session_state st ON st.session_id = s.id`
 
 func scanPeerSession(sc interface{ Scan(...any) error }) (PeerSession, error) {
 	var p PeerSession
 	var live int
 	err := sc.Scan(&p.ID, &p.Name, &p.Project, &p.Cwd, &p.Account, &p.AccountLabel, &p.MachineID, &p.MachineName, &p.SlotFolder,
-		&p.State, &live)
+		&p.State, &live, &p.MovedFromAccount, &p.MovedFromLabel)
 	p.Live = live == 1
 	return p, err
 }
@@ -59,7 +108,11 @@ func (s *Store) PeerSessions(ctx context.Context, sinceMS int64) ([]PeerSession,
 			out = append(out, p)
 		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	return out, s.pastSeats(ctx, out)
 }
 
 // PeerSession reads one session, live or not; ok is false when the hub has never seen it.

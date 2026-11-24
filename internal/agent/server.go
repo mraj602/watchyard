@@ -297,7 +297,7 @@ func (s *server) dispatchFrom(req Request, pid int, alive func() bool) Reply {
 		return s.waitFinal(req, res)
 	}
 	s.logf("send msg=%s thread=%s from=%s to=%s status=delivered size=%d", res.Msg, res.Thread, res.Sender.Entry.SessionID, res.Target.Entry.SessionID, len(req.Text))
-	return Reply{Msg: res.Msg, Thread: res.Thread, Status: "delivered", To: res.Target.Handle, HeldLikely: res.HeldLikely}
+	return Reply{Msg: res.Msg, Thread: res.Thread, Status: "delivered", To: res.Target.Handle, HeldLikely: res.HeldLikely, Via: res.Via}
 }
 
 // Waits of a send to another machine (peers.md 4.3: --wait, default 10 s, at most 60 s).
@@ -320,7 +320,7 @@ func (s *server) waitFinal(req Request, res peers.SendResult) Reply {
 	if f, ok := res.Pending.Wait(wait); ok {
 		s.logf("send msg=%s thread=%s from=%s to=%s status=%s detail=%s", res.Msg, res.Thread, from, to, f.Status, f.Detail)
 		if f.Status == "delivered" {
-			return Reply{Msg: res.Msg, Thread: res.Thread, Status: "delivered", To: res.Target.Handle, HeldLikely: f.Detail == "held_likely"}
+			return Reply{Msg: res.Msg, Thread: res.Thread, Status: "delivered", To: res.Target.Handle, HeldLikely: f.Detail == "held_likely", Via: res.Via}
 		}
 		if f.Status == peers.CodeRejected && f.Detail == peers.CodeHeld {
 			// The receiver took a trusted send's target mode as unknown (peers.md 8.4 step 3).
@@ -331,7 +331,7 @@ func (s *server) waitFinal(req Request, res peers.SendResult) Reply {
 	}
 	s.logf("send msg=%s thread=%s from=%s to=%s status=queued", res.Msg, res.Thread, from, to)
 	r := Reply{Msg: res.Msg, Thread: res.Thread, Status: "queued", To: res.Target.Handle,
-		Expires: res.Expires.UTC().Format(time.RFC3339)}
+		Expires: res.Expires.UTC().Format(time.RFC3339), Via: res.Via}
 	switch {
 	case res.Offline:
 		r.Detail = "offline"

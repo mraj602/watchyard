@@ -183,6 +183,18 @@ func (r *Relay) Directory(ctx context.Context) ([]peers.WireSession, error) {
 		if fl := peers.FolderLabel(s.SlotFolder); fl != "" && fl != label {
 			w.Aliases = []string{peers.MakeHandle(w.Name, fl, machine)}
 		}
+		// A session moved to another account (identity.md 5.3) keeps its handle under the old
+		// account as an alias, so messages to it are still delivered (peers.md 3.2).
+		// Every seat it left in earlier moves too, so any old handle reaches it.
+		if s.MovedFromAccount != "" && s.MovedFromAccount != s.Account {
+			past := append([]store.PastSeat{{Account: s.MovedFromAccount, Label: s.MovedFromLabel}}, s.Past...)
+			for _, p := range past {
+				if old := peers.MakeHandle(w.Name, peers.CanonicalLabel(p.Label, p.Account), machine); !strings.EqualFold(old, w.Handle) {
+					w.Aliases = append(w.Aliases, old)
+					w.MovedFrom = append(w.MovedFrom, old)
+				}
+			}
+		}
 		if d, ok := agents[s.MachineID]; ok {
 			w.Device = &d
 		}
@@ -485,6 +497,18 @@ func (r *Relay) relay(ctx context.Context, device string, doc keys.Doc) (peers.P
 		}
 		// 3. accounts (the hub's view wins; a different claim is refused), matrix, loop
 		// guard, rates.
+		// A target named under an account it left (its sender's directory has not seen the
+		// move yet, whether wy move made it or not) is the same session: the hub's account
+		// is used from here on (peers.md 3.2).
+		if to.Account != "" && row.ToAcct != "" && row.ToAcct != to.Account {
+			left, err := tx.SessionLeftAccount(to.ID, row.ToAcct)
+			if err != nil {
+				return err
+			}
+			if left {
+				row.ToAcct = to.Account
+			}
+		}
 		for _, p := range []struct{ hub, claim *string }{{&from.Account, &row.FromAcct}, {&to.Account, &row.ToAcct}} {
 			switch {
 			case *p.hub == "":

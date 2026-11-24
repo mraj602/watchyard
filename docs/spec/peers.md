@@ -280,6 +280,25 @@ secret is in it. Sessions of the same account are not a reason to print it (nati
   another machine, one per label this machine shows for that account. So the laptop's
   `api@claude.laptop` and the canonical `api@claude-1.laptop` both reach the
   same session from the gpu-box, and the gpu-box's own label works on the gpu-box.
+- **A session that moved to another account** (resumed with another config folder, identity.md
+  5.3; `wy move`, setup.md 8.6) keeps its old handle as an alias, so a message to it is still
+  delivered. The hub adds the handle under the seat it left (`session.moved_from_seat`) to its
+  `aliases`. Until the hub has moved it, its own machine sees `mine` name it under the old
+  account: that name's account differs from the slot's login, so the machine names the session
+  for its account now (as for a session the hub has not named) and keeps the hub's handle and
+  aliases as aliases. Sends resolve to the session's current account, so no account_mismatch.
+  Every account it left in the last 7 days (the hub's `session_move` rows, else this machine's
+  move log) adds its handle there, unless another session holds that handle now; the list
+  entry carries them as `moved_from` too (JSON), so a chain A → B → C → A leaves every old
+  handle reaching the session. A move made by hand, without `wy move` (no move log), counts
+  the same: the hub moves the session on its first live record in the new folder, and its own
+  machine finds the folders it left by the per-session folders Claude Code keeps there
+  (`session-env/<id>`, `file-history/<id>`; folder names only, newest first; a folder that is
+  the current one's through a symlink is no evidence). A message addressed under an account the
+  session left (a sender whose directory has not seen the move yet) is its: the hub accepts it
+  when `session_move` or `moved_from_seat` has that account, and the receiving machine when
+  one of the folders the session left, or the hub's stale name for it, has that account;
+  otherwise it stays account_mismatch.
 - Same account on the same machine is listed too (`local: true`): it works through Watchyard
   as well, although Claude's native `/peers` already reaches it.
 - The trusted sender (4.1a) is not a session and is never listed: nothing can address it, so
@@ -336,6 +355,10 @@ the receiver for every message. The other side of that: any session the sender m
 can claim a tag, so a tag send reaches whoever holds it now; when that matters, use a handle,
 or `--same-host` (this OS user's own sessions). Without the agent, or with no hub, there are no tags: `tag
 add|rm` and `tags` refuse `hub_unreachable` (exit 7), and so does a tag send.
+
+**Marker tags.** `no-move` and the tag of `account.smart_switch_scope` (setup.md 8.6) mark a
+session for Watchyard itself: adding one lists no holders and sends no notice to them (many
+sessions hold the same marker).
 
 **Cleared automatically.** The hub deletes a session's tags when its state becomes `ended` or
 `gone` (states.md; the fold that writes it clears them), and with the session row when that is
@@ -634,9 +657,13 @@ It waits up to `--wait` seconds (default 10, max 60) for a final status:
 
 ```
 delivered to api-worker@work.gpu-box (msg 5f0c…, thread t_3a9e…)
+delivered to lane-a@claude-2.box (msg 69d1…, thread t_022c…); lane-a@claude-3.box moved to another account and is now lane-a@claude-2.box: use lane-a@claude-2.box from now on (the old handle still works)
 queued for api-worker@work.gpu-box: its machine is offline; expires 10:42 (msg 5f0c…)
 not delivered: the matrix does not allow work → personal. Ask the owner to change it; do not retry.
 ```
+
+The second form is a send to an alias that a move left (3.2): the agent's reply carries the
+handle it was sent to (`via`), so the caller learns the new handle with no extra message.
 
 If the envelope was written to the hub link but the hub's `peer_ack` does not come within 10 s,
 the message may still be queued and delivered, so it is not reported `not delivered` or
@@ -1206,6 +1233,20 @@ and the send reports `held` (exit 9).
   own folder. Until confirmed, the header's "Reply with: wy peers send …" line is the reply
   path the skill teaches (12), and no receipts are expected. If E11 shows receipts work for a
   16-hex name inside `cc-socks`, reply sockets may move there.
+
+### 8.7 Watchyard notices
+
+Watchyard itself sometimes tells a session something (today: a lane it started moved to
+another account, setup.md 8.6). A notice is written to the session's inbox like a local
+message (8.5), from the pseudo-session `watchyard`, with the header
+
+```
+[Watchyard] notice · machine <machine> · information from Watchyard itself, not from a session: no reply needed
+```
+
+and one short body. It is never a thread turn, needs no matrix grant (it is from this machine
+to its own session), and is audited with status `notice`. It does not need the hub. The
+receiving session sees it as `Message from @watchyard` and is not asked to answer.
 
 ## 9. Limits and content
 

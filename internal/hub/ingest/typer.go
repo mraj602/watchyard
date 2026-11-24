@@ -278,8 +278,12 @@ func (t *typer) noteForeign(c *ctx, id, owner string) {
 }
 
 // ensureSession creates the session from its first record, or fills what it lacks. A
-// session of another machine is refused with errForeignSession.
-func (t *typer) ensureSession(c *ctx, id string, info store.SessionInfo) error {
+// session of another machine is refused with errForeignSession. live marks a record that
+// shows the session running in the record's slot now (a hook event, a complete
+// session_list): newer than everything seen of the session and from another slot, it moves
+// the session to that slot and its seat (identity.md 5.3, a session resumed under another
+// account).
+func (t *typer) ensureSession(c *ctx, id string, info store.SessionInfo, live bool) error {
 	if !sessionIDPattern.MatchString(id) {
 		return fmt.Errorf("session id %q is not a Claude Code session id", id)
 	}
@@ -307,6 +311,13 @@ func (t *typer) ensureSession(c *ctx, id string, info store.SessionInfo) error {
 	}
 	if err := t.touch(id, false); err != nil {
 		return err
+	}
+	if live && c.slotID != 0 && s.SlotID != 0 && c.slotID != s.SlotID && c.at > s.LastEventAt && c.at > s.StartedAt {
+		if err := t.tx.MoveSession(id, c.seat, c.slotID, c.at); err != nil {
+			return err
+		}
+		t.logs = append(t.logs, fmt.Sprintf("ingest: %s record=%s: session %s moved from slot %d to slot %d", c.r.Kind, c.r.ID, id, s.SlotID, c.slotID))
+		s.SlotID = c.slotID
 	}
 	if err := t.tx.SetSessionSeat(id, c.seat); err != nil {
 		return err
@@ -364,7 +375,7 @@ func (t *typer) hookEvent(c *ctx) error {
 			info.Model = mo.ID
 		}
 	}
-	if err := t.ensureSession(c, p.SessionID, info); err != nil {
+	if err := t.ensureSession(c, p.SessionID, info, true); err != nil {
 		return err
 	}
 	var sub string
@@ -429,7 +440,7 @@ func (t *typer) sessionList(c *ctx) error {
 			started = c.at
 		}
 		if err := t.ensureSession(c, it.SessionID, store.SessionInfo{Cwd: it.Cwd, Project: project(it.Cwd), Kind: it.Kind,
-			Name: it.Name, StartedAt: started}); err != nil {
+			Name: it.Name, StartedAt: started}, p.Complete); err != nil {
 			return err
 		}
 		s, _, err := t.tx.GetSession(it.SessionID)
@@ -656,7 +667,7 @@ func (t *typer) tokenRows(c *ctx) error {
 		}
 		e := ext[s.SessionID]
 		if err := t.ensureSession(&sc, s.SessionID, store.SessionInfo{RemoteURL: s.RemoteURL, Title: s.Title,
-			Project: project(e.cwd), StartedAt: e.first}); err != nil {
+			Project: project(e.cwd), StartedAt: e.first}, false); err != nil {
 			return err
 		}
 		facts = append(facts, s.SessionID)

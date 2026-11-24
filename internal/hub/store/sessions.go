@@ -91,6 +91,36 @@ func (tx *Tx) SetSessionSeat(id, seat string) error {
 	return nil
 }
 
+// MoveSession re-attributes a session that continues under another account (identity.md 5.3,
+// v22): its seat and slot become those of the live record that showed it there, and the seat
+// it had is kept in moved_from_seat (its old peers handle stays an alias, peers.md 3.2). Its
+// token rows and limit hits keep their seats: what it used before the move stays on the old
+// account. A seat of "" keeps the session's seat. Each move is also kept in session_move, so
+// every seat the session left keeps its handle as an alias.
+func (tx *Tx) MoveSession(id, seat string, slot int64, at int64) error {
+	if _, err := tx.exec(`INSERT INTO session_move (session_id, at, from_seat, to_seat, from_slot, to_slot)
+		SELECT id, ?, seat_id, coalesce(?, seat_id), slot_id, ? FROM session WHERE id = ?`, at, nullStr(seat), slot, id); err != nil {
+		return err
+	}
+	_, err := tx.exec(`UPDATE session SET moved_from_seat = CASE WHEN ? IS NOT NULL AND seat_id IS NOT NULL AND seat_id <> ?
+		THEN seat_id ELSE moved_from_seat END, seat_id = coalesce(?, seat_id), slot_id = ?, moved_at = ? WHERE id = ?`,
+		nullStr(seat), seat, nullStr(seat), slot, at, id)
+	if err == nil && seat != "" {
+		err = tx.backfillSeat(id, seat)
+	}
+	return err
+}
+
+// SessionMovedFrom is the seat a session had before its last move ("" when it never moved).
+func (tx *Tx) SessionMovedFrom(id string) (string, error) {
+	var seat sql.NullString
+	err := tx.queryRow(`SELECT moved_from_seat FROM session WHERE id = ?`, id).Scan(&seat)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return seat.String, err
+}
+
 // SetSessionSlot gives a session its slot and machine if it has none.
 func (tx *Tx) SetSessionSlot(id string, slot int64, machine string) error {
 	_, err := tx.exec(`UPDATE session SET slot_id = coalesce(slot_id, ?), machine_id = coalesce(machine_id, ?) WHERE id = ?`,
@@ -262,4 +292,15 @@ func (tx *Tx) SessionIDs() ([]string, error) {
 func (tx *Tx) SetSessionStart(id string, at int64) error {
 	_, err := tx.exec(`UPDATE session SET started_at = ? WHERE id = ?`, nullInt(at), id)
 	return err
+}
+
+// SessionLeftAccount reports whether the session ran under account (a seat's account uuid)
+// before a move (session_move or moved_from_seat): a sender whose directory has not seen the
+// move yet still names it there (peers.md 3.2).
+func (tx *Tx) SessionLeftAccount(id, account string) (bool, error) {
+	var n int
+	err := tx.queryRow(`SELECT count(*) FROM seat se WHERE se.account_uuid = ? AND (
+		se.id IN (SELECT from_seat FROM session_move WHERE session_id = ?) OR
+		se.id = (SELECT moved_from_seat FROM session WHERE id = ?))`, account, id, id).Scan(&n)
+	return n > 0, err
 }

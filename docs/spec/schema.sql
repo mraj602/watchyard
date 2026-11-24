@@ -1,4 +1,4 @@
--- Watchyard hub schema, version 21.
+-- Watchyard hub schema, version 22.
 --
 -- One SQLite file (WAL mode). Applied by the hub at start inside one transaction
 -- after `PRAGMA foreign_keys = ON`. Later versions add numbered migrations
@@ -31,6 +31,7 @@
 --       push.md 3.9; record.md 4.11).
 --   v20 seat.pick_mode, seat.pick_mode_src (setup.md 8.5, Kind).
 --   v21 peer_trust; peer_message.from_kind/via_tag (peers.md 4.1a, 10).
+--   v22 session.moved_from_seat/moved_at, session_move (identity.md 5.3: a session moved to another account).
 --
 -- Conventions
 --   * Times are INTEGER milliseconds since the Unix epoch, UTC (`*_at`, `ts`).
@@ -55,7 +56,7 @@ CREATE TABLE schema_version (
 ) STRICT;
 
 INSERT INTO schema_version (version, applied_at, wy_version)
-VALUES (21, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
+VALUES (22, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
 
 -- Hub-wide settings that are not secrets (retention days, last-message policy, …).
 CREATE TABLE setting (
@@ -310,10 +311,25 @@ CREATE TABLE session (
   missed_lists    INTEGER NOT NULL DEFAULT 0,        -- complete lists since then that did not
   context_pct     REAL,
   model           TEXT
-) STRICT;
+, moved_from_seat TEXT REFERENCES seat(id), moved_at INTEGER) STRICT;
+-- seat_id: since v22 a live record of the session from another slot moves it there (identity.md 5.3).
+-- moved_from_seat, moved_at: v22. The seat the session had before its last move
+-- to another account (a live hook event or complete session_list from another slot) and when.
 CREATE INDEX session_seat ON session(seat_id, last_event_at);
 CREATE INDEX session_machine ON session(machine_id, last_event_at);
 CREATE INDEX session_slot ON session(slot_id);
+
+-- Every move of a session to another account (v22, identity.md 5.3), so each seat it left keeps
+-- its peers handle as an alias (peers.md 3.2) after several moves.
+CREATE TABLE session_move (
+  session_id    TEXT    NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+  at            INTEGER NOT NULL,
+  from_seat     TEXT    REFERENCES seat(id),
+  to_seat       TEXT    REFERENCES seat(id),
+  from_slot     INTEGER REFERENCES slot(id),
+  to_slot       INTEGER REFERENCES slot(id)
+) STRICT;
+CREATE INDEX session_move_session ON session_move(session_id, at);
 
 -- Current state only (states.md). History is in hook_event.
 CREATE TABLE session_state (

@@ -32,6 +32,10 @@ type SendResult struct {
 	// can tell (it may still be delivered, and counts in the thread).
 	Unconfirmed bool
 	Pending     *Pending
+	// Via is the old handle the sender used: the target moved to another account since
+	// (identity.md 5.3), and Target.Handle is its handle now. "" when the send named it by
+	// its current handle (or anything else).
+	Via string
 }
 
 // Line is the one status line `wy peers send` prints on success.
@@ -44,13 +48,35 @@ func (r SendResult) Line() string {
 		case r.Unconfirmed:
 			why = "the hub has not confirmed it, so it may still be delivered; do not resend"
 		}
-		return fmt.Sprintf("queued for %s: %s; expires %s (msg %s)", r.Target.Handle, why, r.Expires.Local().Format("15:04"), r.Msg)
+		return fmt.Sprintf("queued for %s: %s; expires %s (msg %s)", r.Target.Handle, why, r.Expires.Local().Format("15:04"), r.Msg) + r.movedNote()
 	}
 	s := fmt.Sprintf("delivered to %s (msg %s, thread %s)", r.Target.Handle, r.Msg, r.Thread)
 	if r.HeldLikely {
 		s += ": the receiving session is in a different permission mode, so Claude Code may ask its user to approve it"
 	}
-	return s
+	return s + r.movedNote()
+}
+
+// movedNote tells a sender that used an old handle the session's handle now.
+func (r SendResult) movedNote() string {
+	if r.Via == "" || r.Target.Handle == "" || strings.EqualFold(r.Via, r.Target.Handle) {
+		return ""
+	}
+	return fmt.Sprintf("; %s moved to another account and is now %s: use %s from now on (the old handle still works)", r.Via, r.Target.Handle, r.Target.Handle)
+}
+
+// MovedVia is the old handle of target that to names exactly ("" when to is not one).
+func MovedVia(target Session, to string) string {
+	to = strings.TrimSpace(to)
+	if strings.EqualFold(to, target.Handle) {
+		return ""
+	}
+	for _, h := range target.MovedFrom {
+		if strings.EqualFold(h, to) {
+			return h
+		}
+	}
+	return ""
 }
 
 // ReplySocketPath is `$XDG_RUNTIME_DIR/wy/r/<16 hex>.sock`, the first 16 hex of
@@ -130,7 +156,11 @@ func (e Env) SendWith(c Caller, to, text string, o SendOpts) (SendResult, *Refus
 		return SendResult{}, Refuse(CodeUnknownTarget, "%s runs on %s, which has no wy agent (wy agent enable there)", target.Handle, target.MachineName)
 	}
 	o.Service, o.Tag = "", "" // a session never sends as the trusted sender
-	return e.sendTo(sender, target, dir, text, o)
+	res, rf := e.sendTo(sender, target, dir, text, o)
+	if rf == nil {
+		res.Via = MovedVia(target, to)
+	}
+	return res, rf
 }
 
 // sendTo runs the checks of 4.2 from the content on (content, TTL, rates, matrix, loop guard)

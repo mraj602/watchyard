@@ -78,11 +78,14 @@ type WireSession struct {
 	Account      string   `json:"account"`
 	AccountLabel string   `json:"account_label"`
 	Aliases      []string `json:"aliases,omitempty"`
-	Machine      string   `json:"machine"` // the machine's name
-	MachineID    string   `json:"machine_id"`
-	Project      string   `json:"project"`
-	State        string   `json:"state"`
-	Device       *string  `json:"device"`
+	// MovedFrom are the aliases the session had under accounts it left (it was resumed
+	// under another account, identity.md 5.3), newest first; also in Aliases.
+	MovedFrom []string `json:"moved_from,omitempty"`
+	Machine   string   `json:"machine"` // the machine's name
+	MachineID string   `json:"machine_id"`
+	Project   string   `json:"project"`
+	State     string   `json:"state"`
+	Device    *string  `json:"device"`
 	// Tags are the session's tags at the hub (peers.md 3.4), sorted, omitted when none.
 	Tags []string `json:"tags,omitempty"`
 }

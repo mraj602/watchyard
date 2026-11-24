@@ -36,6 +36,12 @@ type Env struct {
 	NewID func() string
 	// Remote reaches other machines through the agent's link; nil: this machine only.
 	Remote Remote
+	// PastSlots lists the slot folders a session ran in before Watchyard moved it to another
+	// account (setup.md 8.6), newest first; nil: none known.
+	PastSlots func(sessionID string) []string
+	// MarkerTags are tags this machine reads as settings (the account.smart_switch_scope tag):
+	// adding one sends no notice to other holders (peers.md 3.4). no-move always is one.
+	MarkerTags []string
 }
 
 func (e Env) now() time.Time {
@@ -291,4 +297,30 @@ func FolderLabel(folder string) string {
 // MakeHandle is `<name>@<label>.<machine>` from parts already cleaned by HandlePart.
 func MakeHandle(name, label, machine string) string {
 	return name + "@" + label + "." + machine
+}
+
+// sessionVars are the variables Claude Code gives the processes of one session (its Bash
+// tool, hooks): its id, pid, inbox socket and token, entry point and the like. A session
+// started from inside another one must not inherit them (setup.md 8.5 --exec, 8.6).
+var sessionVars = map[string]bool{
+	"CLAUDECODE": true, "CLAUDE_PID": true, "CLAUDE_EFFORT": true, "CLAUDE_ENV_FILE": true,
+	"CLAUDE_CODE_SESSION_ID": true, "CLAUDE_CODE_MESSAGING_SOCKET": true, "CLAUDE_CODE_MESSAGING_TOKEN": true,
+	"CLAUDE_CODE_CHILD_SESSION": true, "CLAUDE_CODE_CHILD_NOTES_DIR": true, "CLAUDE_CODE_ENTRYPOINT": true,
+	"CLAUDE_CODE_EXECPATH": true, "CLAUDE_CODE_SESSION_ATTENDED": true, "CLAUDE_CODE_SSE_PORT": true,
+}
+
+// WithoutSessionEnv is env without the variables of the session it may run inside
+// (sessionVars, CLAUDE_AGENT_SDK*) and, with configDir, without CLAUDE_CONFIG_DIR. The
+// owner's own CLAUDE_CODE_* settings (a model, a provider) stay. Only this process's own
+// environment is ever passed in (keys.md 8).
+func WithoutSessionEnv(env []string, configDir bool) []string {
+	var out []string
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		if sessionVars[k] || strings.HasPrefix(k, "CLAUDE_AGENT_SDK") || (configDir && k == "CLAUDE_CONFIG_DIR") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }

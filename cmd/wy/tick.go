@@ -34,6 +34,9 @@ import (
 // agentsEvery is the least time between two `claude agents` passes of the timer.
 const agentsEvery = 5 * time.Minute
 
+// moveEvery is the least time between two Smart Account Switch passes of the timer.
+const moveEvery = 2 * time.Minute
+
 // runTick implements `wy tick [--quiet]`. With --quiet (the timer) it prints nothing and
 // always exits 0; each part runs even when an earlier one failed.
 func runTick(args []string, stdout, stderr io.Writer) error {
@@ -93,6 +96,10 @@ func runTick(args []string, stdout, stderr io.Writer) error {
 		fa = append(fa, "--quiet")
 	}
 	keep("flush", runFlush(fa, out, errw))
+	// Smart Account Switch (setup.md 8.6): one pass every moveEvery while it is on.
+	if cfg.Account.SmartSwitch && detach.Debounce(filepath.Join(d.State.Path, "move.stamp"), moveEvery, time.Now()) {
+		keep("smart account switch", runMove([]string{"--auto"}, out, errw))
+	}
 	keep("direct push", tickDirectPush(ctx, d, cfg, errw))
 	keep("title files", tickPruneTitles(d.State.Path, time.Now()))
 	peerspkg.PruneSessionFiles(d.State.Path, time.Now())

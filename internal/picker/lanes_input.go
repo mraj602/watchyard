@@ -625,6 +625,9 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 	}
 	lin := LaneInput{Now: now, Params: p, Accounts: accts, Leases: ls, N: n, SIDs: in.SIDs, Urgent: in.Urgent,
 		Stats: measureLanes(in.Leases, ls[:nLocal], ls[nLocal:], f5Of, res.Model, now), Expect: in.Expect, HubDown: in.HubDown, Expects: in.Expects}
+	if in.OnLanes != nil {
+		in.OnLanes(lin)
+	}
 	lr, err := RankLanes(lin)
 	if err != nil {
 		return res, err

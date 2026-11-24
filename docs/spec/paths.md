@@ -145,6 +145,12 @@ one folder.
                                wrote, mode 0600, to skip repeats within 15 minutes (setup.md 8.5)
   board/last-view.json         last board view shown, mode 0600 (terminal.md T3)
   term/title-<session>.json    last tab title per session, pruned after 7 days by wy tick (terminal.md T6)
+  move/moves.jsonl             Smart Account Switch: every move, mode 0600 (setup.md 8.6)
+  move/notes/<session>.json    the one-line note the moved session's SessionStart hook prints once
+  move/runs/<pid>.json, move/orders/<pid>.json  wy run wrappers and their relaunch orders
+  move/pins.json               sessions pinned to their account (wy move --pin-account)
+  move/logs/<session>.log      output of a moved headless session
+  move.stamp                   wy tick's last Smart Account Switch pass (every 2 minutes)
   keys/                        mode 0700: device.json, owner.sealed (owner machine), owner.pub, hub.pub,
                                certs.json, matrix.json, revocations.json (keys.md 10)
   hub_sign.key                 hub machine only: the hub signing key, mode 0600, exported with the hub (keys.md 3.4)
@@ -236,6 +242,11 @@ mcp_exclude = []
 [peers]                                      # (peers.md 2.4, 8.5)
 enabled = false                              # wy hook writes the session files; wy peers works only when true
 delivery = "honest"                          # honest | accept | courier (peers.md 8.5)
+
+[account]                                    # Smart Account Switch (setup.md 8.6)
+smart_switch = false                         # on: wy tick moves sessions predicted to hit a limit before its reset
+move_launch = ""                             # command a moved session starts with ({dir}, {n}, {label})
+smart_switch_scope = "all"                   # which sessions may move: all | tag:<tag> | sessions:<id>,...
 
 [next]                                       # wy account next (setup.md 8.5)
 strategy = "lanes"                           # lanes | smart | expiring | most-room | spread | fill | sticky

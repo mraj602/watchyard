@@ -202,7 +202,7 @@ func (r *Remote) sessions(force bool) ([]peers.Session, error) {
 		}
 		s := peers.Session{Entry: peers.RegistryEntry{SessionID: w.Session}, Account: w.Account,
 			AccountLabel: peers.CanonicalLabel(w.AccountLabel, w.Account), Handle: w.Handle, Aliases: append([]string(nil), w.Aliases...),
-			Name: w.Name, Project: w.Project, MachineName: w.Machine, Remote: true, State: w.State, Mode: peers.ModePrompting,
+			MovedFrom: append([]string(nil), w.MovedFrom...), Name: w.Name, Project: w.Project, MachineName: w.Machine, Remote: true, State: w.State, Mode: peers.ModePrompting,
 			Tags: peers.NormTags(w.Tags)}
 		if w.Device != nil {
 			s.Device = *w.Device
@@ -228,7 +228,7 @@ func (r *Remote) Names() map[string]peers.HubName {
 	out := make(map[string]peers.HubName, len(rep.Sessions)+len(rep.Mine))
 	add := func(w peers.WireSession, mine bool) {
 		out[w.Session] = peers.HubName{Handle: w.Handle, Name: w.Name, Label: peers.CanonicalLabel(w.AccountLabel, w.Account),
-			Account: w.Account, Aliases: append([]string(nil), w.Aliases...), Mine: mine, Tags: peers.NormTags(w.Tags)}
+			Account: w.Account, Aliases: append([]string(nil), w.Aliases...), MovedFrom: append([]string(nil), w.MovedFrom...), Mine: mine, Tags: peers.NormTags(w.Tags)}
 	}
 	for _, w := range rep.Sessions {
 		add(w, w.MachineID == r.Env.Machine.ID)

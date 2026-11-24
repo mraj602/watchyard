@@ -43,7 +43,10 @@ type nextFixture struct {
 	// folders with an oauthAccount are logged in.
 	loggedOut map[string]bool
 	authRuns  int
-	spawns    [][]string // background commands started (never run in tests)
+	// bgOut is what a faked `claude --bg` prints; bgSID the session its supervisor starts
+	// (written to the picked folder's registry).
+	bgOut, bgSID string
+	spawns       [][]string // background commands started (never run in tests)
 }
 
 func newNextFixture(t *testing.T) *nextFixture {
@@ -192,6 +195,20 @@ func (f *nextFixture) run(args ...string) nextRun {
 		exec: func(path string, argv, env []string) error {
 			r.exec, r.env = append([]string{path}, argv...), env
 			return nil
+		},
+		runBg: func(path string, argv, env []string) (string, error) {
+			r.exec, r.env = append([]string{path}, argv...), env
+			dir := filepath.Join(f.home, ".claude")
+			for _, kv := range env {
+				if v, ok := strings.CutPrefix(kv, "CLAUDE_CONFIG_DIR="); ok {
+					dir = v
+				}
+			}
+			if f.bgSID != "" {
+				_ = os.MkdirAll(filepath.Join(dir, "sessions"), 0o700)
+				_ = os.WriteFile(filepath.Join(dir, "sessions", "4242.json"), []byte(`{"pid":4242,"sessionId":"`+f.bgSID+`","kind":"bg"}`), 0o600)
+			}
+			return f.bgOut, nil
 		},
 		authRun: f.authStatus,
 		spawn: func(args []string) error {
