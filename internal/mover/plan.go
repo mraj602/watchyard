@@ -182,8 +182,11 @@ type Session struct {
 	// with a message in its pane or terminal; Typed is when the owner last typed into it.
 	Interactive bool
 	Typed       time.Time
-	// Pinned: the owner opted it out (no-move, --pin-account) or it is outside the scope.
-	Pinned bool
+	// Pinned: the owner opted it out (pinned in Claude Code, no-move, --pin-account) or it is
+	// outside the scope. PinFrom is where the owner's pin comes from: "claude" (the account's
+	// Claude Code jobs/pins.json), "wy" (--pin-account, no-move) or "claude+wy" ("" when none).
+	Pinned  bool
+	PinFrom string
 	// Movable: its kind can be restarted (false for claude.ai --sdk-url sessions).
 	Movable bool
 	// Context is its context in tokens (a move re-reads it uncached).
@@ -458,7 +461,7 @@ func Plan(in Input) Result {
 			if pr.Held {
 				for _, s := range ss {
 					if s.burned() && !s.Stopped && s.Pinned {
-						skip(s, "pinned, or outside the scope")
+						skip(s, p.excluded(s, st, now))
 					} else if s.burned() && !s.Stopped {
 						need, by := p.SpikePasses, "spike filter"
 						if pr.ReadingsOnly {
@@ -583,6 +586,8 @@ func stoppedWindow(a Account, now time.Time) (string, time.Duration) {
 // excluded is why the switch never moves s now ("" when it may).
 func (p Params) excluded(s Session, st *moveState, now time.Time) string {
 	switch {
+	case s.Pinned && s.PinFrom != "":
+		return "pinned (" + s.PinFrom + ")"
 	case s.Pinned:
 		return "pinned, or outside the scope"
 	case !s.Movable:

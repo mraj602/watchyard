@@ -1831,8 +1831,9 @@ It is off by default; `wy move` by hand works either way.
 
 **Setting.** `wy config set account.smart_switch on|off` (default `off`). Off: nothing moves by
 itself. On: `wy tick` (the timer, once a minute) runs one pass (`wy move --auto`) each tick. Per
-session opt-out: the peers tag `no-move` (`wy peers tag add no-move`) or `wy move --pin-account
-<session>` (`--unpin` undoes it; kept in `<state>/move/pins.json`). Every number below is a
+session opt-out: a pin in Claude Code itself (its `<config dir>/jobs/pins.json`), the peers tag
+`no-move` (`wy peers tag add no-move`) or `wy move --pin-account <session>` (`--unpin` undoes it;
+kept in `<state>/move/pins.json`). Every number below is a
 setting `account.move_*` with the default shown (`wy config set account.move_cap_5h 92`).
 
 **Scope.** `wy config set account.smart_switch_scope <scope>` limits which sessions the switch
@@ -1903,7 +1904,7 @@ weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
 | Spike filter | a trigger must hold on `move_spike_passes` = 2 passes in a row, counted per account and window (a 5-hour trigger and a weekly one are two streaks), unless the projected hit of 100 is within `move_spike_near_min` = 30 min or it is hard now | one hot minute (a helper panel) should not move anything; a near hit cannot wait a minute |
 | Readings only | a trigger that only the readings' slope makes (at the measured burn the account is under its caps, and it is not hard now) must hold on 3 passes, near hit or not | readings are whole percents and lag; the measured burn is exact |
 | Candidates | every session on a triggered account that **burned** in the burn window (busy, or tokens in it), whatever its turn state: **mid-turn moves are allowed** | owner: "we move the agent that is working, not the agent that is paused"; moving an idle session frees nothing |
-| Never moved | idle sessions with no burn; pinned (`no-move`, `--pin-account`) or outside the scope; claude.ai `--sdk-url` sessions | |
+| Never moved | idle sessions with no burn; pinned (Claude Code's pins, `no-move`, `--pin-account`) or outside the scope; claude.ai `--sdk-url` sessions | |
 | Pin reserve | `pin_reserve_5h` 10 and `pin_reserve_7d` 5 points per live pinned session: the account's caps for every other session (trigger, enough, destination) are its caps less pins × these | long-running pinned sessions (a Slack watcher, an orchestrator) must not stop; the simulator's best row (below) |
 | Stopped by a limit | a session whose last turn a limit ended (`StopFailure` `rate_limit`) is a candidate too, whatever its burn (it wants to burn): moved when that window resets `move_stopped_wait_min` = 20 min or more from now, else it waits for the reset | a move takes a minute or two and re-reads the context; a near reset is cheaper |
 | Choice | greedy, recomputed after each pick: first a session whose move alone brings both projections under cap − hysteresis (the fewest moves); among those, the most points freed per re-read (burn ÷ (context, at least 20k tokens, × model factor: opus 5, sonnet 3, haiku 1, else 3)), then the highest burn, then the youngest; among the others the highest burn, then the smaller context, then the longest expected remaining time | the highest burner frees the most; when several would each do, the cheapest re-read (simulator: small gain, below) |
@@ -1917,7 +1918,25 @@ weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
 | Between steps | a mid-turn session is stopped once no step runs, waiting up to `move_step_wait_min` 3 min, never past one minute before the hit | a step stopped half-way is often run again after the resume |
 | Owner grace | `move_owner_grace_min`, default 0 (off): an interactive session the owner typed into within it stays | the simulator shows no clear gain (below); off |
 
-**Pinned sessions.** A pinned session (`--pin-account`, the peers tag `no-move`) never moves.
+**Pinned sessions.** A pinned session never moves. A session is pinned when any of these names
+it (each pinned session counts once):
+
+- Claude Code's own pin: the account's config folder holds `jobs/pins.json`, a JSON array of
+  short session ids (`["48d8d877","2abbe6d1"]`); an entry pins the session of that folder whose
+  id starts with it. Watchyard only reads the file (each pass, read again when its modification
+  time or size changes) and never writes it. A missing file is no pins; one that cannot be read
+  or parsed is no pins and a warning (`--plan`, `--list`; the switch's log has it once, until it
+  changes). A pin there counts
+  only for the folder whose list has it: after a move the session is not pinned on its new
+  account until it is pinned there.
+- `wy move --pin-account <session>` (`<state>/move/pins.json`) or the peers tag `no-move`.
+
+`wy move --plan` and `wy move --list` print one line per pinned session with where its pin comes
+from (`pinned: 2abbe6d1 planner on claude-3 (claude; holds a reserve)`, `claude`, `wy` or
+`claude+wy`); `--json` adds `pins` (`session`, `name`, `account`, `from`, `live`; `--list --json`
+is `{"moves": [...], "pins": [...], "warnings": [...]}`). A skip says `pinned (claude)`. A
+by-hand `wy move` of a session pinned in Claude Code needs `--force` and warns that the Claude
+Code pin stays on the old folder's list; `wy move --unpin` of one says it is still pinned there.
 Pin the long-running sessions that burn little but must not stop: a Slack watcher, an
 orchestrator, a CI watcher. Each *live* pinned session (running, and not idle for 6 hours) keeps a
 reserve free on its account: `account.pin_reserve_5h` (default 10) points of the 5-hour window

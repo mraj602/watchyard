@@ -209,7 +209,10 @@ What it does, in short:
   terminal gets the message with the commands to see it (`claude agents`) or attach it there.
 - Only accounts logged in on this machine are destinations, the session's organisation per
   `account.move_orgs`, aggressive accounts first and protected ones last.
-- `--pin-account` on a session, or the peers tag `no-move`, keeps it where it is. Pin the
+- A session pinned in Claude Code itself (the account's `jobs/pins.json`, read only), or one
+  with `--pin-account` or the peers tag `no-move`, keeps it where it is; `wy move --plan` and
+  `--list` say where each pin comes from (`claude`, `wy`), and moving a Claude Code pinned
+  session by hand needs `--force` (its pin stays on the old account's list). Pin the
   long-running sessions that burn little but must not stop (a Slack watcher, an orchestrator, a
   CI watcher): each live pinned session keeps 10% of its account's 5-hour window and 5% of
   its week free (`account.pin_reserve_5h`, `account.pin_reserve_7d`). The picker hands out new

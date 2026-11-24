@@ -161,6 +161,21 @@ func (s State) SetPin(sessionID string, on bool) error {
 	return s.write(s.path("pins.json"), ids)
 }
 
+// Changed records text under name (<state>/move/<name>) and says whether it differs from the
+// text recorded before: a warning goes to the switch's log once, not every pass.
+func (s State) Changed(name, text string) bool {
+	p := s.path(name)
+	if b, err := os.ReadFile(p); err == nil && string(b) == text {
+		return false
+	} else if err != nil && text == "" {
+		return false
+	}
+	if err := os.MkdirAll(s.Dir, 0o700); err == nil {
+		_ = os.WriteFile(p, []byte(text), 0o600)
+	}
+	return true
+}
+
 // LogEntry is one line of moves.jsonl.
 type LogEntry struct {
 	At        time.Time `json:"at"`

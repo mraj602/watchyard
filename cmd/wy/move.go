@@ -42,12 +42,14 @@ func moveUsage(w io.Writer) {
   wy move --plan [--json]                what Smart Account Switch would do now (changes nothing)
   wy move <session> [<account>] [--dry-run] [--bg] [--now] [--force]
                                          move one session (its id, id prefix or name) to an account
-                                         (its label, folder or number), else to the best one
+                                         (its label, folder or number), else to the best one; a
+                                         session pinned in Claude Code needs --force
   wy move --auto                         one pass of Smart Account Switch (the timer runs it; does
                                          nothing unless account.smart_switch is on)
   wy move --pin-account <session>        never move this session (--unpin to undo; the peers tag
-                                         no-move does the same)
-  wy move --list [--json]                the moves of the last day
+                                         no-move and a pin in Claude Code do the same)
+  wy move --list [--json]                the moves of the last day and the pinned sessions (where
+                                         each pin comes from: claude, wy)
   wy move --digest [--since 24h] [--json]
                                          moves, limit hits, weekly room, protected time over cap and
                                          suspect moves of the period
@@ -94,7 +96,7 @@ func moveCmd(e moveEnv, args []string) error {
 	since := fs.String("since", "24h", "the period of --digest (24h, 7d)")
 	selftest := fs.Bool("selftest", false, "run --plan in the timer's own environment and report what it can find")
 	noHub := fs.Bool("no-hub", false, "use only this machine's data")
-	force := fs.Bool("force", false, "move to the named account even when its limit is (nearly) reached")
+	force := fs.Bool("force", false, "move to the named account even when its limit is (nearly) reached, or a session pinned in Claude Code")
 	pin := fs.String("pin-account", "", "never move this session")
 	unpin := fs.String("unpin", "", "let Smart Account Switch move this session again")
 	var pos []string
@@ -146,11 +148,19 @@ func moveCmd(e moveEnv, args []string) error {
 			verb = "unpinned: Smart Account Switch may move it"
 		}
 		fmt.Fprintf(e.stdout, "%s %s\n", short(l.SessionID), verb)
+		if !on && w.pinSet.nativePinned(l) {
+			fmt.Fprintf(e.stdout, "%s is still pinned in Claude Code (~/%s/jobs/pins.json): the switch leaves it until it is unpinned there\n",
+				short(l.SessionID), filepath.Base(l.Slot))
+		}
 		return nil
 	case *list:
 		es := st.Log(e.now().Add(-24 * time.Hour))
+		pins, warns := e.listPins(e.config())
 		if *asJSON {
-			return writeJSONOut(e.stdout, es)
+			if es == nil {
+				es = []mover.LogEntry{}
+			}
+			return writeJSONOut(e.stdout, map[string]any{"moves": es, "pins": pins, "warnings": warns})
 		}
 		labels := e.config().Slots.Labels
 		name := func(dir, key string) string {
@@ -164,6 +174,10 @@ func moveCmd(e moveEnv, args []string) error {
 		}
 		for _, x := range es {
 			fmt.Fprintf(e.stdout, "%s  %s  %s -> %s  %s  %s\n", x.At.Local().Format("01-02 15:04"), short(x.SessionID), name(x.FromDir, x.From), name(x.ToDir, x.To), x.Kind, x.Reason)
+		}
+		printPinRows(e.stdout, pins)
+		for _, x := range warns {
+			fmt.Fprintln(e.stdout, "warning: "+x)
 		}
 		return nil
 	}
@@ -206,6 +220,20 @@ func moveCmd(e moveEnv, args []string) error {
 	l, err := w.find(pos[0])
 	if err != nil {
 		return err
+	}
+	if w.pinSet.nativePinned(l) {
+		// Claude Code's own pin (setup.md 8.6, Pinned sessions): only with --force, and the pin
+		// stays on the old folder's list (Watchyard never writes Claude Code's pins.json).
+		acc := w.labelOfDir[l.Slot]
+		if acc == "" {
+			acc = "~/" + filepath.Base(l.Slot)
+		}
+		file := "~/" + filepath.Base(l.Slot) + "/jobs/pins.json"
+		if !*force {
+			return fmt.Errorf("%s is pinned to %s in Claude Code (%s): pass --force to move it anyway", short(l.SessionID), acc, file)
+		}
+		fmt.Fprintf(e.stderr, "wy move: %s is pinned to %s in Claude Code; moving it anyway (--force). The pin stays on %s's list (%s): unpin it there in Claude Code, Watchyard does not change that file.\n",
+			short(l.SessionID), acc, acc, file)
 	}
 	if w.outScope[l.SessionID] && !w.scope.all {
 		return fmt.Errorf("%s is outside account.smart_switch_scope (%s): it is not moved", short(l.SessionID), w.scope)
@@ -314,6 +342,10 @@ type moveWorld struct {
 	warnings []string
 	// pins are the live pinned sessions by account key (they hold its reserve).
 	pins map[string][]string
+	// pinSet is where each pin comes from (Claude Code's jobs/pins.json, wy's own); pinWarns
+	// are the Claude Code pins files it could not read (the switch's log has each once).
+	pinSet   pinSet
+	pinWarns []string
 	// scope is account.smart_switch_scope; outScope the sessions it leaves out (they count in
 	// the forecasts but never move).
 	scope    switchScope
@@ -401,14 +433,22 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	}
 	w.launches = sys.Sessions(islots)
 	st := mover.NewState(e.dirs.State.Path)
-	pins := st.Pins()
 	var tags map[string][]string
 	if e.tags != nil {
 		tags = e.tags()
 	} else {
 		tags, w.handles = peersTags()
 	}
-	w.pins = livePins(w.launches, w.keyOfDir, pins, tags, now)
+	var dirs []string
+	for _, s := range slots {
+		dirs = append(dirs, s.Dir)
+	}
+	pins := loadPins(st, tags, dirs, func(msg string) {
+		w.warnings = append(w.warnings, msg)
+		w.pinWarns = append(w.pinWarns, msg)
+	})
+	w.pinSet = pins
+	w.pins = livePins(w.launches, w.keyOfDir, pins, now)
 	in.PinReserves = pinReserves(params, w.pins)
 	in.Mover = moverView(cfg, w.launches, w.keyOfDir, ob.Tokens, in.Candidates, now)
 	var lin *picker.LaneInput
@@ -548,7 +588,8 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		if p, ok := ctx[l.SessionID]; ok {
 			s.Context = p / 100 * 200_000
 		}
-		s.Pinned = pins[l.SessionID] || peerspkg.HasTag(tags[l.SessionID], peerspkg.NoMoveTag)
+		s.PinFrom = pins.from(l)
+		s.Pinned = s.PinFrom != ""
 		if !w.scope.in(l.SessionID, tags[l.SessionID]) {
 			s.Pinned, w.outScope[l.SessionID] = true, true
 		}
@@ -788,7 +829,8 @@ func (w *moveWorld) planDoc(r mover.Result) map[string]any {
 		alerts = append(alerts, map[string]any{"session": a.Session, "account": a.Account, "window": a.Window, "projected": a.P,
 			"rate": a.Rate, "hit_at": a.HitAt, "reset_at": a.ResetAt, "command": w.pinCommand(a.Session)})
 	}
-	return map[string]any{"accounts": r.Accounts, "moves": ms, "alerts": alerts, "warnings": w.warnings}
+	return map[string]any{"accounts": r.Accounts, "moves": ms, "alerts": alerts, "warnings": w.warnings,
+		"pins": pinRows(w.launches, w.labelOfDir, w.keyOfDir, w.pinSet, w.pins)}
 }
 
 // accLabel is the label of account key (the key when none is known here).
@@ -861,6 +903,7 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		fmt.Fprintf(out, "Each live pinned session keeps %.0f%% of its account's 5-hour window and %.0f%% of its week free (CAPS are less that).\n",
 			p.PinReserve5, p.PinReserve7)
 	}
+	printPinRows(out, pinRows(w.launches, w.labelOfDir, w.keyOfDir, w.pinSet, w.pins))
 	for _, a := range r.Alerts {
 		x := mover.PinAlert{At: w.input.Now, Session: a.Session, Name: w.byID[a.Session].Name, Account: w.accLabel(a.Account), Window: a.Window, HitAt: a.HitAt,
 			ResetAt: a.ResetAt, Rate: a.Rate, Command: w.pinCommand(a.Session)}
@@ -928,6 +971,9 @@ func (w *moveWorld) humanMessage(cfg config.Config, l mover.Launch, t mover.Targ
 func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State) error {
 	for _, x := range mover.Reap(moveHost(e, st), st, e.now()) {
 		fmt.Fprintf(e.stdout, "stopped a copy of %s that the supervisor of %s restarted after its move\n", short(x.SessionID), filepath.Base(x.FromDir))
+	}
+	if msg := strings.Join(w.pinWarns, "; "); st.Changed("pins-warned", msg) && msg != "" {
+		fmt.Fprintln(e.stdout, "warning: "+msg)
 	}
 	r := mover.Plan(w.input)
 	var first error

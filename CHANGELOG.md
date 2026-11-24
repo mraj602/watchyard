@@ -119,6 +119,14 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **The switch moved a session pinned in Claude Code** (live: 2abbe6d1 was pinned in Claude
+  Code at 03:14 and moved at 03:20). A session listed in its config folder's Claude Code
+  `jobs/pins.json` (short ids, prefix match; read only, mtime-cached; missing or unparsable is
+  no pins, with a warning) is pinned for the switch, `--plan`, the picker's pin reserve,
+  `--explain`/`--json` and the pin alerts, together with wy's own pins (each session counted
+  once). `wy move --plan`/`--list` show where each pin comes from (`claude`, `wy`); `wy move
+  --list --json` is now an object (`moves`, `pins`, `warnings`). Moving such a session by hand
+  needs `--force` and warns that its Claude Code pin stays on the old account's list.
 - **The switch moved a session that burned nothing** (live on pre5: a mid-turn lane at 0.0
   points/h moved with a 4.6 points/h one). A running session is a candidate only when its own
   burn is at least `account.move_min_burn` (default 1 point/h); a session under
