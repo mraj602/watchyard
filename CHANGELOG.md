@@ -6,6 +6,8 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-11-24
+
 ### Added
 
 - **Smart Account Switch** (`wy move`, setup.md 8.6), off by default (`wy config set
@@ -304,7 +306,9 @@ The first public version. Everything below is new.
   itself does, instead of the full build number. claude.ai's Claude Code section kept asking to
   verify the device again, because the string was unusual and changed with every Electron update.
 
-[Unreleased]: https://github.com/mraj602/watchyard/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/mraj602/watchyard/compare/v1.3.3...HEAD
+[1.3.3]: https://github.com/mraj602/watchyard/compare/v1.3.2...v1.3.3
+[1.3.2]: https://github.com/mraj602/watchyard/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/mraj602/watchyard/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/mraj602/watchyard/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/mraj602/watchyard/compare/v1.0.0...v1.2.0
