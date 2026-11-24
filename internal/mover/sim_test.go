@@ -258,7 +258,7 @@ type simResult struct {
 	Placed, Moved30 float64
 	// LowMoves: moves of running sessions burning under 1 point/h (they free next to nothing).
 	LowMoves float64
-	runs            float64
+	runs     float64
 }
 
 func (r *simResult) add(o simResult) {
