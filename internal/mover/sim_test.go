@@ -190,6 +190,21 @@ type simLane struct {
 	// mf: its model's re-read factor (opus 5, sonnet 3); expMult: the picker's estimate of its
 	// remaining time over the truth.
 	mf, expMult float64
+	// The startup burst (sim_young_test.go): sb burned minutes left at sbF times its rate.
+	// obsTrue is obs without the burst's excess (its steady burn); obsCW the cache writes of
+	// its first 10 minutes (the burst's excess mostly is).
+	sb             int
+	sbF            float64
+	obsTrue, obsCW [10]float64
+}
+
+// trueRate10 is rate10 without the startup burst's excess.
+func (l *simLane) trueRate10() float64 {
+	s := 0.0
+	for _, x := range l.obsTrue {
+		s += x
+	}
+	return s / 10
 }
 
 // rate10 is the lane's measured burn over the last 10 minutes, points per hour.
@@ -233,6 +248,8 @@ type simResult struct {
 	// FalseMoves: moves whose source was under its caps at its true burn; ReReadCost: re-read
 	// context in opus-equivalent Mtok (× model factor / 5).
 	FalseMoves, ReReadCost float64
+	// YoungMoves: moves of lanes under 15 minutes old (sim_young_test.go).
+	YoungMoves, YoungFalse float64
 	runs                   float64
 }
 
@@ -259,6 +276,8 @@ func (r *simResult) add(o simResult) {
 	r.Over80Min += o.Over80Min
 	r.FalseMoves += o.FalseMoves
 	r.ReReadCost += o.ReReadCost
+	r.YoungMoves += o.YoungMoves
+	r.YoungFalse += o.YoungFalse
 	r.Over80Owner += o.Over80Owner
 	r.Over80NoRoom += o.Over80NoRoom
 	r.Over80Other += o.Over80Other
@@ -299,11 +318,26 @@ type simStrat struct {
 	// minutes, used at once; other machines' sessions not counted from the hub). pickProj:
 	// the picker places no lane where the switch's projection would go over its caps.
 	oldRate, pickProj bool
+	// startup: lanes burn 3-6x for their first 3-8 burned minutes (sim_young_test.go);
+	// measure: the session rate the plan sees (nil: rate10).
+	startup bool
+	measure func(l *simLane) float64
+	// readFull: the readings are compared with the meter of the full rates (not measure's).
+	readFull bool
+}
+
+// rateOf is the session rate the plan sees.
+func (st simStrat) rateOf(l *simLane) float64 {
+	if st.measure != nil {
+		return st.measure(l)
+	}
+	return l.rate10()
 }
 
 func v2(name string, f func(p *Params)) simStrat {
 	p := DefaultParams
 	p.Name = name
+	p.YoungGate = 0 // the tables before young sessions (sim_young_test.go) are kept as they were
 	if f != nil {
 		f(&p)
 	}
@@ -575,6 +609,10 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 					l.acc = place(m, l.est)
 				}
 				l.on, l.busy = true, 4+l.r.IntN(20)
+				if st.startup && l.coord == nil {
+					br := rand.New(rand.NewPCG(l.seed, 7))
+					l.sb, l.sbF = 3+br.IntN(6), uniform(br, 3, 6)
+				}
 				l.newTurn()
 				if l.owner {
 					l.typed = m // the owner starts it with a prompt
@@ -585,7 +623,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			}
 			l.age++
 			a := accs[l.acc]
-			b := 0.0
+			b, bTrue, bCW := 0.0, -1.0, 0.0
 			switch {
 			case l.restart > 0:
 				l.restart--
@@ -627,7 +665,19 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 					break
 				}
 				rate := l.est * l.mult * uniform(l.r, 0.8, 1.2)
+				steady := rate
+				if l.sb > 0 {
+					extra := rate * (l.sbF - 1)
+					rate += extra
+					bCW = extra * 0.85 / 60
+					l.sb--
+				}
+				if l.age <= 10 {
+					bCW += steady * 0.15 / 60
+				}
+				bTrue = steady / 60
 				if l.burst > 0 {
+					bTrue += l.burstRate / 60
 					rate += l.burstRate
 					l.burst--
 				}
@@ -654,6 +704,14 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			if pat.rateNoise > 0 && ob > 0 {
 				ob = math.Max(0, ob*(1+pat.rateNoise*obsR.NormFloat64()))
 			}
+			obT, obC := ob, 0.0
+			if bTrue >= 0 && b > 0 {
+				obT, obC = ob*bTrue/b, ob*bCW/b
+			}
+			copy(l.obsTrue[:], l.obsTrue[1:])
+			l.obsTrue[9] = obT
+			copy(l.obsCW[:], l.obsCW[1:])
+			l.obsCW[9] = obC
 			l.ewma += (ob - l.ewma) * alpha
 			copy(l.obs[:], l.obs[1:])
 			l.obs[9] = ob
@@ -763,16 +821,22 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			}
 			v.l7 = clamp(v.l7 + pat.noise*obsR.NormFloat64()/2)
 			// R5: the local meter over 10 min, cross-checked with the reading delta.
-			meter := 0.0
+			meter, full := 0.0, 0.0
 			for _, l := range lanes {
 				if l.on && !l.done && l.acc == i {
-					meter += l.rate10()
+					meter += st.rateOf(l)
+					full += l.rate10()
 				}
 			}
 			if !st.oldRate && a.otherSeen {
 				meter += a.other // other machines' sessions the hub measured
+				full += a.other
 			}
 			v.rate, v.meter = meter, meter
+			cmp := meter // what the readings are compared with
+			if st.readFull {
+				cmp = full
+			}
 			if st.oldRate {
 				if j := len(a.h) - 1 - lag - 10; j >= 0 {
 					o1 := a.h[j]
@@ -805,7 +869,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 						sxy += (xs[q] - mx) * (ys[q] - my)
 						sxx += (xs[q] - mx) * (xs[q] - mx)
 					}
-					if d := math.Max(0, sxy/sxx); d > 2*meter && d > 1 {
+					if d := math.Max(0, sxy/sxx); d > 2*cmp && d > 1 {
 						used = true
 						a.readStreak++
 						if a.readStreak >= 2 {
@@ -877,7 +941,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			if !l.on || l.done {
 				continue
 			}
-			s := Session{ID: l.id, Account: accs[l.acc].key, Rate: l.rate10(), Busy: l.busy > 0 && l.restart == 0 && !l.stopped,
+			s := Session{ID: l.id, Account: accs[l.acc].key, Rate: st.rateOf(l), Busy: l.busy > 0 && l.restart == 0 && !l.stopped,
 				Stopped: l.stopped, Interactive: l.owner, Movable: true, Context: l.ctx, Pinned: l.coord != nil && st.pinned,
 				ModelFactor: l.mf, Started: simAt(l.start)}
 			if l.coord == nil && !l.owner && l.work > l.age {
@@ -942,7 +1006,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 				tr := a.other
 				for _, x := range lanes {
 					if x.on && !x.done && !x.stopped && x.acc == i {
-						tr += x.rate10()
+						tr += x.trueRate10()
 					}
 				}
 				ta := Account{Key: a.key, Protected: a.protected, Ratio: simRatio, Rate: tr, Reserve5: rsv5[i], Reserve7: rsv7[i],
@@ -952,9 +1016,15 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 				}
 				if st.p.Project(ta, nil, 0, simAt(m)).Window == "" && !byID[mv.Session].stopped {
 					res.FalseMoves++
+					if x := byID[mv.Session]; x.coord == nil && x.age < 15 && x.movedFrm < 0 {
+						res.YoungFalse++
+					}
 				}
 			}
 			l := byID[mv.Session]
+			if l.coord == nil && l.age < 15 && l.movedFrm < 0 {
+				res.YoungMoves++
+			}
 			if l.pendTo >= 0 {
 				continue // already waiting for its step to end
 			}

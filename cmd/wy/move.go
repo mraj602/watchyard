@@ -605,11 +605,15 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		}
 	}
 	w.sw.ReadStreak = readStreak
+	// The projections shown and kept (--plan, passes.jsonl) are Plan's: young sessions'
+	// burn left out (setup.md 8.6, Young sessions). The readings above were compared with
+	// the full meter.
+	gated := mover.GateYoung(w.input)
 	byAcc := map[string][]mover.Session{}
-	for _, s := range w.input.Sessions {
+	for _, s := range gated.Sessions {
 		byAcc[s.Account] = append(byAcc[s.Account], s)
 	}
-	for _, a := range w.input.Accounts {
+	for _, a := range gated.Accounts {
 		w.proj[a.Key] = params.Project(a, byAcc[a.Key], 0, now)
 	}
 	return w, nil
@@ -681,6 +685,7 @@ func moveParams(cfg config.Config) mover.Params {
 	}
 	p.WeekSpan = mins(60 * a.MoveWeekSpanH)
 	p.DestHorizon = mins(a.MoveDestHorizonMin)
+	p.YoungGate = mins(a.MoveYoungMin)
 	p.SpikePasses, p.SpikeNear = int(a.MoveSpikePasses), mins(a.MoveSpikeNearMin)
 	p.Cooldown, p.NoReturn = mins(a.MoveCooldownMin), mins(a.MoveNoReturnMin)
 	p.AccountMoves, p.AccountWindow = int(a.MoveAccountMoves), mins(a.MoveAccountWindowMin)

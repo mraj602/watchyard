@@ -1880,6 +1880,7 @@ weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
 | --- | --- | --- |
 | Pass | every 60 s while the switch is on (each `wy tick`) | the burn changes in minutes; a pass reads local files and the hub once |
 | Burn window | `move_burn_min` 10 min | long enough to smooth one turn, short enough to see a lane start burning hot |
+| Young sessions | a session under `move_young_min` = 15 min old (since its lease, else unknown: old) has its burn left out of its account's R5 (not of a rate from the readings, which are still compared with the full meter) | a lane's first minutes (reading the codebase, cache writes) burn several times its steady rate, and the burn window then holds only those minutes: live 2026-11-25 two lanes moved 3 minutes after launch. Simulator (300 runs × 7 patterns, a start-up burst of 3-6× for 3-8 minutes): moves of lanes under 15 minutes whose source was under its caps at its steady burn 3.65 → 0.23 a day, all stopped minutes 1172 → 1164, protected minutes over 80 +0.9%; 10 and 12 minutes left 1.85 and 1.32, the rate × min(1, age/10) 2.89, cache writes weighted 0.25 for 10 minutes 2.68, the picker's estimate while young 3.52 |
 | Trigger | P5 > `move_cap_5h` (95; protected 80) or P7 > `move_cap_7d` (98; protected 80) | owner rule 1: the projected 5-hour level must stay at 95-98 or under; rule 2: the weekly 98 (aggressive) or 80 (protected); a protected account's 5-hour level never over 80 |
 | Hard now | the level is at its cap now: trigger at once | the projection cannot be under the cap any more |
 | Spike filter | a trigger must hold on `move_spike_passes` = 2 passes in a row, counted per account and window (a 5-hour trigger and a weekly one are two streaks), unless the projected hit of 100 is within `move_spike_near_min` = 30 min or it is hard now | one hot minute (a helper panel) should not move anything; a near hit cannot wait a minute |
@@ -2324,6 +2325,7 @@ move_cap_7d = 98            #   move_cap_5h_protected 80, move_cap_7d_protected 
                             #   move_stopped_wait_min 20, move_owner_grace_min 0,
                             #   move_step_wait_min 3
 move_dest_horizon_min = 90  # an aggressive destination must fit the session this long (its expected time first); 0: until the resets
+move_young_min = 15         # a session's burn counts for the switch once it is this old (its first minutes burn hot); 0: at once
 pin_reserve_5h = 10         # points of the 5-hour window kept free per live pinned session (8.6)
 pin_reserve_7d = 5          # points of the week kept free per live pinned session
 ```

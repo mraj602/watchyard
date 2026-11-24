@@ -17,6 +17,12 @@ All notable changes to Watchyard are recorded here. The format follows
   (else 90 minutes), capped at that account's 5-hour reset, at least 60 minutes; a protected
   account still needs the full rule and only when no aggressive one fits. Simulator: protected
   minutes over 80 −4%, pinned and all stopped minutes unchanged (within 1%), 32% more moves.
+- **Young sessions** (`account.move_young_min`, default 15; setup.md 8.6). A session's burn
+  counts for the switch only once it is 15 minutes old: a lane's first minutes (reading the
+  codebase, cache writes) burn several times its steady rate and the burn window then holds
+  only those minutes, so two fresh lanes were moved 3 minutes after launch. The readings are
+  still compared with the full meter. Simulator with a start-up burst: moves of young lanes
+  whose account was under its caps 3.65 → 0.23 a day, stopped minutes not higher.
 - **Cheaper moves.** When several sessions would each bring an account under its caps, the one
   with the most points freed per re-read (burn ÷ context × model factor) goes first, then the
   youngest.

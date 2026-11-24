@@ -534,7 +534,7 @@ func TestPlanCheapMoves(t *testing.T) {
 	in.Accounts[0].W5.Level = 20
 	in.Params = DefaultParams
 	in.Sessions[0].Rate, in.Sessions[0].Context, in.Sessions[0].ModelFactor = 15, 50_000, 3
-	in.Sessions[0].Started, in.Sessions[1].Started = t0.Add(-10*time.Minute), t0.Add(-3*time.Hour)
+	in.Sessions[0].Started, in.Sessions[1].Started = t0.Add(-20*time.Minute), t0.Add(-3*time.Hour)
 	if r := plan(in); len(r.Moves) == 0 || r.Moves[0].Session != "big" {
 		t.Fatalf("youngest first: %+v", r.Moves)
 	}

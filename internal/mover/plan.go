@@ -75,6 +75,11 @@ type Params struct {
 	// PinAlertWithin: a pinned session that alone takes its account to 100 before the reset,
 	// this soon, is an owner alert (Result.Alerts).
 	PinAlertWithin time.Duration
+	// YoungGate: a session's burn counts only once it is this old (Session.Started): a lane's
+	// first minutes (reading the codebase, cache writes) burn far above its steady rate, and
+	// the burn window then holds only those minutes. Younger sessions' rates are left out of
+	// their account's meter (not of a rate from the readings). 0: counted at once.
+	YoungGate time.Duration
 }
 
 // PinReserve is the reserve of an account with pins live pinned sessions: pins x
@@ -99,7 +104,7 @@ var DefaultParams = Params{
 	Cooldown: 20 * time.Minute, NoReturn: time.Hour, AccountMoves: 3, AccountWindow: 15 * time.Minute,
 	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, Orgs: OrgsAny,
 	PinReserve5: 10, PinReserve7: 5, PinAlertWithin: 2 * time.Hour,
-	DestHorizon: 90 * time.Minute, CheapMoves: true,
+	DestHorizon: 90 * time.Minute, CheapMoves: true, YoungGate: 15 * time.Minute,
 }
 
 // PinIdle: a pinned session idle this long holds no reserve (the caller counts the live pins).
@@ -187,6 +192,8 @@ type Session struct {
 	// MovedAt and MovedFrom: its last move (zero: never moved).
 	MovedAt   time.Time
 	MovedFrom string
+	// YoungRate: its measured burn while it is under Params.YoungGate (GateYoung set Rate to 0).
+	YoungRate float64
 }
 
 func (s Session) burned() bool { return s.Busy || s.Rate > 0 }
@@ -303,9 +310,60 @@ type Result struct {
 	Streak map[string]int
 }
 
+// young reports whether session s is under Params.YoungGate (its burn not counted yet).
+func (p Params) young(s Session, now time.Time) bool {
+	return p.YoungGate > 0 && !s.Started.IsZero() && now.Sub(s.Started) < p.YoungGate
+}
+
+// GateYoung leaves out the burn of the sessions under Params.YoungGate (setup.md 8.6, Young
+// sessions): their Rate becomes 0 (kept in YoungRate), and their account's measured Rate and
+// Meter lose it unless the Rate is the readings' slope. Plan calls it; a caller projecting on
+// its own calls it first.
+func GateYoung(in Input) Input {
+	p := in.Params
+	if p.YoungGate <= 0 {
+		return in
+	}
+	sub := map[string]float64{}
+	var ss []Session
+	for i, s := range in.Sessions {
+		if !p.young(s, in.Now) || s.Rate <= 0 {
+			continue
+		}
+		if ss == nil {
+			ss = append([]Session(nil), in.Sessions...)
+		}
+		if !s.Stopped {
+			sub[s.Account] += s.Rate
+		}
+		ss[i].YoungRate, ss[i].Rate = s.Rate, 0
+	}
+	if ss == nil {
+		return in
+	}
+	in.Sessions = ss
+	as := append([]Account(nil), in.Accounts...)
+	for i, a := range as {
+		x := sub[a.Key]
+		if x <= 0 || a.FromReadings {
+			continue
+		}
+		as[i].Rate, as[i].Meter = math.Max(0, a.Rate-x), math.Max(0, a.Meter-x)
+		note := fmt.Sprintf("%.1f points/h of sessions under %d min left out (a session's first minutes burn far above its steady rate)",
+			x, int(p.YoungGate.Minutes()))
+		if a.RateNote != "" {
+			note = a.RateNote + "; " + note
+		}
+		as[i].RateNote = note
+	}
+	in.Accounts = as
+	return in
+}
+
 // Plan is one pass of Smart Account Switch. It changes nothing; the caller carries out the
 // moves and notices.
 func Plan(in Input) Result {
+	in = GateYoung(in)
 	p := in.Params
 	now := in.Now
 	res := Result{Streak: map[string]int{}}
