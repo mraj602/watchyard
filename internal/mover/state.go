@@ -22,6 +22,7 @@ import (
 //	orders/<pid>.json      a relaunch order for that wrapper
 //	pins.json              sessions the owner pinned to their account (no moves)
 //	moves.jsonl            every move (the cooldown, no ping-pong, wy status)
+//	alerts.json            pinned sessions that alone take their account to 100 (wy status)
 type State struct{ Dir string }
 
 // NewState is the mover state under the Watchyard state folder.
@@ -270,3 +271,61 @@ func (s State) LoadSwitch(now time.Time, pass time.Duration) SwitchState {
 
 // SaveSwitch writes the switch state.
 func (s State) SaveSwitch(x SwitchState) error { return s.write(s.path("switch.json"), x) }
+
+// PinAlert is an owner alert kept for `wy status` (<state>/move/alerts.json): a pinned
+// session that alone takes its account to 100 before the window resets (setup.md 8.6, Pinned
+// sessions). Command is the one line that moves it by hand ("" when no account has room).
+type PinAlert struct {
+	At      time.Time `json:"at"`
+	Session string    `json:"session"`
+	Name    string    `json:"name,omitempty"`
+	Account string    `json:"account"` // its label
+	Window  string    `json:"window"`
+	HitAt   time.Time `json:"hit_at"`
+	ResetAt time.Time `json:"reset_at"`
+	Rate    float64   `json:"rate"`
+	Command string    `json:"command"`
+}
+
+// Text is the alert's one line.
+func (a PinAlert) Text() string {
+	name := a.Session
+	if len(name) > 8 {
+		name = name[:8]
+	}
+	if a.Name != "" {
+		name += " " + a.Name
+	}
+	t := fmt.Sprintf("pinned session %s alone takes %s's %s window to 100%% at %s (%.1f points/h; it resets %s)", name, a.Account, a.Window,
+		a.HitAt.Local().Format("15:04"), a.Rate, a.ResetAt.Local().Format("Mon 15:04"))
+	if a.Command != "" {
+		return t + ": move it by hand: " + a.Command
+	}
+	return t + "; no account has room for it now"
+}
+
+// Alerts are the pin alerts whose window has not reset by now.
+func (s State) Alerts(now time.Time) []PinAlert {
+	var xs, out []PinAlert
+	if b, err := os.ReadFile(s.path("alerts.json")); err == nil {
+		_ = json.Unmarshal(b, &xs)
+	}
+	for _, x := range xs {
+		if x.ResetAt.After(now) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// AddAlert keeps a once for its session and window (until that window resets) and reports
+// whether it is new.
+func (s State) AddAlert(a PinAlert, now time.Time) (bool, error) {
+	xs := s.Alerts(now)
+	for _, x := range xs {
+		if x.Session == a.Session && x.Window == a.Window && x.ResetAt.Sub(a.ResetAt).Abs() < 10*time.Minute {
+			return false, nil
+		}
+	}
+	return true, s.write(s.path("alerts.json"), append(xs, a))
+}

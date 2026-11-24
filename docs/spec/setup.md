@@ -1731,11 +1731,14 @@ Unknown fields are reported by `wy doctor` as unknown keys.
   "hours_to_reset", "reading_at", "reading_age_min", "five_hour_resets_at", "meter_5h_pct",
   "meter_7d_pct", "unexplained_5h_pct", "leases", "burst", "burst_cap", "capped",
   "last_lease", "expiring", "stale", "unknown": [...], "skip_level", "weekly_cap",
-  "five_hour_cap", "calibration", "lease_charges": [...], "class", "drain"}`
+  "five_hour_cap", "pins", "pin_reserve_5h_pct", "pin_reserve_7d_pct", "calibration",
+  "lease_charges": [...], "class", "drain"}`
   (`leases` = active leases, `burst` = leases in the last 60 minutes, `meter_*` the token
   meter's points with its margins, `skip_level` 0 for a burst cap only, 1 stale, 2 a protected
   rule, 3 a hard limit; `weekly_cap` and `five_hour_cap` the levels at which it takes no new
-  session now, as in record.md 4.11; `class` one of `drain`, `at_risk`, `aggressive`, `unknown`,
+  session now, as in record.md 4.11, already less the pin reserve; `pins` the account's live
+  pinned sessions on this machine and `pin_reserve_*_pct` the points kept free for them (8.6,
+  Pinned sessions); `class` one of `drain`, `at_risk`, `aggressive`, `unknown`,
   `protected`, and `expiring` true for `drain` (kept for one release); `drain` `{"on", "room_pct",
   "room_pts", "need_hours", "horizon_hours", "capacity", "capacity_weekly", "capacity_5h",
   "limited_by": "weekly"|"5h"|"spill"|"stale"|"landing", "running", "forward_burn_pts",
@@ -1771,7 +1774,9 @@ Unknown fields are reported by `wy doctor` as unknown keys.
   protected". Then kind, weekly level
   (reserve level for protected) and reset, 5-hour level, leases and burst, data source and
   age, why; then one calibration line per account: `f`, `ρ`, the lane charge, their source and
-  weights, the margins and the unexplained rate; then one line per lease of `lease_charges`:
+  weights, the margins and the unexplained rate; one line per account with live pinned sessions
+  ("Pins claude-3: 2 live pinned sessions keep 30% of the 5-hour window and 6% of the week free
+  (caps now 5h 15, 7d 79)"); then one line per lease of `lease_charges`:
   account, pick time, this or another machine (and the kept copy), state, the burned units,
   where they came from (`local`, `hub` or `none`) and `b`, and the lease's 5-hour charge, reserve
   and kept weekly charge; and per draining account a line "Drain claude-2: room 9.3% (71 pts), need
@@ -1873,6 +1878,7 @@ weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
 | Spike filter | a trigger must hold on `move_spike_passes` = 2 passes in a row, unless the projected hit of 100 is within `move_spike_near_min` = 30 min or it is hard now | one hot minute (a helper panel) should not move anything; a near hit cannot wait a minute |
 | Candidates | every session on a triggered account that **burned** in the burn window (busy, or tokens in it), whatever its turn state: **mid-turn moves are allowed** | owner: "we move the agent that is working, not the agent that is paused"; moving an idle session frees nothing |
 | Never moved | idle sessions with no burn; pinned (`no-move`, `--pin-account`) or outside the scope; claude.ai `--sdk-url` sessions | |
+| Pin reserve | `pin_reserve_5h` 10 and `pin_reserve_7d` 5 points per live pinned session: the account's caps for every other session (trigger, enough, destination) are its caps less pins × these | long-running pinned sessions (a Slack watcher, an orchestrator) must not stop; the simulator's best row (below) |
 | Stopped by a limit | a session whose last turn a limit ended (`StopFailure` `rate_limit`) is a candidate too, whatever its burn (it wants to burn): moved when that window resets `move_stopped_wait_min` = 20 min or more from now, else it waits for the reset | a move takes a minute or two and re-reads the context; a near reset is cheaper |
 | Choice | greedy, recomputed after each pick: first a session whose move alone brings both projections under cap − hysteresis (the fewest moves); then the highest burn; then the smaller context (a cheaper re-read); then the longest expected remaining time | the highest burner frees the most |
 | Enough | stop when P5 and P7 of the source are at most cap − `move_hysteresis` (5) | hysteresis: no move back and forth around the cap |
@@ -1884,6 +1890,57 @@ weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
 | Once per window | none: a long session may move many times | owner: long sessions may need several moves |
 | Between steps | a mid-turn session is stopped once no step runs, waiting up to `move_step_wait_min` 3 min, never past one minute before the hit | a step stopped half-way is often run again after the resume |
 | Owner grace | `move_owner_grace_min`, default 0 (off): an interactive session the owner typed into within it stays | the simulator shows no clear gain (below); off |
+
+**Pinned sessions.** A pinned session (`--pin-account`, the peers tag `no-move`) never moves.
+Pin the long-running sessions that burn little but must not stop: a Slack watcher, an
+orchestrator, a CI watcher. Each *live* pinned session (running, and not idle for 6 hours) keeps a
+reserve free on its account: `account.pin_reserve_5h` (default 10) points of the 5-hour window
+and `account.pin_reserve_7d` (default 5) points of the week; an account with n live pins keeps
+n × these. The reserve is a setting, not measured from the pin's burn. With it:
+
+- the picker (8.5) hands out new lanes as if every limit of the account were that much lower
+  (`--explain` prints a `Pins` line, `--json` the fields `pins`, `pin_reserve_5h_pct`,
+  `pin_reserve_7d_pct`; the caps shown are after it);
+- the switch's trigger and *enough* test for the other sessions on the account use its caps less
+  the reserve, so it moves the other burners off before they eat into the reserve; a pinned
+  session's own burn counts in the projection as before;
+- a destination keeps its own reserve free (its caps less its reserve);
+- a protected account counts the reserve inside its 80/80 caps;
+- `wy move --plan` shows it per account (`PIN RESERVE`, "1 pinned: 10/5"; the `CAPS` column is
+  after it).
+
+A pinned session that alone (its own burn, nothing else) takes its account's 5-hour or weekly
+level to 100% within 2 hours, before that window resets, is not moved: the pass records one alert
+per session and window until the reset (`<state>/move/alerts.json`), printed in the switch's log
+and by `wy status` ("alert: pinned session ... alone takes claude-2's 5h window to 100% at 14:20
+(...): move it by hand: wy move 5e55a0b0 claude-3"), the command naming the account the switch
+would pick for it.
+
+Simulator (`internal/mover/pins_sim_test.go`; 5 coordinators on every pattern of 8.6 placed like
+the owner's: claude ci-lv1, claude-2 Slack watcher, claude-3 orchestrator and planner, claude-7
+OTA planner; each awake about 17 hours a day at 1-5% of a 5-hour window per 5 hours with dispatch
+bursts plus 1-2 heavy windows a day at 10-20%; 9 patterns × 300 runs, per day per run):
+
+| Strategy | Pinned stopped min | Pinned hits (weekly) | All stopped min | Moves (of pins) | Owner alerts |
+| --- | --- | --- | --- | --- | --- |
+| Pins movable (before) | 289 | 2.20 (0.32) | 1020 | 87.5 (46.5) | 0 |
+| Pins never move, no reserve | 293 | 1.22 (0.27) | 871 | 42.7 (0) | 1.33 |
+| Reserve 10/3 | 280 | 1.20 (0.24) | 939 | 41.4 (0) | 1.29 |
+| **Reserve 10/5 (default)** | **268** | 1.20 (0.22) | 974 | 40.6 (0) | 1.29 |
+| Reserve 15/3 | 288 | 1.23 (0.24) | 957 | 41.2 (0) | 1.31 |
+| Reserve 15/5 | 273 | 1.22 (0.22) | 981 | 40.4 (0) | 1.30 |
+| Reserve 20/5 | 287 | 1.26 (0.23) | 1007 | 40.0 (0) | 1.31 |
+| Reserve 10/3, owner moves on alert in 30 min | 229 | 1.23 (0.21) | 895 | 42.0 (0.5) | 1.45 |
+
+10/5 has the fewest pinned stopped minutes in 7 of the 9 patterns. Not moving pins halves their
+hits and saves 46 moves and 23 Mtok of re-reads a day. The reserve's gain is small (-9% pinned
+stopped minutes, -18% weekly hits) because most pinned stops (about 60%) come when no account
+has room at all; it costs the other sessions stopped minutes (+12% all stopped minutes), since
+the reserve is room they cannot use. A bigger 5-hour reserve (15, 20) does worse: it moves more
+lanes and fills the destinations. Acting on the alert helps most (-17%). On an abnormal day (the
+pins at 4-5× their burn) every strategy stops the pins more than twice as long; the alerts rise
+to 5.6 a day. The modelled pins use about 27% of a week each, more than the 3-10% they use
+normally, so these numbers are on the heavy side.
 
 **Interactive sessions.** A session is *interactive* (a person uses it) when it is: a plain
 terminal session; a `wy run` session; a tmux pane with Remote Control on; or a tmux pane that got
@@ -2076,13 +2133,17 @@ candidate), and the rule settings `cooldown_min`, `no_return_min`, `account_wind
 `account_moves`, `owner_grace_min`, `spike_passes`. Injected accounts are never stale.
 `wy move --plan` warns while it is set.
 
-**Records.** `<state>/move/moves.jsonl`: `{"at", "session_id", "from", "to", "from_dir", "to_dir",
+**Records.** `<state>/move/alerts.json`: the pin alerts (`at`, `session`, `name`, `account`,
+`window`, `hit_at`, `reset_at`, `rate`, `command`), each kept until its window resets.
+`<state>/move/moves.jsonl`: `{"at", "session_id", "from", "to", "from_dir", "to_dir",
 "kind", "auto", "reason", "argv", "error"}` per move (failed ones with `error`). The lease
 ledger (8.5): an `ended` line for the session's lease, then a `lease` line on the new account
 with `strategy` `move` and `moved_from` (the old account's label), and `launched`. The hub and
 `wy status` follow the session to the new account from its next hook event (identity.md 5.3).
 
-**Commands.** `wy move --plan [--json]`: each account's forecast, the moves a pass would make
+**Commands.** `wy move --plan [--json]`: each account's forecast (with its pin reserve: `PIN
+RESERVE` "1 pinned: 15/3", CAPS already less it; JSON `Pins`, `Reserve5`, `Reserve7`), the pin
+alerts (JSON `alerts`), the moves a pass would make
 (with the steps for a session it cannot restart) and, for an account that hits, each session it
 leaves and why ("moved 4m ago (cooldown)", "no logged-in account on this machine has room for
 its burn", "the owner typed into it 40s ago (owner grace)" ...; JSON `skipped`); an interactive
@@ -2148,6 +2209,8 @@ move_cap_7d = 98            #   move_cap_5h_protected 80, move_cap_7d_protected 
                             #   move_account_moves 3, move_account_window_min 15,
                             #   move_stopped_wait_min 20, move_owner_grace_min 0,
                             #   move_step_wait_min 3
+pin_reserve_5h = 10         # points of the 5-hour window kept free per live pinned session (8.6)
+pin_reserve_7d = 5          # points of the week kept free per live pinned session
 ```
 
 `config.toml` is backed up as `config.toml.bak` before `wy setup` first writes it (paths.md 2)

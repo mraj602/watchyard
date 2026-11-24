@@ -229,6 +229,11 @@ type LaneAccount struct {
 	F5, Ratio, Charge float64
 	// K5 and K7 are the meter margin factors: g5 = K5 × f × m5, g7 = K7 × f × m7 / ρ.
 	K5, K7 float64
+	// Pins are its live pinned sessions on this machine and PinReserve5/7 the points of its
+	// 5-hour and weekly windows kept free for them (account.pin_reserve_5h/_7d per pin;
+	// setup.md 8.6, Pinned sessions): every limit of the account is that much lower for new lanes.
+	Pins                     int
+	PinReserve5, PinReserve7 float64
 }
 
 // LaneLease is one lease, local or another machine's.
@@ -330,17 +335,21 @@ type LaneRow struct {
 	Margin7      float64 // the meter margin g7, weekly points
 	WeeklyCap    float64 // the weekly level at which it takes no new session now (caps)
 	FiveHourCap  float64 // the 5-hour level at which it takes no new session
-	SampleAgeMin float64
-	SampleAt     time.Time // zero: no reading time
-	FiveReset    time.Time
-	LastLease    time.Time
-	Stale        bool
-	Unknown      []string
-	SkipLevel    int // 0 burst cap only, 1 stale, 2 a protected rule, 3 a hard limit
-	Last         bool
-	Expiring     bool
-	Forced       bool
-	ETA          *time.Time
+	// Pins and PinReserve5/7: its live pinned sessions and the points kept free for them
+	// (already off the caps and limits).
+	Pins                     int
+	PinReserve5, PinReserve7 float64
+	SampleAgeMin             float64
+	SampleAt                 time.Time // zero: no reading time
+	FiveReset                time.Time
+	LastLease                time.Time
+	Stale                    bool
+	Unknown                  []string
+	SkipLevel                int // 0 burst cap only, 1 stale, 2 a protected rule, 3 a hard limit
+	Last                     bool
+	Expiring                 bool
+	Forced                   bool
+	ETA                      *time.Time
 	// Class (OrderDrain): drain, at_risk, aggressive, unknown or protected; Drain its drain rules.
 	Class string
 	Drain DrainInfo
@@ -592,7 +601,15 @@ func (p LaneParams) limits(acc LaneAccount) (lim7, lim5 float64) {
 	if acc.Limit5h > 0 {
 		lim5 = acc.Limit5h
 	}
-	return lim7, lim5
+	return pinLess(lim7, acc.PinReserve7), pinLess(lim5, acc.PinReserve5)
+}
+
+// pinLess is limit lim less the pin reserve r (a limit at or under 0 takes no lane).
+func pinLess(lim, r float64) float64 {
+	if r <= 0 {
+		return lim
+	}
+	return math.Max(lim-r, 1e-9)
 }
 
 // caps are the weekly and 5-hour levels at which an account takes no new session when its
@@ -868,15 +885,15 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 					}
 				}
 				if !d.On && (!prot || p.NoStall) && (!skip || level == 0 || (prot && level == 2)) && len(v.unknown) == 0 && p.LandMax > 0 {
-					if v.w+tl/p.account(acc).ratio() > p.LandMax {
-						skip, why, level = true, fmt.Sprintf("7d %s%%: one costly lane (%s points) would land over %s%%", f0(v.w), f0(tl), f0(p.LandMax)), 3
+					if landMax := pinLess(p.LandMax, acc.PinReserve7); v.w+tl/p.account(acc).ratio() > landMax {
+						skip, why, level = true, fmt.Sprintf("7d %s%%: one costly lane (%s points) would land over %s%%", f0(v.w), f0(tl), f0(landMax)), 3
 						capped = false // a hard limit: --urgent may not pass it
 					} else if !v.fiveRst.IsZero() && v.fiveRst.After(now) {
 						// The 5-hour window: what the running lanes will still burn in it (the drain
 						// model's forward burn) plus one more lane must stay under the limit.
 						_, lim5 := p.limits(acc)
 						if prot {
-							lim5 = full98 // NoStall: past its gate a protected account has the hard limit only
+							lim5 = pinLess(full98, acc.PinReserve5) // NoStall: past its gate a protected account has the hard limit only
 						}
 						t5 := v.fiveRst.Sub(now).Hours()
 						// A lane nothing measures is taken as a median lane (no Lindy rule: an old
@@ -904,7 +921,8 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 				// NoStall: limits that only order (the burst cap, the protected gate, drain
 				// capacity) leave the account able to take a lane under the hard limits.
 				if p.NoStall && skip {
-					hardOK := v.w < full98 && v.h < full98 && (len(v.unknown) > 0 || v.w+tl/p.account(acc).ratio() <= p.LandMax)
+					hardOK := v.w < pinLess(full98, acc.PinReserve7) && v.h < pinLess(full98, acc.PinReserve5) &&
+						(len(v.unknown) > 0 || v.w+tl/p.account(acc).ratio() <= pinLess(p.LandMax, acc.PinReserve7))
 					switch {
 					case d.On:
 						soft = d.over
@@ -939,6 +957,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 			row := LaneRow{Key: acc.Key, Protected: prot, Score: sc, Skip: skip, Reason: why, Weekly: v.w, FiveHour: v.h,
 				Reserve: v.wRes, HoursToReset: v.hrs, Leases: v.leaseN, Burst: v.capN, BurstCap: cp, Capped: capped,
 				Added5: v.add5, Meter5: v.m5, Meter7: v.m7, Margin5: v.g5, Margin7: v.g7, WeeklyCap: cap7, FiveHourCap: cap5, SampleAgeMin: v.ageMin, FiveReset: v.fiveRst,
+				Pins: acc.Pins, PinReserve5: acc.PinReserve5, PinReserve7: acc.PinReserve7,
 				Stale: v.stale, Unknown: v.unknown, SkipLevel: level, Last: last, Expiring: expiring && !skip,
 				LeaseCharges: v.charges, Class: class, Drain: d, fwd5: fwdFree != nil, soft: soft}
 			if !v.noTS {

@@ -58,6 +58,17 @@ All notable changes to Watchyard are recorded here. The format follows
   when the 5-hour window hits) and per live session (burn per minute, account, name, kind,
   state, helper agents, calls per model, folder). The mover's forecast uses the same numbers.
 - `wy move --plan` says, for each session on an account that hits, why it stays.
+- Pinned sessions keep a reserve (setup.md 8.6, Pinned sessions). Each live pinned session
+  (`--pin-account` or the peers tag `no-move`; idle 6 hours: released) keeps
+  `account.pin_reserve_5h` (10) points of its account's 5-hour window and
+  `account.pin_reserve_7d` (5) of its week free: the picker's limits for new lanes and the
+  switch's caps for every other session are that much lower, so the switch moves the other
+  burners off first and destinations keep their own reserve. A pinned session that alone takes
+  its account to 100% within 2 hours is one alert (in `wy status` and the switch's log) with the
+  `wy move` command to move it by hand; it is never moved. `wy account next --explain` / `--json`
+  and `wy move --plan` show the reserve.
+  In the simulator (9 patterns × 300 runs, 5 pinned coordinators each) 10/5 cuts the pinned
+  sessions' stopped minutes by 9% and their weekly hits by 18% against pins with no reserve.
 - A background session moved mid-turn is not left running twice: after the resume the move
   watches the old account for 20 s, and every pass for 30 minutes after, and stops a copy the
   old account's supervisor restarted (found in end-to-end tests: one came back 6 s after the

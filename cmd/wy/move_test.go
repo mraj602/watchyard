@@ -112,7 +112,7 @@ func moveFixture(t *testing.T, five float64, status string) (*nextFixture, *recH
 		e := moveEnv{nextEnv: nextEnv{home: f.home, dirs: f.dirs, getenv: func(k string) string { return moveTestVars[k] }, now: func() time.Time { return nextNow },
 			stdout: &out, stderr: &errOut, lookPath: func(n string) (string, error) { return "/usr/bin/" + n, nil },
 			environ: func() []string { return nil }, authRun: f.authStatus},
-			sys: &mover.Sys{FS: identity.OSFS{}, Proc: moveProc{100: {90, 5}, 90: {1, 1}}, State: mover.NewState(f.dirs.State.Path),
+			sys: &mover.Sys{FS: identity.OSFS{}, Proc: moveProc{100: {90, 5}, 101: {90, 6}, 90: {1, 1}}, State: mover.NewState(f.dirs.State.Path),
 				Cmdline: func(int) []string { return []string{"claude", "--model", "opus", "--resume", "old", "hello"} },
 				Panes:   func() map[int]string { return map[int]string{100: "%7"} }},
 			host: h, tags: func() map[string][]string { return nil }}

@@ -292,6 +292,9 @@ func accountNext(e nextEnv, args []string) error {
 	if x != (picker.LaneExpect{}) {
 		in.Expects = []picker.LaneExpect{x}
 	}
+	if lanes {
+		in.PinReserves = nextPins(e, cfg, slots, now) // setup.md 8.6, Pinned sessions
+	}
 	// The seats' hub modes: kept after each hub read, used when the hub could not be read (a
 	// setting: no age limit; setup.md 8.5, Kind).
 	modesPath := filepath.Join(e.dirs.State.Path, "next", "modes.json")

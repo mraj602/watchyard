@@ -48,6 +48,17 @@ type Input struct {
 	// OnLanes, when set, sees the lanes strategy's input before it ranks (Smart Account
 	// Switch reads the accounts and the running lanes from it: Live).
 	OnLanes func(LaneInput)
+	// PinReserves are the pin reserves by account key ("acct:<account>/<org>"): its live
+	// pinned sessions on this machine and the points kept free for them (setup.md 8.6, Pinned
+	// sessions). The lanes strategy lowers the account's limits for new lanes by them.
+	PinReserves map[string]PinReserve
+}
+
+// PinReserve is one account's pin reserve: Pins live pinned sessions keep R5 points of its
+// 5-hour window and R7 of its week free.
+type PinReserve struct {
+	Pins   int
+	R5, R7 float64
 }
 
 // Ranked is one account in the result.

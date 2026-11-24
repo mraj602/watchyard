@@ -171,6 +171,10 @@ type simLane struct {
 	// A mid-turn move waiting for the step in flight to end: to pendTo at minute pendAt (-1: none).
 	pendTo, pendAt   int
 	idleFor, turnAge int
+	// coord: a week-long pinned coordinator (pins_sim_test.go), nil for a lane.
+	coord      *coordSpec
+	lastBurn   int
+	wasStopped bool
 }
 
 // rate10 is the lane's measured burn over the last 10 minutes, points per hour.
@@ -203,9 +207,12 @@ type simResult struct {
 	StoppedMin, IntStoppedMin, Hits, Moves, MidTurn, MidTurnMTok, ReReadMTok, WeeklyWaste, resets7 float64
 	NoDest, IntMoved, IntDelivered, NotLoggedIn, Repeats, StepWaits, WaitStopped                   float64
 	MaxProt5, MaxProt7                                                                             float64 // sums over runs of the run's max
-	RunsOver80                                                                                     float64 // runs whose protected level went over 80
-	Over80Min, Over80Owner, Over80NoRoom, Over80Other                                              float64 // protected minutes over 80, by cause
-	runs                                                                                           float64
+	// The coordinators layer (pins_sim_test.go).
+	PinStopped, PinStoppedHeavy, PinHits, CoordMoves, CoordReRead, DisplacedMoves, DisplacedPlaces, Alerts float64
+	PinHits7d, CoordBurn, OwnerMoves, PinStoppedNoRoom, PinHitsShared                                      float64
+	RunsOver80                                                                                             float64 // runs whose protected level went over 80
+	Over80Min, Over80Owner, Over80NoRoom, Over80Other                                                      float64 // protected minutes over 80, by cause
+	runs                                                                                                   float64
 }
 
 func (r *simResult) add(o simResult) {
@@ -233,6 +240,19 @@ func (r *simResult) add(o simResult) {
 	r.Over80NoRoom += o.Over80NoRoom
 	r.Over80Other += o.Over80Other
 	r.runs += o.runs
+	r.PinStopped += o.PinStopped
+	r.PinStoppedHeavy += o.PinStoppedHeavy
+	r.PinHits += o.PinHits
+	r.CoordMoves += o.CoordMoves
+	r.CoordReRead += o.CoordReRead
+	r.DisplacedMoves += o.DisplacedMoves
+	r.DisplacedPlaces += o.DisplacedPlaces
+	r.Alerts += o.Alerts
+	r.PinHits7d += o.PinHits7d
+	r.CoordBurn += o.CoordBurn
+	r.OwnerMoves += o.OwnerMoves
+	r.PinStoppedNoRoom += o.PinStoppedNoRoom
+	r.PinHitsShared += o.PinHitsShared
 }
 
 // simStrat is one strategy: no moves, the shipped M5 or v2 with params, and the picker's
@@ -244,6 +264,14 @@ type simStrat struct {
 	p    Params
 	hold float64
 	orgs bool // only on the patterns with two organisations
+	// The coordinators layer (pins_sim_test.go): coord adds the 5 week-long coordinators;
+	// pinned: they are pinned (else movable like any lane) and their accounts keep
+	// p.PinReserve5/7 per live pin (measured: their own heaviest 5-hour window of the last day
+	// instead); abnormal: the second day burns 4-5x.
+	coord, pinned, measured, abnormal bool
+	// ownerActs: the owner moves an alerted pinned session by hand 30 minutes after the alert
+	// (to the account wy move would pick).
+	ownerActs bool
 }
 
 func v2(name string, f func(p *Params)) simStrat {
@@ -321,11 +349,23 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			sr: rand.New(rand.NewPCG(s.seed, 5)), pendTo: -1}
 		lanes[i], byID[l.id] = l, l
 	}
+	if st.coord {
+		for _, c := range coordinators(seed, st.abnormal) {
+			if !accs[c.acc].loggedIn {
+				continue // the laptop: that coordinator runs on another machine (its burn is in other)
+			}
+			lanes = append(lanes, c)
+			byID[c.id] = c
+		}
+	}
 	accIdx := map[string]int{}
 	for i, a := range accs {
 		accIdx[a.key] = i
 	}
 	atLimit := func(a *simAcc) bool { return a.l5 >= 100 || a.l7 >= 100 }
+	// The pin reserve of each account (points of the 5-hour and weekly windows kept free).
+	rsv5, rsv7 := make([]float64, len(accs)), make([]float64, len(accs))
+	pinsOn := make([]int, len(accs))
 	burnAcc := func(a *simAcc, pts float64, m int, local bool) {
 		if a.r5 < 0 {
 			a.r5 = m + 300
@@ -338,13 +378,13 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 	}
 	// holds: the picker's forward 5-hour check: the running lanes (their estimate while young,
 	// then their measured burn) and the new lane for up to 2 hours reach st.hold before the reset.
-	holds := func(i, m int, est float64) bool {
+	holds := func(i, m int, est, rsv float64) bool {
 		a := accs[i]
 		if st.hold <= 0 || a.r5 < 0 {
 			return false
 		}
 		T := float64(a.r5-m) / 60
-		lv := a.l5 + a.other*T + est*0.8*math.Min(2, T)
+		lv := a.l5 + a.other*T + est*0.8*math.Min(2, T) + rsv
 		for _, l := range lanes {
 			if l.on && !l.done && !l.stopped && l.acc == i {
 				r := l.est * 0.8
@@ -359,10 +399,15 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 	// place: the picker's choice for a new lane, among the accounts logged in here: the lowest
 	// 5-hour reading among the aggressive ones with room, else a protected one under its gate
 	// (5h < 60, 7d < 70), else the least-used aggressive one.
-	place := func(m int, est float64) int {
+	var place func(m int, est float64) int
+	placeR := func(m int, est float64, useR bool) int {
+		r5, r7 := rsv5, rsv7
+		if !useR {
+			r5, r7 = make([]float64, len(accs)), make([]float64, len(accs))
+		}
 		best := -1
 		for i, a := range accs {
-			if !a.loggedIn || a.protected || a.l5 >= 90 || a.l7 >= 95 || holds(i, m, est) {
+			if !a.loggedIn || a.protected || a.l5 >= 90-r5[i] || a.l7 >= 95-r7[i] || holds(i, m, est, r5[i]) {
 				continue
 			}
 			if best < 0 || a.l5 < accs[best].l5 {
@@ -373,7 +418,16 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			return best
 		}
 		for i, a := range accs {
-			if a.loggedIn && a.protected && a.l5 < 60 && a.l7 < 70 && (best < 0 || a.l5 < accs[best].l5) {
+			if a.loggedIn && a.protected && a.l5 < 60-r5[i] && a.l7 < 70-r7[i] && (best < 0 || a.l5 < accs[best].l5) {
+				best = i
+			}
+		}
+		if best >= 0 {
+			return best
+		}
+		// No room under the soft limits: the picker's hard limits (98 less the reserve), then any.
+		for i, a := range accs {
+			if a.loggedIn && !a.protected && a.l5 < 98-r5[i] && a.l7 < 98-r7[i] && (best < 0 || a.l5 < accs[best].l5) {
 				best = i
 			}
 		}
@@ -390,12 +444,19 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 		}
 		return best
 	}
+	place = func(m int, est float64) int {
+		i := placeR(m, est, true)
+		if st.pinned && i != placeR(m, est, false) {
+			res.DisplacedPlaces++ // the reserve sent this lane elsewhere
+		}
+		return i
+	}
 	// expiring: a pile-up lands on the aggressive logged-in account whose 5-hour window resets
 	// soonest (the picker drains expiring room first).
 	expiring := func(m int) int {
 		best := -1
 		for i, a := range accs {
-			if !a.loggedIn || a.protected || a.l7 >= 95 {
+			if !a.loggedIn || a.protected || a.l7 >= 95-rsv7[i] {
 				continue
 			}
 			if best < 0 || (a.r5 >= 0 && (accs[best].r5 < 0 || a.r5 < accs[best].r5)) {
@@ -423,7 +484,12 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 	if st.m5 {
 		pass = 2
 	}
+	alerted := map[string]bool{}
+	ownerAt := map[string]int{}
 	for m := 0; m < simDays*1440; m++ {
+		if st.coord && st.pinned {
+			coordReserve(st, lanes, m, rsv5, rsv7, pinsOn)
+		}
 		for _, a := range accs {
 			if a.r5 >= 0 && m >= a.r5 {
 				a.l5, a.r5 = 0, -1
@@ -467,6 +533,11 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			switch {
 			case l.restart > 0:
 				l.restart--
+			case l.coord != nil:
+				b = l.coord.step(&res, l, a, m, atLimit(a))
+				if b > 0 {
+					burnAcc(a, b, m, true)
+				}
 			case l.stopped && atLimit(a):
 				res.StoppedMin++
 				if l.owner {
@@ -544,6 +615,23 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			if a.loggedIn && !a.protected && a.l5 < 85 && a.l7 < 93 {
 				noRoom = false
 			}
+		}
+		for _, l := range lanes {
+			if l.coord == nil {
+				continue
+			}
+			if l.stopped && atLimit(accs[l.acc]) && noRoom {
+				res.PinStoppedNoRoom++
+			}
+			if l.stopped && !l.wasStopped {
+				for _, x := range lanes {
+					if x.coord == nil && x.on && !x.done && x.acc == l.acc && x.rate10() > 0 {
+						res.PinHitsShared++ // lanes burned on its account in the last 10 minutes
+						break
+					}
+				}
+			}
+			l.wasStopped = l.stopped
 		}
 		for i, a := range accs {
 			a.h = append(a.h, simObs{a.l5, a.l7, a.r5, a.r7, a.cum})
@@ -672,7 +760,8 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 		in := Input{Now: simAt(m), Params: st.p, Recent: recs, Streak: streak}
 		for i, a := range accs {
 			v := view[i]
-			acc := Account{Key: a.key, Label: a.key, Protected: a.protected, Ratio: simRatio, Rate: v.rate, RateNote: v.note, LoggedIn: a.loggedIn}
+			acc := Account{Key: a.key, Label: a.key, Protected: a.protected, Ratio: simRatio, Rate: v.rate, RateNote: v.note, LoggedIn: a.loggedIn,
+				Pins: pinsOn[i], Reserve5: rsv5[i], Reserve7: rsv7[i]}
 			if v.r5 > m {
 				acc.W5 = Window{Level: v.l5, Reset: simAt(v.r5)}
 			}
@@ -684,7 +773,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 				continue
 			}
 			s := Session{ID: l.id, Account: accs[l.acc].key, Rate: l.rate10(), Busy: l.busy > 0 && l.restart == 0 && !l.stopped,
-				Stopped: l.stopped, Interactive: l.owner, Movable: true, Context: l.ctx}
+				Stopped: l.stopped, Interactive: l.owner, Movable: true, Context: l.ctx, Pinned: l.coord != nil && st.pinned}
 			if l.typed >= 0 {
 				s.Typed = simAt(l.typed)
 			}
@@ -696,6 +785,40 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 		r := Plan(in)
 		if check != nil {
 			check(in, r)
+		}
+		for _, al := range r.Alerts {
+			k := fmt.Sprintf("%s %s %s %d", al.Account, al.Session, al.Window, al.ResetAt.Unix()/600)
+			if !alerted[k] {
+				alerted[k] = true
+				res.Alerts++
+				if st.ownerActs {
+					ownerAt[al.Session] = m + 30
+				}
+			}
+		}
+		var due []string
+		for id, at := range ownerAt {
+			if at <= m {
+				due = append(due, id)
+			}
+		}
+		sort.Strings(due)
+		for _, id := range due {
+			delete(ownerAt, id)
+			in2 := in
+			in2.Sessions = append([]Session(nil), in.Sessions...)
+			for k := range in2.Sessions {
+				if in2.Sessions[k].ID == id {
+					in2.Sessions[k].Pinned = false
+				}
+			}
+			if to, _ := Destination(in2, id); to != "" {
+				res.OwnerMoves++
+				execMove(&res, byID[id], accs, accIdx[to], m, burnAcc, false)
+			}
+		}
+		if st.pinned {
+			res.DisplacedMoves += displaced(in, r)
 		}
 		streak = r.Streak
 		for _, mv := range r.Moves {
@@ -773,6 +896,12 @@ func execMove(res *simResult, l *simLane, accs []*simAcc, to, m int, burnAcc fun
 	}
 	if l.inTool && !repeat {
 		l.inTool, l.stepLeft = false, 0 // it moved between steps: the next one starts there
+	}
+	if l.coord != nil {
+		res.CoordMoves++
+		if cost > simCostFixed {
+			res.CoordReRead += l.ctx / 1e6
+		}
 	}
 	l.movedFrm, l.movedAt = l.acc, m
 	burnAcc(accs[to], cost, m, true)

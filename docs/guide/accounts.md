@@ -208,7 +208,15 @@ What it does, in short:
   terminal gets the message with the commands to see it (`claude agents`) or attach it there.
 - Only accounts logged in on this machine are destinations, the session's organisation per
   `account.move_orgs`, aggressive accounts first and protected ones last.
-- `--pin-account` on a session, or the peers tag `no-move`, keeps it where it is.
+- `--pin-account` on a session, or the peers tag `no-move`, keeps it where it is. Pin the
+  long-running sessions that burn little but must not stop (a Slack watcher, an orchestrator, a
+  CI watcher): each live pinned session keeps 10% of its account's 5-hour window and 5% of
+  its week free (`account.pin_reserve_5h`, `account.pin_reserve_7d`). The picker hands out new
+  lanes as if the account's limits were that much lower, and the switch moves the other burners
+  off before they eat into it. A pin that has been idle for 6 hours holds nothing. When a pinned
+  session alone would take its account to 100% within 2 hours, `wy status` and the switch's log
+  say so once, with the `wy move` command to move it by hand. `wy account next --explain` and
+  `wy move --plan` show each account's reserve.
 
 Every number above is a setting (`wy config list | grep move_`); the full rules are in
 setup.md 8.6.

@@ -299,6 +299,8 @@ type moveWorld struct {
 	// sw is the switch state of the last auto pass (the spike filter, the notices).
 	sw       mover.SwitchState
 	warnings []string
+	// pins are the live pinned sessions by account key (they hold its reserve).
+	pins map[string][]string
 	// scope is account.smart_switch_scope; outScope the sessions it leaves out (they count in
 	// the forecasts but never move).
 	scope    switchScope
@@ -370,6 +372,28 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	if ls, _, err := ledger.Read(now); err == nil {
 		in.Leases = ls
 	}
+	// This machine's sessions and its live pinned sessions: their accounts keep a reserve
+	// free, for new lanes (the picker) and for the moves (setup.md 8.6, Pinned sessions).
+	params := moveParams(cfg)
+	if inject != nil {
+		inject.applyParams(&params)
+	}
+	sys := e.sys
+	if sys == nil {
+		sys = &mover.Sys{FS: identity.OSFS{}, Proc: peerspkg.NewProc(), Cmdline: procCmdline, Panes: tmuxPanes,
+			State: mover.NewState(e.dirs.State.Path)}
+	}
+	w.launches = sys.Sessions(islots)
+	st := mover.NewState(e.dirs.State.Path)
+	pins := st.Pins()
+	var tags map[string][]string
+	if e.tags != nil {
+		tags = e.tags()
+	} else {
+		tags, w.handles = peersTags()
+	}
+	w.pins = livePins(w.launches, w.keyOfDir, pins, tags, now)
+	in.PinReserves = pinReserves(params, w.pins)
 	var lin *picker.LaneInput
 	in.OnLanes = func(l picker.LaneInput) { lin = &l }
 	res, err := picker.Decide(in)
@@ -393,10 +417,6 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		}
 	}
 	sort.SliceStable(accs, func(i, j int) bool { return rankOf(order, accs[i].Key) < rankOf(order, accs[j].Key) })
-	params := moveParams(cfg)
-	if inject != nil {
-		inject.applyParams(&params)
-	}
 	f5 := map[string]float64{}
 	for _, a := range accs {
 		t, loggedIn := w.targets[a.Key]
@@ -405,6 +425,8 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		if ma.Label == "" {
 			ma.Label = a.Key
 		}
+		ma.Pins = len(w.pins[a.Key])
+		ma.Reserve5, ma.Reserve7 = params.PinReserve(ma.Pins)
 		if inject != nil {
 			inject.applyAccount(&ma, now)
 		}
@@ -414,12 +436,6 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 
 	// Sessions: the registry of every folder, with their burn (their token rows of the burn
 	// window, helpers included, × f) and their context.
-	sys := e.sys
-	if sys == nil {
-		sys = &mover.Sys{FS: identity.OSFS{}, Proc: peerspkg.NewProc(), Cmdline: procCmdline, Panes: tmuxPanes,
-			State: mover.NewState(e.dirs.State.Path)}
-	}
-	w.launches = sys.Sessions(islots)
 	expect := map[string]time.Duration{}
 	for _, l := range lanes {
 		if l.Expect > 0 {
@@ -475,14 +491,6 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 				leased[l.SessionID] = true
 			}
 		}
-	}
-	st := mover.NewState(e.dirs.State.Path)
-	pins := st.Pins()
-	var tags map[string][]string
-	if e.tags != nil {
-		tags = e.tags()
-	} else {
-		tags, w.handles = peersTags()
 	}
 	log := st.Log(now.Add(-6 * time.Hour))
 	last := map[string]mover.LogEntry{}
@@ -672,6 +680,7 @@ func moveParams(cfg config.Config) mover.Params {
 	p.Cooldown, p.NoReturn = mins(a.MoveCooldownMin), mins(a.MoveNoReturnMin)
 	p.AccountMoves, p.AccountWindow = int(a.MoveAccountMoves), mins(a.MoveAccountWindowMin)
 	p.StoppedWait, p.OwnerGrace, p.StepWait = mins(a.MoveStoppedWaitMin), mins(a.MoveOwnerGraceMin), mins(a.MoveStepWaitMin)
+	p.PinReserve5, p.PinReserve7 = math.Max(0, a.PinReserve5h), math.Max(0, a.PinReserve7d)
 	if a.MoveOrgs != "" {
 		p.Orgs = a.MoveOrgs
 	}
@@ -756,7 +765,12 @@ func (w *moveWorld) planDoc(r mover.Result) map[string]any {
 		}
 		ms = append(ms, pm)
 	}
-	return map[string]any{"accounts": r.Accounts, "moves": ms, "warnings": w.warnings}
+	alerts := []map[string]any{}
+	for _, a := range r.Alerts {
+		alerts = append(alerts, map[string]any{"session": a.Session, "account": a.Account, "window": a.Window, "projected": a.P,
+			"rate": a.Rate, "hit_at": a.HitAt, "reset_at": a.ResetAt, "command": w.pinCommand(a.Session)})
+	}
+	return map[string]any{"accounts": r.Accounts, "moves": ms, "alerts": alerts, "warnings": w.warnings}
 }
 
 // accLabel is the label of account key (the key when none is known here).
@@ -782,7 +796,7 @@ func (w *moveWorld) inScope(ks []mover.Skip) []mover.Skip {
 
 func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) {
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "ACCOUNT\t5H\t7D\tBURN/H\tP5\tP7\tCAPS\tSTATE")
+	fmt.Fprintln(tw, "ACCOUNT\t5H\t7D\tBURN/H\tP5\tP7\tCAPS\tPIN RESERVE\tSTATE")
 	loggedIn := map[string]bool{}
 	for _, a := range w.input.Accounts {
 		loggedIn[a.Key] = a.LoggedIn
@@ -803,8 +817,12 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		if !loggedIn[pr.Key] {
 			state += "; not logged in here (never a destination)"
 		}
-		fmt.Fprintf(tw, "%s\t%.0f%%\t%.0f%%\t%.1f\t%.0f%%\t%.0f%%\t%.0f/%.0f\t%s\n", pr.Label, pr.Level5, pr.Level7, pr.R5, pr.P5, pr.P7,
-			pr.Cap5, pr.Cap7, state)
+		reserve := "-"
+		if pr.Pins > 0 {
+			reserve = fmt.Sprintf("%d pinned: %.0f/%.0f", pr.Pins, pr.Reserve5, pr.Reserve7)
+		}
+		fmt.Fprintf(tw, "%s\t%.0f%%\t%.0f%%\t%.1f\t%.0f%%\t%.0f%%\t%.0f/%.0f\t%s\t%s\n", pr.Label, pr.Level5, pr.Level7, pr.R5, pr.P5, pr.P7,
+			pr.Cap5, pr.Cap7, reserve, state)
 	}
 	_ = tw.Flush()
 	for _, pr := range r.Accounts {
@@ -817,6 +835,15 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		state = "on"
 	}
 	fmt.Fprintf(out, "\nSmart Account Switch is %s (organisations: %s).\n", state, w.input.Params.Orgs)
+	if p := w.input.Params; p.PinReserve5 > 0 || p.PinReserve7 > 0 {
+		fmt.Fprintf(out, "Each live pinned session keeps %.0f%% of its account's 5-hour window and %.0f%% of its week free (CAPS are less that).\n",
+			p.PinReserve5, p.PinReserve7)
+	}
+	for _, a := range r.Alerts {
+		x := mover.PinAlert{Session: a.Session, Name: w.byID[a.Session].Name, Account: w.accLabel(a.Account), Window: a.Window, HitAt: a.HitAt,
+			ResetAt: a.ResetAt, Rate: a.Rate, Command: w.pinCommand(a.Session)}
+		fmt.Fprintln(out, "alert: "+x.Text())
+	}
 	if len(r.Moves) == 0 {
 		fmt.Fprintln(out, "No session needs a move.")
 	}
@@ -902,6 +929,7 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State) error
 		}
 		told = append(told, n)
 	}
+	w.pinAlerts(e.stdout, st, r, e.now())
 	w.sw.At, w.sw.Streak = e.now(), r.Streak
 	if err := st.SaveSwitch(w.sw); err != nil && first == nil {
 		first = err

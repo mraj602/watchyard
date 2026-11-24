@@ -259,6 +259,14 @@ func explainLanes(w io.Writer, res Result) error {
 	for _, l := range kindLines(res.Ranked) {
 		fmt.Fprintln(w, l)
 	}
+	pinned := map[string]bool{}
+	for _, r := range res.Ranked {
+		if r.Lanes == nil || r.Lanes.Pins == 0 || pinned[r.key] {
+			continue
+		}
+		pinned[r.key] = true
+		fmt.Fprintln(w, pinLine(r.Label, *r.Lanes))
+	}
 	drained := map[string]bool{}
 	for _, r := range res.Ranked {
 		if r.Lanes == nil || r.Lanes.Drain == nil || !r.Lanes.Drain.On || drained[r.key] {
@@ -295,6 +303,17 @@ func explainLanes(w io.Writer, res Result) error {
 		fmt.Fprintln(w, "note: "+x)
 	}
 	return nil
+}
+
+// pinLine is the --explain line of an account with live pinned sessions: "Pins claude-3: 2
+// live pinned sessions keep 30% of the 5-hour window and 6% of the week free (caps 5h 15, 7d 79)".
+func pinLine(label string, v LaneView) string {
+	n := "1 live pinned session keeps"
+	if v.Pins != 1 {
+		n = fmt.Sprintf("%d live pinned sessions keep", v.Pins)
+	}
+	return fmt.Sprintf("Pins %s: %s %s%% of the 5-hour window and %s%% of the week free (caps now 5h %s, 7d %s)", label, n,
+		f0(v.PinReserve5hPct), f0(v.PinReserve7dPct), f0(v.FiveHourCap), f0(v.WeeklyCap))
 }
 
 // drainLine is the --explain line of a draining account: "Drain claude-2: room 9.3% (71 pts),

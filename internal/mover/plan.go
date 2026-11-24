@@ -54,6 +54,20 @@ type Params struct {
 	Orgs string
 	// IdleMoves: idle sessions with no burn are candidates too (a simulator variant only).
 	IdleMoves bool
+	// PinReserve5 and PinReserve7: the points of the 5-hour and weekly windows kept free for
+	// each live pinned session on an account (account.pin_reserve_5h / _7d): its caps for the
+	// other sessions are cap - pins x reserve. The caller counts the live pins (Account.Pins)
+	// and sets Account.Reserve5/7 (PinReserve).
+	PinReserve5, PinReserve7 float64
+	// PinAlertWithin: a pinned session that alone takes its account to 100 before the reset,
+	// this soon, is an owner alert (Result.Alerts).
+	PinAlertWithin time.Duration
+}
+
+// PinReserve is the reserve of an account with pins live pinned sessions: pins x
+// PinReserve5 points of the 5-hour window and pins x PinReserve7 of the week.
+func (p Params) PinReserve(pins int) (float64, float64) {
+	return float64(pins) * math.Max(0, p.PinReserve5), float64(pins) * math.Max(0, p.PinReserve7)
 }
 
 // The values of Params.Orgs (account.move_orgs).
@@ -71,7 +85,11 @@ var DefaultParams = Params{
 	SpikePasses: 2, SpikeNear: 30 * time.Minute,
 	Cooldown: 20 * time.Minute, NoReturn: time.Hour, AccountMoves: 3, AccountWindow: 15 * time.Minute,
 	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, Orgs: OrgsAny,
+	PinReserve5: 10, PinReserve7: 5, PinAlertWithin: 2 * time.Hour,
 }
+
+// PinIdle: a pinned session idle this long holds no reserve (the caller counts the live pins).
+const PinIdle = 6 * time.Hour
 
 // Window kinds.
 const (
@@ -109,6 +127,11 @@ type Account struct {
 	Excluded bool
 	// Drain: the picker spends its room first (it expires unused otherwise).
 	Drain bool
+	// Pins: its live pinned sessions (running, not idle for PinIdle); Reserve5 and Reserve7
+	// the points of its 5-hour and weekly windows kept free for them (Params.PinReserve): its
+	// caps for every other session are its caps less these.
+	Pins               int
+	Reserve5, Reserve7 float64
 }
 
 // Org is the account's organisation (the part of its key after the last "/").
@@ -178,6 +201,10 @@ type Projection struct {
 	// before the resets / the week span).
 	Reset5, Reset7 time.Duration
 	Hit            time.Duration
+	// Pins, Reserve5 and Reserve7: its live pinned sessions and the points kept free for them;
+	// Cap5 and Cap7 are already less these.
+	Pins               int     `json:",omitempty"`
+	Reserve5, Reserve7 float64 `json:",omitempty"`
 	// Window is the window over its cap ("5h", "7d", "" none); Hard: a cap is reached now.
 	Window string
 	Hard   bool
@@ -227,10 +254,25 @@ type Skip struct {
 	Why     string `json:"why"`
 }
 
+// Alert is a pinned session that alone takes its account to 100 before the window resets
+// (setup.md 8.6, Pinned sessions): it is never moved, the owner is told once.
+type Alert struct {
+	Session string        `json:"session"`
+	Account string        `json:"account"`
+	Window  string        `json:"window"`
+	P       float64       `json:"projected"` // the account's projection at the pinned burn alone
+	Rate    float64       `json:"rate"`      // the pinned sessions' burn, 5-hour points per hour
+	Level   float64       `json:"level"`
+	HitAt   time.Time     `json:"hit_at"`
+	ResetAt time.Time     `json:"reset_at"`
+	In      time.Duration `json:"-"`
+}
+
 // Result is one pass: what to move, whom to tell, what is left and why, and the projections.
 type Result struct {
 	Moves    []Move
 	Skips    []Skip
+	Alerts   []Alert
 	Accounts []Projection
 	// Streak is the spike filter's state after this pass (keep it for the next one).
 	Streak map[string]int
@@ -262,6 +304,7 @@ func Plan(in Input) Result {
 		proj[a.Key] = pr
 		res.Accounts = append(res.Accounts, pr)
 	}
+	res.Alerts = p.pinAlerts(in, byAcc)
 	if p.Off {
 		return res
 	}
@@ -313,7 +356,9 @@ func Plan(in Input) Result {
 		if !pr.Triggered {
 			if pr.Held {
 				for _, s := range ss {
-					if s.burned() && !s.Stopped {
+					if s.burned() && !s.Stopped && s.Pinned {
+						skip(s, "pinned, or outside the scope")
+					} else if s.burned() && !s.Stopped {
 						skip(s, fmt.Sprintf("%s over its cap on %d of %d passes (spike filter)", pr.Window, pr.Streak, p.SpikePasses))
 					}
 				}
@@ -518,8 +563,9 @@ func (p Params) Project(a Account, ss []Session, extra float64, now time.Time) P
 	r5 = math.Max(r5, sum)
 	r5 = math.Max(0, r5+extra)
 	c5, c7 := p.caps(a)
+	c5, c7 = math.Max(0, c5-math.Max(0, a.Reserve5)), math.Max(0, c7-math.Max(0, a.Reserve7))
 	pr := Projection{Key: a.Key, Label: a.Label, Protected: a.Protected, Level5: a.W5.Level, Level7: a.W7.Level, R5: r5, RateNote: a.RateNote,
-		Cap5: c5, Cap7: c7, Hit: -1, ratio: ratio(a)}
+		Cap5: c5, Cap7: c7, Hit: -1, ratio: ratio(a), Pins: a.Pins, Reserve5: math.Max(0, a.Reserve5), Reserve7: math.Max(0, a.Reserve7)}
 	pr.Reset5 = resetIn(a.W5, now, 5*time.Hour)
 	pr.Reset7 = resetIn(a.W7, now, 7*24*time.Hour)
 	if a.W5.Reset.IsZero() || !a.W5.Reset.After(now) {
@@ -677,9 +723,49 @@ func (p Params) reason(a Account, mv Move, why string) string {
 func (p Params) capOf(a Account, w string) float64 {
 	c5, c7 := p.caps(a)
 	if w == Win7d {
-		return c7
+		return math.Max(0, c7-math.Max(0, a.Reserve7))
 	}
-	return c5
+	return math.Max(0, c5-math.Max(0, a.Reserve5))
+}
+
+// pinAlerts are the accounts whose pinned sessions alone take them to 100 before the window
+// resets, within PinAlertWithin (setup.md 8.6, Pinned sessions): the switch cannot help (they
+// never move), so the owner is told with the command to move one by hand. Pinned here means
+// opted out by the owner and burning; the account's own rate (other machines) is not counted.
+func (p Params) pinAlerts(in Input, byAcc map[string][]Session) []Alert {
+	if p.PinAlertWithin <= 0 {
+		return nil
+	}
+	var out []Alert
+	for _, a := range in.Accounts {
+		var pins []Session
+		for _, s := range byAcc[a.Key] {
+			if s.Pinned && s.Rate > 0 && !s.Stopped {
+				pins = append(pins, s)
+			}
+		}
+		if len(pins) == 0 {
+			continue
+		}
+		b := a
+		b.Rate, b.Reserve5, b.Reserve7 = 0, 0, 0
+		pr := p.Project(b, pins, 0, in.Now)
+		if pr.Hit < 0 || pr.Hit > p.PinAlertWithin {
+			continue
+		}
+		w, reset := Win5h, pr.Reset5
+		if t5 := (100 - pr.Level5) / pr.R5; t5 > pr.Reset5.Hours() || t5 > pr.Hit.Hours()+1e-9 {
+			w, reset = Win7d, pr.Reset7 // the weekly window is the one it hits
+		}
+		sort.SliceStable(pins, func(i, j int) bool { return pins[i].Rate > pins[j].Rate })
+		al := Alert{Session: pins[0].ID, Account: a.Key, Window: w, P: pr.pOf(w), Rate: pr.R5, HitAt: in.Now.Add(pr.Hit),
+			ResetAt: in.Now.Add(reset), In: pr.Hit, Level: pr.Level5}
+		if w == Win7d {
+			al.Level = pr.Level7
+		}
+		out = append(out, al)
+	}
+	return out
 }
 
 // Destination is the account a move of session id would go to now (wy move without an

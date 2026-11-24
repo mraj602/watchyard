@@ -287,7 +287,7 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	}
 	lim7, lim5 := p.limits(acc)
 	if acc.Protected {
-		lim7 = full // a protected account in drain may use the room that would expire (owner Q3)
+		lim7 = pinLess(full, acc.PinReserve7) // a protected account in drain may use the room that would expire (owner Q3)
 	}
 	H := v.hrs
 	guard := p.Guard.Hours()
@@ -455,7 +455,7 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	if p.UseEstimate && est.given && (!p.EstFloor || est.cost > land) {
 		land = est.cost
 	}
-	landed := p.LandMax > 0 && v.wM+land/rho > p.LandMax
+	landed := p.LandMax > 0 && v.wM+land/rho > pinLess(p.LandMax, acc.PinReserve7)
 	if landed && C > 0 {
 		C, by = 0, LimitLanding
 	}
