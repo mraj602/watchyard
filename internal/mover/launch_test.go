@@ -55,8 +55,8 @@ func TestResumeArgsByKind(t *testing.T) {
 	for k, want := range map[Kind][]string{
 		KindTmux:       {"--model", "opus", "--resume", "s1"},
 		KindWrapped:    {"--model", "opus", "--resume", "s1"},
-		KindBackground: {"--model", "opus", "--resume", "s1", "--bg", note},
-		KindHeadless:   {"-p", "--model", "opus", "--resume", "s1", note},
+		KindBackground: {"--model", "opus", "--resume", "s1", "--bg", note + PromptTail},
+		KindHeadless:   {"-p", "--model", "opus", "--resume", "s1", note + PromptTail},
 	} {
 		l.Kind = k
 		if got := ResumeArgs(l, note); !reflect.DeepEqual(got, want) {
@@ -85,7 +85,7 @@ func TestNoteText(t *testing.T) {
 	at := time.Date(2026, 11, 24, 10, 31, 0, 0, time.Local)
 	mv := Move{Window: Win5h, HitAt: at.Add(17 * time.Minute), ResetAt: time.Date(2026, 11, 24, 13, 59, 0, 0, time.Local)}
 	want := "Watchyard moved this session from claude-4 to claude-2 at 10:31 (5h would have hit at 10:48, before its 13:59 reset). " +
-		"Background shells started before are still running but no longer tracked here: check their output files."
+		"Background shells started before keep running (Claude Code lists them as stopped; they are not) but are no longer tracked here: check their output files."
 	if got := Note("claude-4", "claude-2", at, mv); got != want {
 		t.Errorf("note:\n%s\nwant\n%s", got, want)
 	}
@@ -96,9 +96,14 @@ func TestNoteText(t *testing.T) {
 
 // fakeHost records what a move does; it never touches a process.
 type fakeHost struct {
-	calls []string
-	dead  bool
-	fail  string
+	calls  []string
+	dead   bool
+	killed bool
+	fail   string
+	// copyUntil: a restarted copy (pid 77) runs until this many StopJob calls.
+	copyUntil, stops int
+	// stopIgnored: claude stop does not end the process (an older claude).
+	stopIgnored bool
 }
 
 func (h *fakeHost) rec(s string) error {
@@ -108,8 +113,25 @@ func (h *fakeHost) rec(s string) error {
 	}
 	return nil
 }
-func (h *fakeHost) Alive(Launch) bool         { return !h.dead }
-func (h *fakeHost) Kill(pid int) error        { return h.rec("kill " + strconv.Itoa(pid)) }
+func (h *fakeHost) Alive(Launch) bool { return !h.dead && !h.killed }
+func (h *fakeHost) Kill(pid int) error {
+	h.killed = true
+	return h.rec("kill " + strconv.Itoa(pid))
+}
+func (h *fakeHost) Carry(l Launch, to string) error {
+	return h.rec("carry " + l.SessionID + " " + l.Slot + " -> " + to)
+}
+func (h *fakeHost) StopJob(dir, sid string) error {
+	h.stops++
+	h.killed = h.killed || !h.stopIgnored
+	return h.rec("stop " + sid + " in " + dir)
+}
+func (h *fakeHost) Copies(dir, sid string, except int) []int {
+	if h.copyUntil > h.stops {
+		return []int{77}
+	}
+	return nil
+}
 func (h *fakeHost) Tmux(args ...string) error { return h.rec("tmux " + strings.Join(args, " ")) }
 func (h *fakeHost) Start(dir string, argv []string, log string) error {
 	return h.rec("start " + dir + ": " + strings.Join(argv, " ") + " > " + log)
@@ -120,18 +142,20 @@ func (h *fakeHost) Order(pid int, o RunOrder) error {
 func (h *fakeHost) Note(sid, text string) error { return h.rec("note " + sid) }
 
 func TestExecuteByKind(t *testing.T) {
+	defer func(d time.Duration) { Settle = d }(Settle)
+	Settle = 0
 	tg := Target{Key: "acct:b/o", Label: "claude-2", Dir: "/h/.claude-2"}
-	base := Launch{PID: 42, SessionID: "s1", CWD: "/w", Argv: []string{"--model", "opus"}, Pane: "%5", Wrapper: 40}
+	base := Launch{PID: 42, SessionID: "s1", Slot: "/h/.claude-4", CWD: "/w", Argv: []string{"--model", "opus"}, Pane: "%5", Wrapper: 40}
 	cmd := "env CLAUDE_CONFIG_DIR=/h/.claude-2 claude --model opus --resume s1"
 	for _, c := range []struct {
 		kind Kind
 		want []string
 	}{
-		{KindTmux, []string{"note s1", "tmux set-option -p -t %5 remain-on-exit on", "kill 42",
+		{KindTmux, []string{"note s1", "tmux set-option -p -t %5 remain-on-exit on", "kill 42", "carry s1 /h/.claude-4 -> /h/.claude-2",
 			"tmux respawn-pane -k -t %5 -c /w bash -ic '" + cmd + "'", "tmux set-option -p -u -t %5 remain-on-exit"}},
 		{KindWrapped, []string{"note s1", "order 40: " + cmd, "kill 42"}},
-		{KindBackground, []string{"kill 42", "start /w: " + cmd + " --bg N > "}},
-		{KindHeadless, []string{"kill 42", "start /w: env CLAUDE_CONFIG_DIR=/h/.claude-2 claude -p --model opus --resume s1 N > /log"}},
+		{KindBackground, []string{"stop s1 in /h/.claude-4", "carry s1 /h/.claude-4 -> /h/.claude-2", "start /w: " + cmd + " --bg N" + PromptTail + " > "}},
+		{KindHeadless, []string{"kill 42", "carry s1 /h/.claude-4 -> /h/.claude-2", "start /w: env CLAUDE_CONFIG_DIR=/h/.claude-2 claude -p --model opus --resume s1 N" + PromptTail + " > /log"}},
 	} {
 		h := &fakeHost{}
 		l := base
@@ -205,8 +229,44 @@ func TestStateFiles(t *testing.T) {
 }
 
 func TestCleanEnv(t *testing.T) {
-	got := CleanEnv([]string{"PATH=/bin", "CLAUDE_CONFIG_DIR=/x", "CLAUDE_CODE_MESSAGING_TOKEN=t", "CLAUDECODE=1", "HOME=/h"})
-	if strings.Join(got, " ") != "PATH=/bin HOME=/h" {
+	got := CleanEnv([]string{"PATH=/bin", "CLAUDE_CONFIG_DIR=/x", "CLAUDE_CODE_MESSAGING_TOKEN=t", "CLAUDECODE=1", "HOME=/h",
+		"CLAUDE_CODE_SESSION_ID=s", "CLAUDE_CODE_CHILD_SESSION=1", "CLAUDE_PID=9", "CLAUDE_CODE_MAX_OUTPUT_TOKENS=8000"})
+	// The owner's own settings stay; the calling session's variables go.
+	if strings.Join(got, " ") != "PATH=/bin HOME=/h CLAUDE_CODE_MAX_OUTPUT_TOKENS=8000" {
 		t.Errorf("CleanEnv: %q", got)
+	}
+}
+
+// The coordinator's live finding (setup.md 8.6): the old account's supervisor restarts a
+// background job whose process died. The move stops the job there and resumes elsewhere only
+// once no copy runs; a copy that will not stop blocks the move.
+func TestBackgroundMoveStopsOldCopy(t *testing.T) {
+	defer func(d time.Duration) { Settle = d }(Settle)
+	Settle = 300 * time.Millisecond
+	tg := Target{Key: "acct:b/o", Label: "claude-2", Dir: "/h/.claude-2"}
+	l := Launch{PID: 42, SessionID: "s1", Slot: "/h/.claude-4", CWD: "/w", Kind: KindBackground}
+	h := &fakeHost{copyUntil: 2}
+	if _, err := Execute(h, l, tg, "", "N", ""); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(h.calls, "|")
+	if !strings.HasPrefix(got, "stop s1 in /h/.claude-4|stop s1 in /h/.claude-4|carry s1") || !strings.Contains(got, "|start /w:") {
+		t.Fatalf("steps %s", got)
+	}
+	// claude stop that does not end it: killed after StopWait.
+	defer func(d time.Duration) { StopWait = d }(StopWait)
+	StopWait = 50 * time.Millisecond
+	h = &fakeHost{stopIgnored: true}
+	if _, err := Execute(h, l, tg, "", "N", ""); err != nil || !strings.HasPrefix(strings.Join(h.calls, "|"), "stop s1 in /h/.claude-4|kill 42|carry") {
+		t.Fatalf("stop ignored: %v %q", err, h.calls)
+	}
+	h = &fakeHost{copyUntil: 99}
+	if _, err := Execute(h, l, tg, "", "N", ""); err == nil || !strings.Contains(err.Error(), "keeps a copy running") {
+		t.Fatalf("stubborn copy: %v", err)
+	}
+	for _, c := range h.calls {
+		if strings.HasPrefix(c, "start") {
+			t.Fatalf("resumed while a copy ran: %v", h.calls)
+		}
 	}
 }

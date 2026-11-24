@@ -181,3 +181,74 @@ func TestMovedSessionKeepsOldHandle(t *testing.T) {
 		t.Fatal("nothing arrived")
 	}
 }
+
+// setup.md 8.6: a session Watchyard moved here from another folder of this machine keeps the
+// handle it had there (alias and MovedFrom); a send to that old handle is delivered and its
+// result names the handle to use from now on.
+func TestMovedHereKeepsOldHandle(t *testing.T) {
+	w := newWorld(t, peers.ModeBypass, peers.ModeBypass)
+	w.allow([][]string{{"acc-work", "acc-personal"}, {"acc-personal", "acc-work"}}, nil)
+	old := w.slot(".claude-3", "acc-old")
+	e, c := w.asA()
+	e.PastSlots = func(sid string) []string {
+		if sid == "sess-b" {
+			return []string{old}
+		}
+		return nil
+	}
+	es, _, rf := e.List(false)
+	if rf != nil {
+		t.Fatal(rf)
+	}
+	var b peers.ListEntry
+	for _, x := range es {
+		if x.Session == "sess-b" {
+			b = x
+		}
+	}
+	if b.Handle != "worker@personal.laptop" || !slices.Contains(b.Aliases, "worker@claude-3.laptop") ||
+		!slices.Equal(b.MovedFrom, []string{"worker@claude-3.laptop"}) {
+		t.Fatalf("moved session: %+v", b)
+	}
+	res, rf := e.Send(c, "worker@claude-3.laptop", "still there?")
+	if rf != nil {
+		t.Fatal(rf)
+	}
+	if res.Via != "worker@claude-3.laptop" || !strings.Contains(res.Line(),
+		"; worker@claude-3.laptop moved to another account and is now worker@personal.laptop: use worker@personal.laptop from now on") {
+		t.Fatalf("line: %s", res.Line())
+	}
+	// By its current handle: no note.
+	res, rf = e.Send(c, "worker@personal.laptop", "and now?")
+	if rf != nil {
+		t.Fatal(rf)
+	}
+	if res.Via != "" || strings.Contains(res.Line(), "moved") {
+		t.Fatalf("line: %s", res.Line())
+	}
+	if !w.b.Wait(2, 2*time.Second) {
+		t.Fatal("not delivered")
+	}
+}
+
+// peers.md 8.7: a notice from Watchyard itself reaches a local session as one canonical
+// frame in its own permission class, from-session "watchyard", with the notice header.
+func TestNotice(t *testing.T) {
+	w := newWorld(t, peers.ModeBypass, peers.ModePrompting)
+	e := w.env()
+	h, rf := e.Notice("sess-b", "Your lane api (sess-a) moved claude-4 -> claude-2 at 10:31.")
+	if rf != nil {
+		t.Fatal(rf)
+	}
+	if h != "worker@personal.laptop" || !w.b.Wait(1, 2*time.Second) {
+		t.Fatalf("handle %q, nothing arrived", h)
+	}
+	got := w.b.All()[0]
+	if !got.Canon || got.Wrapper.FromSession != peers.NoticeSession || got.Wrapper.FromMode != peers.ModePrompting ||
+		!strings.HasPrefix(got.Wrapper.Body, peers.NoticeHeader("laptop")+"\n\nYour lane api") {
+		t.Fatalf("frame %+v", got)
+	}
+	if _, rf := e.Notice("sess-gone", "x"); rf == nil || rf.Code != peers.CodeTargetGone {
+		t.Fatalf("gone: %v", rf)
+	}
+}

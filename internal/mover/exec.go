@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 )
 
 // Host is what a move does to the machine. The real one kills processes and runs tmux;
@@ -22,7 +23,21 @@ type Host interface {
 	Order(wrapper int, o RunOrder) error
 	// Note leaves the one-line move note for the session's SessionStart hook.
 	Note(sessionID, text string) error
+	// Carry makes the stopped session l resumable under config folder to: its transcript
+	// (CarryTranscript) and, for an interactive one, its folder's trust (CarryTrust).
+	Carry(l Launch, to string) error
+	// StopJob runs `claude stop <session>` under config folder dir: the background
+	// supervisor of that account marks the job stopped (it restarts a job whose process just
+	// died) and stops any copy it already restarted.
+	StopJob(dir, sessionID string) error
+	// Copies are the pids of live processes of the session in config folder dir's registry,
+	// other than except.
+	Copies(dir, sessionID string, except int) []int
 }
+
+// Settle is how long a background move watches the old account for a copy its supervisor
+// restarted before it resumes the session elsewhere.
+var Settle = 5 * time.Second
 
 // RunOrder is what a `wy run` wrapper reads after its claude ended: start this instead of
 // exiting.
@@ -30,6 +45,9 @@ type RunOrder struct {
 	SessionID string   `json:"session_id"`
 	ConfigDir string   `json:"config_dir"`
 	Argv      []string `json:"argv"` // the full command line (Command)
+	// FromDir is the config folder the session ran in: the wrapper carries the transcript
+	// from it (CarryTranscript) before it relaunches.
+	FromDir string `json:"from_dir,omitempty"`
 }
 
 // ErrNotMovable: the session's kind cannot be restarted by the mover (advise only).
@@ -61,20 +79,37 @@ func Execute(h Host, l Launch, t Target, template, note, log string) ([]string, 
 		if err := h.Kill(l.PID); err != nil {
 			return nil, err
 		}
+		gone(h, l)
+		if err := h.Carry(l, t.Dir); err != nil {
+			return argv, fmt.Errorf("transcript: %w (copy it into %s/projects by hand, then: cd %s && %s)", err, t.Dir, Shell([]string{l.CWD}), Shell(argv))
+		}
 		if err := h.Tmux("respawn-pane", "-k", "-t", l.Pane, "-c", l.CWD, "bash -ic "+Shell([]string{Shell(argv)})); err != nil {
 			return argv, fmt.Errorf("tmux respawn-pane: %w (start it by hand: cd %s && %s)", err, Shell([]string{l.CWD}), Shell(argv))
 		}
 		_ = h.Tmux("set-option", "-p", "-u", "-t", l.Pane, "remain-on-exit")
 	case KindWrapped:
-		if err := h.Order(l.Wrapper, RunOrder{SessionID: l.SessionID, ConfigDir: t.Dir, Argv: argv}); err != nil {
+		if err := h.Order(l.Wrapper, RunOrder{SessionID: l.SessionID, ConfigDir: t.Dir, Argv: argv, FromDir: l.Slot}); err != nil {
 			return nil, fmt.Errorf("wy run order: %w", err)
 		}
 		if err := h.Kill(l.PID); err != nil {
 			return nil, err
 		}
 	case KindBackground, KindHeadless:
-		if err := h.Kill(l.PID); err != nil {
-			return nil, err
+		if l.Kind == KindBackground {
+			// Through the old account's supervisor (claude stop): it restarts a job whose
+			// process just died, and keeps the job's background shells running. Resume
+			// nowhere while a copy still runs there (setup.md 8.6).
+			if err := stopOld(h, l); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := h.Kill(l.PID); err != nil {
+				return nil, err
+			}
+			gone(h, l)
+		}
+		if err := h.Carry(l, t.Dir); err != nil {
+			return argv, fmt.Errorf("transcript: %w (copy it into %s/projects by hand, then: cd %s && %s)", err, t.Dir, Shell([]string{l.CWD}), Shell(argv))
 		}
 		lg := ""
 		if l.Kind == KindHeadless {
@@ -85,6 +120,55 @@ func Execute(h Host, l Launch, t Target, template, note, log string) ([]string, 
 		}
 	}
 	return argv, nil
+}
+
+// StopWait is how long stopOld waits for claude stop to end the session's process before it
+// kills it.
+var StopWait = 10 * time.Second
+
+// stopOld stops a background session on its old account: claude stop there (its background
+// shells keep running), SIGKILL only when the process outlives StopWait, then for Settle no
+// copy of it may run there (a supervisor that restarted it is stopped again, then killed).
+func stopOld(h Host, l Launch) error {
+	// An error here (an older claude without stop) is not fatal: the kill and the copy check
+	// decide.
+	_ = h.StopJob(l.Slot, l.SessionID)
+	for deadline := time.Now().Add(StopWait); h.Alive(l) && time.Now().Before(deadline); {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if h.Alive(l) {
+		if err := h.Kill(l.PID); err != nil {
+			return err
+		}
+		gone(h, l)
+	}
+	deadline := time.Now().Add(Settle)
+	for {
+		if cs := h.Copies(l.Slot, l.SessionID, l.PID); len(cs) > 0 {
+			_ = h.StopJob(l.Slot, l.SessionID)
+			time.Sleep(time.Second)
+			for _, pid := range h.Copies(l.Slot, l.SessionID, l.PID) {
+				_ = h.Kill(pid)
+			}
+			time.Sleep(500 * time.Millisecond)
+			if cs := h.Copies(l.Slot, l.SessionID, l.PID); len(cs) > 0 {
+				return fmt.Errorf("the old account's supervisor keeps a copy running (pid %d); not resumed elsewhere: stop it with CLAUDE_CONFIG_DIR=%s claude stop %s", cs[0], l.Slot, l.SessionID)
+			}
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return nil
+}
+
+// gone waits up to two seconds for the killed session's process to be gone, so nothing
+// writes its transcript any more.
+func gone(h Host, l Launch) {
+	for i := 0; i < 40 && h.Alive(l); i++ {
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // Manual is the steps that move l to t by hand (a plain terminal without the wrapper, or a
@@ -100,6 +184,11 @@ func Manual(l Launch, t Target, template, note string) []string {
 			"then in the session's terminal: cd " + Shell([]string{l.CWD}) + " && " + Shell(argv),
 			"(Start sessions with `wy run claude ...` or the claude shim to let Watchyard do this.)",
 		}
+	}
+	if l.Kind == KindBackground {
+		// Through its supervisor: a killed background job is restarted on the old account.
+		return []string{"CLAUDE_CONFIG_DIR=" + Shell([]string{l.Slot}) + " claude stop " + l.SessionID,
+			"cd " + Shell([]string{l.CWD}) + " && " + Shell(argv)}
 	}
 	return []string{"kill -9 " + strconv.Itoa(l.PID), "cd " + Shell([]string{l.CWD}) + " && " + Shell(argv)}
 }

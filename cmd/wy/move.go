@@ -39,7 +39,7 @@ type moveEnv struct {
 func moveUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   wy move --plan [--json]                what Smart Account Switch would do now (changes nothing)
-  wy move <session> [<account>] [--dry-run] [--bg] [--now]
+  wy move <session> [<account>] [--dry-run] [--bg] [--now] [--force]
                                          move one session (its id, id prefix or name) to an account
                                          (its label, folder or number), else to the best one
   wy move --auto                         one pass of Smart Account Switch (the timer runs it; does
@@ -83,6 +83,7 @@ func moveCmd(e moveEnv, args []string) error {
 	asJSON := fs.Bool("json", false, "print JSON")
 	list := fs.Bool("list", false, "the moves of the last day")
 	noHub := fs.Bool("no-hub", false, "use only this machine's data")
+	force := fs.Bool("force", false, "move to the named account even when its limit is (nearly) reached")
 	pin := fs.String("pin-account", "", "never move this session")
 	unpin := fs.String("unpin", "", "let Smart Account Switch move this session again")
 	var pos []string
@@ -136,8 +137,18 @@ func moveCmd(e moveEnv, args []string) error {
 		if *asJSON {
 			return writeJSONOut(e.stdout, es)
 		}
+		labels := e.config().Slots.Labels
+		name := func(dir, key string) string {
+			if dir == "" {
+				return key
+			}
+			if l := labels["~/"+filepath.Base(dir)]; l != "" {
+				return l
+			}
+			return "~/" + filepath.Base(dir)
+		}
 		for _, x := range es {
-			fmt.Fprintf(e.stdout, "%s  %s  %s -> %s  %s  %s\n", x.At.Local().Format("01-02 15:04"), short(x.SessionID), x.From, x.To, x.Kind, x.Reason)
+			fmt.Fprintf(e.stdout, "%s  %s  %s -> %s  %s  %s\n", x.At.Local().Format("01-02 15:04"), short(x.SessionID), name(x.FromDir, x.From), name(x.ToDir, x.To), x.Kind, x.Reason)
 		}
 		return nil
 	}
@@ -152,11 +163,18 @@ func moveCmd(e moveEnv, args []string) error {
 	}
 	switch {
 	case *plan:
-		moves := mover.Plan(w.input)
+		moves, skips := mover.PlanWhy(w.input)
+		skips = w.inScope(skips)
 		if *asJSON {
-			return writeJSONOut(e.stdout, w.planDoc(moves))
+			doc := w.planDoc(moves)
+			doc["skipped"] = skips
+			return writeJSONOut(e.stdout, doc)
 		}
 		w.printPlan(e.stdout, moves, cfg)
+		for _, k := range skips {
+			l, _ := w.launch(k.Session)
+			fmt.Fprintf(e.stdout, "%s %s stays on %s: %s\n", short(k.Session), l.Name, w.targets[k.Account].Label, k.Why)
+		}
 		return nil
 	case *auto:
 		return w.autoPass(e, cfg, st)
@@ -165,12 +183,18 @@ func moveCmd(e moveEnv, args []string) error {
 	if err != nil {
 		return err
 	}
+	if w.outScope[l.SessionID] && !w.scope.all {
+		return fmt.Errorf("%s is outside account.smart_switch_scope (%s): it is not moved", short(l.SessionID), w.scope)
+	}
 	var t mover.Target
 	var mv mover.Move
 	if len(pos) == 2 {
 		t, err = w.account(pos[1])
 		if err != nil {
 			return err
+		}
+		if full := w.full(t.Key); full != "" && !*force {
+			return fmt.Errorf("%s is %s: the session would stop there at once (pass --force to move it anyway, or leave out the account to let Watchyard choose)", t.Label, full)
 		}
 	} else {
 		key, why := mover.Destination(w.input, l.SessionID)
@@ -190,8 +214,9 @@ func moveCmd(e moveEnv, args []string) error {
 	if *bg && (l.Kind == mover.KindTmux || l.Kind == mover.KindWrapped || l.Kind == mover.KindTerminal) {
 		l.Kind = mover.KindBackground
 	}
+	mv.ByHand = true
 	from := w.labelOfDir[l.Slot]
-	note := mover.Note(from, t.Label, e.now(), mv)
+	note := mover.Note(from, t.Label, e.now(), mv, w.chainLabels(st, l.SessionID, e.now())...)
 	if *dry || !l.Kind.Movable() {
 		if !l.Kind.Movable() && !*dry {
 			fmt.Fprintf(e.stderr, "wy move: %s is a %s session: Watchyard cannot restart it; the steps:\n", short(l.SessionID), l.Kind)
@@ -207,7 +232,12 @@ func moveCmd(e moveEnv, args []string) error {
 	if l.Status == "busy" && !*now {
 		return fmt.Errorf("%s is in the middle of a turn: wait for it to finish, or pass --now (the turn and its running subagents are lost)", short(l.SessionID))
 	}
-	return w.carryOut(e, cfg, st, l, t, note, "by hand", false)
+	n, err := w.carryOut(e, cfg, st, l, t, note, "by hand", false, mv)
+	if err != nil {
+		return err
+	}
+	w.tell(e, []laneNotice{n})
+	return nil
 }
 
 func (e moveEnv) config() config.Config {
@@ -243,13 +273,31 @@ type moveWorld struct {
 	forecasts  map[string]mover.Forecast
 	byID       map[string]mover.Session
 	warnings   []string
+	// scope is account.smart_switch_scope; outScope the sessions it leaves out (they count in
+	// the forecasts but never move).
+	scope    switchScope
+	outScope map[string]bool
+	// handles are the sessions' peers handles before any move (none when peers are off).
+	handles map[string]string
+	// tokens are the outbox's token rows of the last week and f5 each account's 5-hour points
+	// per token unit (wy burn reads them too).
+	tokens []picker.TokenUse
+	f5     map[string]float64
 }
 
 func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	cfg := e.config()
 	now := e.now()
 	w := &moveWorld{targets: map[string]mover.Target{}, keyOfDir: map[string]string{}, labelOfDir: map[string]string{},
-		forecasts: map[string]mover.Forecast{}, byID: map[string]mover.Session{}}
+		forecasts: map[string]mover.Forecast{}, byID: map[string]mover.Session{}, outScope: map[string]bool{},
+		scope: parseScope(cfg.Account.SmartSwitchScope)}
+	inject, err := loadMoveTest(e.getenv, w.scope)
+	if err != nil {
+		return nil, err
+	}
+	if inject != nil {
+		w.warnings = append(w.warnings, "test levels and rates from "+moveTestEnv+" (scope "+w.scope.String()+")")
+	}
 	slots, err := nextSlots(e.nextEnv, cfg)
 	if err != nil {
 		return nil, err
@@ -322,6 +370,9 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		t, ok := w.targets[a.Key]
 		ma := mover.Account{Key: a.Key, Label: t.Label, Protected: a.Protected, Ratio: a.Ratio, Stale: a.Stale, Excluded: !ok,
 			W5: mover.Window{Level: a.FiveHour, Reset: a.FiveReset}, W7: mover.Window{Level: a.Weekly, Reset: a.WeeklyReset}}
+		if inject != nil {
+			inject.applyAccount(&ma, now)
+		}
 		w.input.Accounts = append(w.input.Accounts, ma)
 		f5[a.Key] = a.F5
 	}
@@ -338,19 +389,29 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	for _, l := range lanes {
 		rate[l.SID] = mover.Session{Rate: l.Rate, Expected: max(0, l.Expect-now.Sub(l.T0)), Age: now.Sub(l.T0)}
 	}
-	const bw = 15 * time.Minute
-	units := map[string]float64{}
+	w.tokens, w.f5 = ob.Tokens, f5
+	burns := burnStats(ob.Tokens, now, moveBurnWindow)
 	first := map[string]time.Time{}
 	for _, t := range ob.Tokens {
-		if _, ok := first[t.Session]; !ok {
+		if f, ok := first[t.Session]; !ok || t.At.Before(f) {
 			first[t.Session] = t.At
-		}
-		if now.Sub(t.At) <= bw {
-			units[t.Session] += t.Units
 		}
 	}
 	ctx := map[string]float64{}
+	typed := map[string]time.Time{} // the owner's last prompt per session (not a peer's)
 	if recs, err := status.Load(filepath.Join(e.dirs.State.Path, "outbox"), now.Add(-status.Window)); err == nil {
+		for _, r := range recs {
+			var p struct {
+				SessionID string `json:"session_id"`
+				Event     string `json:"hook_event_name"`
+			}
+			if r.Kind != record.KindHookEvent || json.Unmarshal(r.Payload, &p) != nil || p.Event != "UserPromptSubmit" || string(r.Derived["peer_prompt"]) == "true" {
+				continue
+			}
+			if t, err := time.Parse(time.RFC3339Nano, r.TS); err == nil && t.After(typed[p.SessionID]) {
+				typed[p.SessionID] = t
+			}
+		}
 		for id, s := range status.Adapt(recs) {
 			if s.ContextPct != nil {
 				ctx[id] = *s.ContextPct
@@ -363,7 +424,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	if e.tags != nil {
 		tags = e.tags()
 	} else {
-		tags = peersTags()
+		tags, w.handles = peersTags()
 	}
 	log := st.Log(now.Add(-6 * time.Hour))
 	last := map[string]mover.LogEntry{}
@@ -371,6 +432,9 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		last[x.SessionID] = x
 	}
 	w.input.Now, w.input.Params, w.input.Recent = now, mover.DefaultParams, mover.Records(log)
+	if inject != nil {
+		inject.applyParams(&w.input.Params)
+	}
 	for _, l := range w.launches {
 		key := w.keyOfDir[l.Slot]
 		if key == "" {
@@ -379,24 +443,35 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		s := rate[l.SessionID]
 		s.ID, s.Account, s.Name = l.SessionID, key, l.Name
 		if s.Rate == 0 {
-			s.Rate = units[l.SessionID] * f5[key] / bw.Hours()
+			s.Rate = burns[l.SessionID].rate(f5[key])
 		}
-		if s.Age == 0 {
-			if t, ok := first[l.SessionID]; ok {
-				s.Age = now.Sub(t)
+		if inject != nil {
+			if r, ok := inject.rate(l.SessionID); ok {
+				s.Rate = r
 			}
 		}
+		// Its age counts from its first token anywhere: a moved session's lease starts at its
+		// last move, and the Lindy rule must not think a long session young after each hop.
+		if t, ok := first[l.SessionID]; ok && now.Sub(t) > s.Age {
+			s.Age = now.Sub(t)
+		}
 		interactive := l.Kind == mover.KindTmux || l.Kind == mover.KindWrapped || l.Kind == mover.KindTerminal
-		s.Idle = l.Status == "idle"
+		// "shell": the turn ended with background shells still running (e2e); the turn
+		// boundary is what counts, the shells keep running across the move.
+		s.Idle = l.Status == "idle" || l.Status == "shell"
 		if s.Idle && !l.StatusSince.IsZero() {
 			s.IdleFor = now.Sub(l.StatusSince)
 		}
-		// The owner at it: an interactive session whose status changed in the last 3 minutes.
-		s.Attended = interactive && !l.StatusSince.IsZero() && now.Sub(l.StatusSince) < 3*time.Minute
+		// The owner at it: an interactive session the owner typed into in the last 3 minutes
+		// (a prompt that is not a peer message; a restart or a turn ending is not typing).
+		s.Attended = interactive && !typed[l.SessionID].IsZero() && now.Sub(typed[l.SessionID]) < 3*time.Minute
 		if p, ok := ctx[l.SessionID]; ok {
 			s.Context = p / 100 * 200_000
 		}
-		s.Pinned = pins[l.SessionID] || peerspkg.HasTag(tags[l.SessionID], "no-move")
+		s.Pinned = pins[l.SessionID] || peerspkg.HasTag(tags[l.SessionID], peerspkg.NoMoveTag)
+		if !w.scope.in(l.SessionID, tags[l.SessionID]) {
+			s.Pinned, w.outScope[l.SessionID] = true, true
+		}
 		s.Movable = l.Kind.Movable()
 		if x, ok := last[l.SessionID]; ok {
 			s.MovedAt, s.MovedFrom = x.At, x.From
@@ -455,6 +530,23 @@ func (w *moveWorld) account(q string) (mover.Target, error) {
 	return mover.Target{}, fmt.Errorf("no logged-in account %q", q)
 }
 
+// full says why an account cannot take a session now ("" when it can): a window at or above
+// 98%, or readings too old to know.
+func (w *moveWorld) full(key string) string {
+	for _, a := range w.input.Accounts {
+		if a.Key != key {
+			continue
+		}
+		switch {
+		case a.W5.Level >= 98:
+			return fmt.Sprintf("at %.0f%% of its 5-hour limit", a.W5.Level)
+		case a.W7.Level >= 98:
+			return fmt.Sprintf("at %.0f%% of its weekly limit", a.W7.Level)
+		}
+	}
+	return ""
+}
+
 func (w *moveWorld) launch(id string) (mover.Launch, bool) {
 	for _, l := range w.launches {
 		if l.SessionID == id {
@@ -506,6 +598,17 @@ func (w *moveWorld) planDoc(moves []mover.Move) map[string]any {
 	return map[string]any{"accounts": accs, "moves": ms, "warnings": w.warnings}
 }
 
+// inScope drops the skips of sessions outside account.smart_switch_scope (never candidates).
+func (w *moveWorld) inScope(ks []mover.Skip) []mover.Skip {
+	var out []mover.Skip
+	for _, k := range ks {
+		if !w.outScope[k.Session] {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 func (w *moveWorld) printPlan(out io.Writer, moves []mover.Move, cfg config.Config) {
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "ACCOUNT\t5H\t7D\tBURN/H\tFORECAST")
@@ -552,22 +655,29 @@ func (w *moveWorld) printPlan(out io.Writer, moves []mover.Move, cfg config.Conf
 func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State) error {
 	moves := mover.Plan(w.input)
 	var first error
+	var told []laneNotice
 	for _, m := range moves {
 		l, ok := w.launch(m.Session)
 		if !ok || m.To == "" || m.Wait || !l.Kind.Movable() {
 			continue
 		}
-		note := mover.Note(w.targets[m.From].Label, w.targets[m.To].Label, e.now(), m)
-		if err := w.carryOut(e, cfg, st, l, w.targets[m.To], note, m.Reason, true); err != nil && first == nil {
-			first = err
+		note := mover.Note(w.targets[m.From].Label, w.targets[m.To].Label, e.now(), m, w.chainLabels(st, m.Session, e.now())...)
+		n, err := w.carryOut(e, cfg, st, l, w.targets[m.To], note, m.Reason, true, m)
+		if err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
 		}
+		told = append(told, n)
 	}
+	w.tell(e, told) // one notice per parent for the whole pass
 	return first
 }
 
 // carryOut moves l to t and records it: the move log, the lease ledger (the old lease ends,
 // a new one on t carries the session) and the note.
-func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mover.Launch, t mover.Target, note, reason string, auto bool) error {
+func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mover.Launch, t mover.Target, note, reason string, auto bool, mv mover.Move) (laneNotice, error) {
 	host := e.host
 	if host == nil {
 		host = mover.RealHost{Proc: peerspkg.NewProc(), State: st}
@@ -580,27 +690,36 @@ func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mov
 	if err != nil {
 		entry.Error = err.Error()
 		_ = st.Append(entry)
-		return fmt.Errorf("move %s: %w", short(l.SessionID), err)
+		return laneNotice{}, fmt.Errorf("move %s: %w", short(l.SessionID), err)
 	}
 	_ = st.Append(entry)
 	protected := false
 	for _, a := range w.input.Accounts {
 		protected = protected || (a.Key == t.Key && a.Protected)
 	}
-	moveLease(e, l.SessionID, t, from, protected)
+	parent := moveLease(e, l.SessionID, t, from, protected)
 	fmt.Fprintf(e.stdout, "moved %s %s from %s to %s (%s)\n", short(l.SessionID), l.Name, from, t.Label, l.Kind)
-	return nil
+	return laneNotice{Parent: parent, Session: l.SessionID, Name: l.Name, From: from, To: t.Label, ToDir: t.Dir, At: e.now(), Move: mv}, nil
 }
 
-// moveLease ends the session's lease and leases it on t (setup.md 8.6, Records).
-func moveLease(e moveEnv, sid string, t mover.Target, from string, protected bool) {
+// moveLease ends the session's lease and leases it on t (setup.md 8.6, Records). The new
+// lease keeps the parent of the old one, which it returns ("" when none).
+func moveLease(e moveEnv, sid string, t mover.Target, from string, protected bool) string {
 	g := leases.Ledger{Dir: filepath.Join(e.dirs.State.Path, "next")}
 	unlock, err := g.Lock()
 	if err != nil {
-		return
+		return ""
 	}
 	defer unlock()
 	now := e.now()
+	parent := ""
+	if ls, _, err := g.Read(now); err == nil {
+		for _, l := range ls {
+			if l.SessionID == sid && l.Parent != "" {
+				parent = l.Parent
+			}
+		}
+	}
 	_, _ = g.Mark(sid, "ended", now)
 	acct, org, _ := strings.Cut(strings.TrimPrefix(t.Key, "acct:"), "/")
 	kind := "aggressive"
@@ -608,8 +727,33 @@ func moveLease(e moveEnv, sid string, t mover.Target, from string, protected boo
 		kind = "protected"
 	}
 	_ = g.Append(leases.Line{V: 1, Op: leases.OpLease, ID: record.NewID(now), At: now.UTC(), Key: t.Key, Account: acct, Org: org,
-		Folder: "~/" + filepath.Base(t.Dir), Label: t.Label, Kind: kind, SessionID: sid, Strategy: "move", MovedFrom: from})
+		Folder: "~/" + filepath.Base(t.Dir), Label: t.Label, Kind: kind, SessionID: sid, Strategy: "move", MovedFrom: from, Parent: parent})
 	_, _ = g.Mark(sid, "launched", now)
+	return parent
+}
+
+// MoveMemory is how long a session's moves are remembered for its old handles and its note's
+// path of accounts.
+const moveMemory = 7 * 24 * time.Hour
+
+// movedSlots is peers.Env.PastSlots from the move log (read once per directory build).
+func movedSlots(stateDir string) func(string) []string {
+	st := mover.NewState(stateDir)
+	return func(sid string) []string { return st.PastSlots(sid, time.Now().Add(-moveMemory)) }
+}
+
+// chainLabels is the labels of the session's earlier moves, oldest first (none when it never
+// moved), for its note.
+func (w *moveWorld) chainLabels(st mover.State, sid string, now time.Time) []string {
+	var out []string
+	for _, d := range st.Chain(sid, now.Add(-moveMemory)) {
+		l := w.labelOfDir[d]
+		if l == "" {
+			l = "~/" + filepath.Base(d)
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 // procCmdline reads /proc/<pid>/cmdline (nil elsewhere).
@@ -640,20 +784,20 @@ func tmuxPanes() map[int]string {
 	return m
 }
 
-// peersTags are the sessions' peers tags from `wy peers list --all`'s source, when peers are
-// on (nil otherwise).
-func peersTags() map[string][]string {
+// peersTags are the sessions' peers tags and handles from `wy peers list --all`'s source, when
+// peers are on (nil otherwise).
+func peersTags() (map[string][]string, map[string]string) {
 	pe, err := peersEnv()
 	if err != nil || !pe.Enabled {
-		return nil
+		return nil, nil
 	}
 	es, _, rf := peersListEntries(pe, true)
 	if rf != nil {
-		return nil
+		return nil, nil
 	}
-	out := map[string][]string{}
+	tags, handles := map[string][]string{}, map[string]string{}
 	for _, x := range es {
-		out[x.Session] = x.Tags
+		tags[x.Session], handles[x.Session] = x.Tags, x.Handle
 	}
-	return out
+	return tags, handles
 }

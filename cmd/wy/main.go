@@ -62,6 +62,7 @@ func commands() map[string]command {
 		"flush":       {summary: "Send queued records to the hub", run: runFlush},
 		"tick":        {summary: "Timer entry point: flush, share sync, agents, scan", run: runTick},
 		"move":        {summary: "Move a session to another account; Smart Account Switch", run: runMove},
+		"burn":        {summary: "Who is burning: accounts and sessions ranked by token burn", run: runBurn},
 		"run":         {summary: "Run claude so Watchyard can move it to another account", run: runRun},
 		"hub":         {summary: "Run and manage the hub (serve, pair, owner-link, token, backup, prune)", run: runHub},
 		"phone":       {summary: "Pair a phone with this hub (wy phone pair; run on the hub)", run: runPhone},

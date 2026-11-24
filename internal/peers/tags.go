@@ -152,6 +152,25 @@ func StateRank(state string) int {
 	return 1
 }
 
+// NoMoveTag is the marker tag that keeps Smart Account Switch from moving a session
+// (setup.md 8.6).
+const NoMoveTag = "no-move"
+
+// markerTag reports whether tag is a marker: a tag Watchyard reads as a setting of the
+// session (no-move, the smart-switch scope tag; Env.MarkerTags) rather than a role. Many
+// sessions hold a marker, so adding one tells no other holder (peers.md 3.4).
+func (e Env) markerTag(tag string) bool {
+	if tag == NoMoveTag {
+		return true
+	}
+	for _, t := range e.MarkerTags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
 // TagNoticeText is the notice each existing holder gets when another session tags itself.
 func TagNoticeText(handle, tag string) string {
 	return fmt.Sprintf("%s also tagged itself %s. The holders of %s decide between themselves which of them keeps it; one may run `wy peers tag rm %s`.",
@@ -232,8 +251,8 @@ func (e Env) Tag(c Caller, op, tag string) (TagResult, *Refusal) {
 		return TagResult{}, tagRefusal(ans.Error, tag)
 	}
 	res := TagResult{Tags: NormTags(ans.Tags), Changed: ans.Changed}
-	if op != TagAdd {
-		return res, nil
+	if op != TagAdd || e.markerTag(tag) {
+		return res, nil // a marker tag is a setting, not a role: no holders, no notices
 	}
 	// The other holders, as this session sees them (the hub's answer refreshed the directory).
 	dir, everyone, _ := e.directoryAll()

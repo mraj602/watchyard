@@ -2,6 +2,9 @@ package mover
 
 import (
 	"encoding/json"
+	"io"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -48,6 +51,13 @@ func (y Sys) Sessions(slots []identity.Slot) []Launch {
 			if y.Cmdline != nil {
 				d.Cmdline = y.Cmdline(e.PID)
 			}
+			// A background session's process may be a pre-started spare (argv: --bg-spare
+			// only); its supervisor keeps the session's own flags in its job record.
+			if e.Kind == "bg" && e.JobID != "" {
+				if fl, ok := jobFlags(y.FS, slot.Dir, e.JobID); ok {
+					d.Cmdline = append([]string{"claude"}, fl...)
+				}
+			}
 			d.Pane = registryPane(e.Tmux)
 			anc := peers.Ancestors(y.Proc, e.PID)
 			for i, a := range anc {
@@ -72,6 +82,29 @@ func (y Sys) Sessions(slots []identity.Slot) []Launch {
 	}
 	return out
 }
+
+// jobFlags reads respawnFlags, the flags a background job is (re)started with, from the
+// supervisor's job record <dir>/jobs/<job>/state.json. Only that field is decoded (the record
+// also has the job's environment, which is never looked at: keys.md 8).
+func jobFlags(fsys identity.FS, dir, job string) ([]string, bool) {
+	if !jobRe.MatchString(job) {
+		return nil, false
+	}
+	f, err := fsys.Open(filepath.Join(dir, "jobs", job, "state.json"))
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	var st struct {
+		RespawnFlags []string `json:"respawnFlags"`
+	}
+	if json.NewDecoder(io.LimitReader(f, 1<<20)).Decode(&st) != nil || st.RespawnFlags == nil {
+		return nil, false
+	}
+	return st.RespawnFlags, true
+}
+
+var jobRe = regexp.MustCompile(`^[0-9a-f]{8}$`)
 
 // registryPane reads the pane id from the registry's tmux field when Claude Code wrote one:
 // a string "%N", or an object with a pane id.

@@ -31,6 +31,9 @@ type TokenUse struct {
 	Session string
 	Slot    string // the record's slot ("" when the transcripts folder is shared)
 	Units   float64
+	// Model is the response's model; Agent the helper (subagent) that made it, "" for the
+	// session itself (wy burn).
+	Model, Agent string
 }
 
 // HookSession is what this machine's hook events say about one session: its newest event,
@@ -94,6 +97,7 @@ func ReadOutbox(outboxDir string, since time.Time, meter bool) (Outbox, error) {
 	type counts struct {
 		at                  time.Time
 		session, slot       string
+		model, agent        string
 		in, out, c5, c1, cr int64
 	}
 	tokens := map[string]*counts{}
@@ -151,7 +155,7 @@ func ReadOutbox(outboxDir string, since time.Time, meter bool) (Outbox, error) {
 					}
 					c := tokens[row.Key]
 					if c == nil {
-						c = &counts{at: at, session: row.SessionID, slot: r.Slot}
+						c = &counts{at: at, session: row.SessionID, slot: r.Slot, model: row.Model, agent: row.AgentID}
 						tokens[row.Key] = c
 					}
 					c.in, c.out = max(c.in, row.Input), max(c.out, row.Output)
@@ -190,7 +194,8 @@ func ReadOutbox(outboxDir string, since time.Time, meter bool) (Outbox, error) {
 	}
 	sort.SliceStable(out.Samples, func(i, j int) bool { return out.Samples[i].At.Before(out.Samples[j].At) })
 	for _, c := range tokens {
-		out.Tokens = append(out.Tokens, TokenUse{At: c.at, Session: c.session, Slot: c.slot, Units: Units(c.in, c.out, c.c5, c.c1, c.cr)})
+		out.Tokens = append(out.Tokens, TokenUse{At: c.at, Session: c.session, Slot: c.slot, Units: Units(c.in, c.out, c.c5, c.c1, c.cr),
+			Model: c.model, Agent: c.agent})
 	}
 	sort.SliceStable(out.Tokens, func(i, j int) bool {
 		if !out.Tokens[i].At.Equal(out.Tokens[j].At) {

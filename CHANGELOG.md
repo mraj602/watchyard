@@ -24,11 +24,38 @@ All notable changes to Watchyard are recorded here. The format follows
   moved session gets one line on resume and nothing else changes for other sessions. `wy move
   --plan` shows the forecast and the moves; `wy move <session> [<account>]` moves one by hand;
   `--pin-account` or the peers tag `no-move` opts a session out. In the simulator (300 runs per
-  pattern) the default cuts lane-minutes stopped at a limit from 4,210 to 539 a day, as well as
-  a fixed 92% threshold does (536), with half its limit hits, half its moves and token cost, no
-  session killed mid-turn and no ping-pong.
+  pattern) the default cuts lane-minutes stopped at a limit from 4,210 to 532 a day, better than
+  a fixed 92% threshold (540), with under half its limit hits, half its moves and token cost, no
+  session killed mid-turn and no ping-pong. Destinations: the session's own organisation first,
+  then the account whose 5-hour room expires soonest.
+- Everyone involved learns about a move. The moved session's note carries its whole path of
+  accounts once it has moved more than once. The session that started a lane through `wy
+  account next --exec` (recorded as the lease's `parent`, or `--parent <id>`) gets one short
+  Watchyard notice per pass with the lane's new handle, with no polling (peers.md 8.7). A caller
+  that sends to an old handle gets the message delivered and is told the new handle in the
+  send line. `wy peers list` keeps every handle of the last 7 days of moves as an alias.
+- `account.smart_switch_scope` (`all`, `tag:<tag>` or `sessions:<ids>`) limits which sessions
+  may move, for a gradual rollout; and a test-only fault injection (`WY_MOVE_TEST`), refused
+  while the scope is `all`.
+- `wy burn [--minutes N] [--json]`: who is burning, per account (5-hour and weekly level, burn,
+  when the 5-hour window hits) and per live session (burn per minute, account, name, kind,
+  state, helper agents, calls per model, folder). The mover's forecast uses the same numbers.
+- `wy move --plan` says, for each session on an account that hits, why it stays.
 
 ### Fixed
+
+- Moves, found in end-to-end tests on a machine with 7 accounts: a background session is now
+  stopped through its old account's supervisor (`claude stop`), which otherwise restarted it
+  there and left two copies running; it is resumed with the flags from its job record (its
+  process may be a pre-started spare); folder trust and, when needed, the transcript are carried
+  to the new account, so a resumed session no longer waits at "Do you trust this folder?" and
+  `claude --bg` no longer refuses with "Workspace not trusted"; a session with background shells
+  still running counts as idle; the owner counts as at a session only when they typed into it,
+  not when it restarted; a moved session's age is not reset by the move; `wy move <session>
+  <account>` refuses an account at its limit without `--force`.
+- `wy account next --exec -- claude --bg ...` binds the lease to the session the supervisor
+  started (claude ignores `--session-id` with `--bg`) instead of to an id no session has, and no
+  longer hangs when `claude --bg` starts the supervisor.
 
 - A session resumed under another account (`CLAUDE_CONFIG_DIR=<other> claude --resume <id>`)
   now follows it: the hub, `wy status` and the board re-attribute it to the new account from its

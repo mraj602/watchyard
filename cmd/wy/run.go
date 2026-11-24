@@ -103,6 +103,14 @@ func wrap(st mover.State, argv, env []string, stderr io.Writer) (int, error) {
 		}
 		if o, ok := st.TakeOrder(me); ok {
 			fmt.Fprintf(stderr, "wy run: Watchyard moved this session to %s; resuming it\n", o.ConfigDir)
+			if o.FromDir != "" {
+				if err := mover.CarryTranscript(o.FromDir, o.ConfigDir, o.SessionID); err != nil {
+					fmt.Fprintf(stderr, "wy run: the transcript could not be copied to %s: %v\n", o.ConfigDir, err)
+				}
+				if _, err := mover.CarryTrust(o.FromDir, o.ConfigDir, dir); err != nil {
+					fmt.Fprintf(stderr, "wy run: this folder's trust could not be carried to %s: %v\n", o.ConfigDir, err)
+				}
+			}
 			argv, env = o.Argv, mover.CleanEnv(env)
 			continue
 		}

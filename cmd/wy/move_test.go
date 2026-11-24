@@ -35,11 +35,27 @@ func (f moveProc) StartTime(pid int) (string, error) {
 }
 
 // recHost records the steps of a move; no process is ever touched.
-type recHost struct{ calls []string }
+type recHost struct {
+	calls  []string
+	killed map[int]bool
+}
 
-func (h *recHost) Alive(mover.Launch) bool { return true }
+func (h *recHost) Alive(l mover.Launch) bool { return !h.killed[l.PID] }
 func (h *recHost) Kill(pid int) error {
 	h.calls = append(h.calls, "kill "+strconv.Itoa(pid))
+	if h.killed == nil {
+		h.killed = map[int]bool{}
+	}
+	h.killed[pid] = true
+	return nil
+}
+func (h *recHost) StopJob(dir, sid string) error {
+	h.calls = append(h.calls, "stop "+sid)
+	return nil
+}
+func (h *recHost) Copies(string, string, int) []int { return nil }
+func (h *recHost) Carry(l mover.Launch, to string) error {
+	h.calls = append(h.calls, "carry "+l.SessionID)
 	return nil
 }
 func (h *recHost) Tmux(args ...string) error {
@@ -60,6 +76,8 @@ func (h *recHost) Note(sid, text string) error {
 }
 
 func moveFixture(t *testing.T, five float64, status string) (*nextFixture, *recHost, func(args ...string) (string, string, int)) {
+	defer func(d time.Duration) { t.Cleanup(func() { mover.Settle = d }) }(mover.Settle)
+	mover.Settle = 0
 	f := newNextFixture(t)
 	f.usage = true
 	f.machineToken()
@@ -117,9 +135,9 @@ func TestMoveByHand(t *testing.T) {
 	}
 	dir2 := filepath.Join(f.home, ".claude-2")
 	cmd := "env CLAUDE_CONFIG_DIR=" + dir2 + " claude --model opus --resume 5e55a0a0-0000-4000-8000-000000000001"
-	want := []string{"tmux set-option -p -t %7 remain-on-exit on", "kill 100", "tmux respawn-pane -k -t %7 -c /work bash -ic '" + cmd + "'",
+	want := []string{"tmux set-option -p -t %7 remain-on-exit on", "kill 100", "carry 5e55a0a0-0000-4000-8000-000000000001", "tmux respawn-pane -k -t %7 -c /work bash -ic '" + cmd + "'",
 		"tmux set-option -p -u -t %7 remain-on-exit"}
-	if len(h.calls) != 5 || !strings.HasPrefix(h.calls[0], "note 5e55a0a0-0000-4000-8000-000000000001: Watchyard moved this session from claude to claude-2 at ") ||
+	if len(h.calls) != 6 || !strings.HasPrefix(h.calls[0], "note 5e55a0a0-0000-4000-8000-000000000001: Watchyard moved this session from claude to claude-2 at ") ||
 		strings.Join(h.calls[1:], "|") != strings.Join(want, "|") {
 		t.Fatalf("steps:\n%s", strings.Join(h.calls, "\n"))
 	}

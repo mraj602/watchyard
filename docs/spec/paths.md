@@ -246,6 +246,7 @@ delivery = "honest"                          # honest | accept | courier (peers.
 [account]                                    # Smart Account Switch (setup.md 8.6)
 smart_switch = false                         # on: wy tick moves sessions predicted to hit a limit before its reset
 move_launch = ""                             # command a moved session starts with ({dir}, {n}, {label})
+smart_switch_scope = "all"                   # which sessions may move: all | tag:<tag> | sessions:<id>,...
 
 [next]                                       # wy account next (setup.md 8.5)
 strategy = "lanes"                           # lanes | smart | expiring | most-room | spread | fill | sticky

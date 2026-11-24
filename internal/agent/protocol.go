@@ -98,6 +98,8 @@ type Reply struct {
 	Detail     string `json:"detail,omitempty"`
 	To         string `json:"to,omitempty"`
 	HeldLikely bool   `json:"held_likely,omitempty"`
+	// Via is the old handle a send named: the target moved accounts and To is its handle now.
+	Via string `json:"via,omitempty"`
 	// Expires is when a queued message expires (RFC 3339); Detail is then "offline" when
 	// the target's machine is not connected.
 	Expires string            `json:"expires,omitempty"`

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mraj602/watchyard/internal/identity"
 	"github.com/mraj602/watchyard/internal/peers"
 )
 
@@ -63,25 +64,48 @@ func (h RealHost) Start(dir string, argv []string, log string) error {
 	return cmd.Process.Release()
 }
 
+func (h RealHost) StopJob(dir, sid string) error {
+	cmd := exec.Command("claude", "stop", sid)
+	cmd.Env = append(CleanEnv(os.Environ()), "CLAUDE_CONFIG_DIR="+dir)
+	out, err := cmd.CombinedOutput()
+	if err != nil && len(out) > 0 {
+		return errors.New(strings.TrimSpace(string(out)))
+	}
+	return err
+}
+
+func (h RealHost) Copies(dir, sid string, except int) []int {
+	var out []int
+	for _, e := range peers.ReadRegistry(identity.OSFS{}, identity.Slot{Dir: dir}) {
+		if e.SessionID != sid || e.PID == except || e.PID <= 1 {
+			continue
+		}
+		if st, err := h.Proc.StartTime(e.PID); err == nil && peers.ProcStartMatches(e.ProcStartString(), st) {
+			out = append(out, e.PID)
+		}
+	}
+	return out
+}
+
+func (h RealHost) Carry(l Launch, to string) error {
+	if err := CarryTranscript(l.Slot, to, l.SessionID); err != nil {
+		return err
+	}
+	// claude -p skips the trust check; an interactive session asks again, and claude --bg
+	// refuses an untrusted folder outright ("Workspace not trusted").
+	if l.Kind != KindHeadless {
+		_, err := CarryTrust(l.Slot, to, l.CWD)
+		return err
+	}
+	return nil
+}
+
 func (h RealHost) Order(pid int, o RunOrder) error { return h.State.WriteOrder(pid, o) }
 
 func (h RealHost) Note(sessionID, text string) error {
 	return h.State.WriteNote(sessionID, text, time.Now())
 }
 
-// CleanEnv is env without what belongs to the session that runs wy (its config folder, its
-// messaging token and the other CLAUDE_CODE_* settings Claude Code gives its children): the
-// moved session gets the new account's from its launch command.
-func CleanEnv(env []string) []string {
-	var out []string
-	for _, kv := range env {
-		k, _, _ := strings.Cut(kv, "=")
-		switch {
-		case k == "CLAUDE_CONFIG_DIR", k == "CLAUDECODE", strings.HasPrefix(k, "CLAUDE_CODE_"),
-			strings.HasPrefix(k, "CLAUDE_AGENT_SDK"), k == "CLAUDE_ENV_FILE":
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
-}
+// CleanEnv is env without what belongs to the session that runs wy (SessionEnv): the moved
+// session gets the new account's from its launch command.
+func CleanEnv(env []string) []string { return peers.WithoutSessionEnv(env, true) }

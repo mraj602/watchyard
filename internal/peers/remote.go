@@ -34,6 +34,8 @@ type Remote interface {
 type HubName struct {
 	Handle, Name, Label, Account string
 	Aliases                      []string
+	// MovedFrom: the handles under accounts the session left (WireSession.MovedFrom).
+	MovedFrom []string
 	// Mine: a session of the machine that asked.
 	Mine bool
 	// Tags are the session's tags (peers.md 3.4).

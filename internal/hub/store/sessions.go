@@ -95,8 +95,13 @@ func (tx *Tx) SetSessionSeat(id, seat string) error {
 // v22): its seat and slot become those of the live record that showed it there, and the seat
 // it had is kept in moved_from_seat (its old peers handle stays an alias, peers.md 3.2). Its
 // token rows and limit hits keep their seats: what it used before the move stays on the old
-// account. A seat of "" keeps the session's seat.
+// account. A seat of "" keeps the session's seat. Each move is also kept in session_move, so
+// every seat the session left keeps its handle as an alias.
 func (tx *Tx) MoveSession(id, seat string, slot int64, at int64) error {
+	if _, err := tx.exec(`INSERT INTO session_move (session_id, at, from_seat, to_seat, from_slot, to_slot)
+		SELECT id, ?, seat_id, coalesce(?, seat_id), slot_id, ? FROM session WHERE id = ?`, at, nullStr(seat), slot, id); err != nil {
+		return err
+	}
 	_, err := tx.exec(`UPDATE session SET moved_from_seat = CASE WHEN ? IS NOT NULL AND seat_id IS NOT NULL AND seat_id <> ?
 		THEN seat_id ELSE moved_from_seat END, seat_id = coalesce(?, seat_id), slot_id = ?, moved_at = ? WHERE id = ?`,
 		nullStr(seat), seat, nullStr(seat), slot, at, id)

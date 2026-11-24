@@ -208,6 +208,37 @@ func (s State) Log(since time.Time) []LogEntry {
 	return out
 }
 
+// Chain is the session's moves since since as a path of slot folders, oldest first: the
+// folder it started in, then each one it moved to (nil when it never moved).
+func (s State) Chain(sessionID string, since time.Time) []string {
+	var out []string
+	for _, e := range s.Log(since) {
+		if e.SessionID != sessionID {
+			continue
+		}
+		if len(out) == 0 || out[len(out)-1] != e.FromDir {
+			out = append(out, e.FromDir)
+		}
+		out = append(out, e.ToDir)
+	}
+	return out
+}
+
+// PastSlots are the slot folders the session left by a move since since, newest first,
+// without repeats.
+func (s State) PastSlots(sessionID string, since time.Time) []string {
+	c := s.Chain(sessionID, since)
+	var out []string
+	seen := map[string]bool{}
+	for i := len(c) - 2; i >= 0; i-- {
+		if c[i] != "" && !seen[c[i]] {
+			seen[c[i]] = true
+			out = append(out, c[i])
+		}
+	}
+	return out
+}
+
 // Records are the log's moves as Plan's Recent.
 func Records(es []LogEntry) []Record {
 	out := make([]Record, 0, len(es))

@@ -256,6 +256,32 @@ func TestAccountNextLanesExecSessionID(t *testing.T) {
 	}
 }
 
+// A --bg lane gets no --session-id (claude ignores it there): its lease is bound to the id
+// the supervisor gave it, read from what claude printed and the folder's registry.
+func TestAccountNextLanesBackground(t *testing.T) {
+	f := newNextFixture(t)
+	f.seats = []map[string]any{seat("seat_1", "a1", "o1", "one@example.test", "", 10, 30)}
+	f.bgSID = "9390b15c-79d9-4198-a8e3-1eab3b013ae7"
+	f.bgOut = "backgrounded · 9390b15c · lane-c\n  claude agents   list sessions\n"
+	r := f.run("--exec", "--parent", sidA, "--", "claude", "--bg", "hi")
+	if r.code != 0 || strings.Join(r.exec, " ") != "/usr/bin/claude claude --bg hi" {
+		t.Fatalf("exec %v code %d err %s", r.exec, r.code, r.errOut)
+	}
+	ls, _, err := leases.Ledger{Dir: filepath.Join(f.dirs.State.Path, "next")}.Read(nextNow)
+	if err != nil || len(ls) != 1 {
+		t.Fatalf("leases %v %v", ls, err)
+	}
+	if l := ls[0]; l.SessionID != f.bgSID || l.Parent != sidA || l.Launched.IsZero() {
+		t.Errorf("lease %+v", l)
+	}
+	// Nothing printed: the lease stays unbound, with a warning.
+	f.bgOut, f.bgSID = "", ""
+	r = f.run("--exec", "--", "claude", "--bg", "hi")
+	if r.code != 0 || !strings.Contains(r.errOut, "not bound") {
+		t.Errorf("code %d err %q", r.code, r.errOut)
+	}
+}
+
 // A ledger line that cannot be read is skipped and counted, never fatal.
 func TestAccountNextLanesDamagedLedger(t *testing.T) {
 	f := newNextFixture(t)

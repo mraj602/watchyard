@@ -73,7 +73,8 @@ const (
 	(SELECT h.last_message FROM hook_event h WHERE h.session_id = s.id AND h.event IN ('Stop', 'StopFailure') ORDER BY h.ts DESC LIMIT 1),
 	s.seat_id, se.label, se.colour, s.machine_id, m.name, sl.folder, sl.launcher, s.project, s.cwd, s.name, s.title, s.kind,
 	s.model, s.context_pct, s.started_at, s.last_event_at, s.ended_at, s.remote_url, s.term, coalesce(s.last_listed_at, 0),
-	coalesce(m.last_seen, 0), ` + activityExpr + `, ` + sessionAlertExpr + `, ` + sessionWaitExpr
+	coalesce(m.last_seen, 0), ` + activityExpr + `, ` + sessionAlertExpr + `, ` + sessionWaitExpr + `,
+	s.moved_from_seat, mf.label, coalesce(s.moved_at, 0), (SELECT count(*) FROM session_move mv WHERE mv.session_id = s.id)`
 	// sessionWaitExpr is what a waiting session waits on, from the events since its state
 	// began (the same inputs as a push, push.md 5.5): the tool of the newest PermissionRequest,
 	// PreToolUse (AskUserQuestion, ExitPlanMode) or Notification, and Claude Code's own text of
@@ -96,7 +97,7 @@ const (
 	sessionSeenExpr = `EXISTS (SELECT 1 FROM alert a WHERE a.session_id = s.id AND a.status = 'seen'
 	AND a.episode = 's:' || s.id || ':' || st.state || ':' || st.since_at)`
 	sessionFrom = ` FROM session s LEFT JOIN session_state st ON st.session_id = s.id LEFT JOIN seat se ON se.id = s.seat_id
-	LEFT JOIN machine m ON m.id = s.machine_id LEFT JOIN slot sl ON sl.id = s.slot_id`
+	LEFT JOIN machine m ON m.id = s.machine_id LEFT JOIN slot sl ON sl.id = s.slot_id LEFT JOIN seat mf ON mf.id = s.moved_from_seat`
 )
 
 // SessionView is api.yaml Session.
@@ -145,6 +146,13 @@ type SessionView struct {
 	// Tags are the tags the session gave itself (peers.md 3.4), sorted; none for an ended or
 	// gone session.
 	Tags []string `json:"tags,omitempty"`
+	// MovedFromSeat and MovedFromLabel: the seat the session ran under before its last move
+	// to another account (identity.md 5.3, setup.md 8.6), MovedAt when, Moves how many moves;
+	// null and 0 for a session that never moved.
+	MovedFromSeat  *string `json:"moved_from_seat"`
+	MovedFromLabel *string `json:"moved_from_label"`
+	MovedAt        Time    `json:"moved_at"`
+	Moves          int     `json:"moves"`
 
 	// FocusTarget/FocusLink: the terminal's focus URL and the machine allowed to see it
 	// (record.md 3.3). The API copies FocusLink into FocusURL for that machine's desktop.
@@ -167,16 +175,18 @@ func scanSession(sc interface{ Scan(...any) error }, now time.Time) (SessionView
 	var started, lastEv, ended sql.NullInt64
 	var needs int
 	var since, listed, lastSeen, activity int64
-	var alertJSON, tool, notif sql.NullString
+	var alertJSON, tool, notif, movedSeat, movedLabel sql.NullString
+	var movedAt int64
 	err := sc.Scan(&v.ID, &v.State, &detail, &needs, &since, &question, &lm, &seat, &label, &colour, &machine, &mname, &folder,
 		&launcher, &project, &cwd, &name, &title, &kind, &model, &ctxPct, &started, &lastEv, &ended, &remote, &term, &listed,
-		&lastSeen, &activity, &alertJSON, &tool, &notif)
+		&lastSeen, &activity, &alertJSON, &tool, &notif, &movedSeat, &movedLabel, &movedAt, &v.Moves)
 	if err != nil {
 		return v, err
 	}
 	v.Detail, v.Question, v.LastMessage = ns(detail), ns(question), ns(lm)
 	v.ToolName, v.Notification = ns(tool), ns(notif)
 	v.NeedsYou, v.StateSince = needs == 1, Time(since)
+	v.MovedFromSeat, v.MovedFromLabel, v.MovedAt = ns(movedSeat), ns(movedLabel), Time(movedAt)
 	v.Seat, v.SeatLabel, v.SeatColour = ns(seat), ns(label), ns(colour)
 	v.Machine, v.MachineName, v.Slot = ns(machine), ns(mname), ns(folder)
 	v.Project, v.Cwd, v.Name, v.Title, v.Model, v.RemoteURL = ns(project), ns(cwd), ns(name), ns(title), ns(model), claudeURL(remote)

@@ -8,6 +8,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -30,6 +32,7 @@ import (
 	"github.com/mraj602/watchyard/internal/leases"
 	"github.com/mraj602/watchyard/internal/outbox"
 	"github.com/mraj602/watchyard/internal/paths"
+	peerspkg "github.com/mraj602/watchyard/internal/peers"
 	"github.com/mraj602/watchyard/internal/picker"
 	"github.com/mraj602/watchyard/internal/record"
 	"github.com/mraj602/watchyard/internal/version"
@@ -73,6 +76,38 @@ type nextEnv struct {
 	// spawn starts `wy <args>` in the background; nil means a detached copy of this binary
 	// (none with WY_NO_SPAWN=1).
 	spawn func(args []string) error
+	// parent is the session this command runs inside (its id), recorded on the leases so
+	// Watchyard can tell it when one of its lanes moves (setup.md 8.6, Who is told); nil means
+	// the nearest Claude Code ancestor (peers' Whoami), "" outside a session.
+	parent func() string
+	// newSID makes a session id for --exec when none is given; nil means a random UUID.
+	newSID func() string
+	// runBg runs a `claude --bg` of --exec to its end and returns what it printed; nil means
+	// a child process whose output also goes to stdout and stderr.
+	runBg func(path string, argv, env []string) (string, error)
+}
+
+// callerSession is the id of the Claude Code session this process runs inside ("" when none).
+func callerSession() string {
+	pe, err := peersEnv()
+	if err != nil {
+		return ""
+	}
+	c, rf := pe.Whoami()
+	if rf != nil {
+		return ""
+	}
+	return c.Entry.SessionID
+}
+
+// randomUUID is a version 4 UUID.
+func randomUUID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	h := hex.EncodeToString(b[:])
+	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
 }
 
 // nextAuthFresh: a cached `claude auth status` younger than this is reused, so a burst of
@@ -82,12 +117,15 @@ const nextAuthFresh = time.Minute
 func nextUsage(w io.Writer) {
 	fmt.Fprint(w, `usage: wy account next [--strategy lanes|smart|expiring|most-room|spread|fill|sticky] [--model <m>]
                        [--n <K>] [--session-id <uuid>]... [--urgent] [--expect short|medium|long|<duration>]
-                       [--expect-minutes <N>] [--expect-tokens <N>]
+                       [--expect-minutes <N>] [--expect-tokens <N>] [--parent <session id>]
                        [--env | --json | --explain] [--no-reserve] [--no-hub]
        wy account next [flags] --exec [-- <command> [args...]]     (default command: claude)
 --n, --session-id, --urgent and the --expect flags are for the lanes strategy (the default).
 --expect says how big each new session will be (short: under 25 min, medium: up to 2 h, long:
 over 2 h); a long session is kept off accounts whose week or 5-hour window resets first.
+--parent names the session that starts these (default: the session this runs inside, if any);
+it is told when one of them is moved to another account (from a new tmux window, pass
+--parent "$CLAUDE_CODE_SESSION_ID").
 Exit 0: every session asked for was placed. Exit 4: fewer were placed (none for one);
 launch only the printed picks. Exit 3: a --session-id is already leased or given twice.
 `)
@@ -133,6 +171,7 @@ func accountNext(e nextEnv, args []string) error {
 	expect := fs.String("expect", "", "lanes: the session's expected size, short, medium or long, or its wall time, e.g. 3h")
 	expectMin := fs.Float64("expect-minutes", 0, "lanes: the session's expected wall time in minutes")
 	expectTok := fs.Float64("expect-tokens", 0, "lanes: the session's expected tokens (input + output + cache)")
+	parentFlag := fs.String("parent", "", "the session that starts these (its id): told when one of them is moved to another account (default: the session this runs inside)")
 	var sids []string
 	fs.Func("session-id", "the session id (a UUID) each session will get, repeatable, in pick order", func(v string) error {
 		sids = append(sids, v)
@@ -179,6 +218,9 @@ func accountNext(e nextEnv, args []string) error {
 			return bad(fmt.Sprintf("--session-id %q is not a UUID", sid))
 		}
 	}
+	if *parentFlag != "" && !uuidRe.MatchString(*parentFlag) {
+		return bad(fmt.Sprintf("--parent %q is not a session id (a UUID)", *parentFlag))
+	}
 	x, xerr := parseExpect(*expect, *expectMin, *expectTok)
 	if xerr != nil {
 		return bad(xerr.Error())
@@ -207,6 +249,17 @@ func accountNext(e nextEnv, args []string) error {
 	lanes := strat == config.NextStrategyLanes
 	if !lanes && (k > 1 || len(sids) > 0 || *urgent || x != (picker.LaneExpect{})) {
 		return bad("--n above 1, --session-id, --urgent and --expect are for the lanes strategy (strategy is " + strat + ")")
+	}
+	// --exec of a new claude session without --session-id: give it one, so its lease names
+	// it from the start (the mover and the parent's notice need it).
+	if lanes && *doExec && !*noReserve && len(sids) == 0 {
+		if probe := withSessionID(cmdArgs, "x"); len(probe) != len(cmdArgs) && !isBg(cmdArgs) {
+			mk := e.newSID
+			if mk == nil {
+				mk = randomUUID
+			}
+			sids = []string{mk()}
+		}
 	}
 	now := e.now()
 
@@ -303,6 +356,23 @@ func accountNext(e nextEnv, args []string) error {
 			return nextDuplicate(e, err)
 		}
 		lines = leaseLines(res, *model, now)
+		if len(lines) > 0 {
+			pf := e.parent
+			if pf == nil {
+				pf = callerSession
+			}
+			p := *parentFlag
+			if p == "" {
+				p = pf()
+			}
+			if p != "" {
+				for i := range lines {
+					if lines[i].SessionID != p { // a --bg lane gets its id after the launch (nextBg)
+						lines[i].Parent = p
+					}
+				}
+			}
+		}
 		err = ledger.Append(lines...)
 		if err == nil {
 			err = ledger.Prune(now)
@@ -343,6 +413,9 @@ func accountNext(e nextEnv, args []string) error {
 		p := res.Picks[0]
 		if p.Urgent {
 			fmt.Fprintln(e.stderr, "wy account next: urgent: "+p.Label+" passed its burst cap")
+		}
+		if isBg(cmdArgs) && len(lines) > 0 {
+			return nextBg(e, p, cmdArgs, lines[0].ID)
 		}
 		return nextExec(e, p, withSessionID(cmdArgs, p.SessionID))
 	default:
@@ -617,7 +690,6 @@ func nextHub(e nextEnv, cfg config.Config, slots []picker.Slot, machine string, 
 // unset for the default view of ~/.claude. A drain pick also gets WY_FINISH_BY and
 // WY_ACCOUNT_RESET (RFC 3339 UTC; owner Q4) and its instruction line on stderr.
 func nextExec(e nextEnv, p picker.Pick, argv []string) error {
-	pick := p.Ranked
 	if len(argv) == 0 {
 		argv = []string{"claude"}
 	}
@@ -629,13 +701,25 @@ func nextExec(e nextEnv, p picker.Pick, argv []string) error {
 	if err != nil {
 		return fmt.Errorf("cannot find %s: %w", argv[0], err)
 	}
+	run := e.exec
+	if run == nil {
+		run = execWithEnv
+	}
+	return run(path, argv, execEnv(e, p))
+}
+
+// execEnv is the environment of the command of --exec, after the pick's lines on stderr.
+func execEnv(e nextEnv, p picker.Pick) []string {
+	pick := p.Ranked
 	environ := e.environ
 	if environ == nil {
 		environ = os.Environ
 	}
 	var env []string
-	for _, kv := range environ() {
-		if !strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") && !strings.HasPrefix(kv, "WY_FINISH_BY=") && !strings.HasPrefix(kv, "WY_ACCOUNT_RESET=") {
+	// Not the variables of a session this runs inside (its id, inbox token, ...): the lane is
+	// a session of its own.
+	for _, kv := range peerspkg.WithoutSessionEnv(environ(), true) {
+		if !strings.HasPrefix(kv, "WY_FINISH_BY=") && !strings.HasPrefix(kv, "WY_ACCOUNT_RESET=") {
 			env = append(env, kv)
 		}
 	}
@@ -649,9 +733,5 @@ func nextExec(e nextEnv, p picker.Pick, argv []string) error {
 	if h := p.Hint(); h != "" {
 		fmt.Fprintln(e.stderr, "wy account next: "+h)
 	}
-	run := e.exec
-	if run == nil {
-		run = execWithEnv
-	}
-	return run(path, argv, env)
+	return env
 }

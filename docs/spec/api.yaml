@@ -2287,6 +2287,10 @@ components:
           type: array
           description: "The tags the session gave itself (peers.md 3.4), sorted; omitted when none. An ended or gone session has none. The session list shows them as chips and its search matches them (pwa.md 3.0b)."
           items: {type: string, pattern: "^[a-z0-9-]{1,40}$"}
+        moved_from_seat: {type: [string, "null"], description: "The seat the session ran under before its last move to another account (identity.md 5.3, setup.md 8.6); null when it never moved. `seat` is the current one."}
+        moved_from_label: {type: [string, "null"], description: "That seat's label."}
+        moved_at: {type: [string, "null"], format: date-time, description: "When it last moved."}
+        moves: {type: integer, minimum: 0, description: "How many times it moved to another account."}
 
     SessionDetail:
       allOf:

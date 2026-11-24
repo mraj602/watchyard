@@ -27,6 +27,50 @@ type PeerSession struct {
 	// account (identity.md 5.3), "" when it never moved.
 	MovedFromAccount string
 	MovedFromLabel   string
+	// Past are the seats the session left in earlier moves (session_move), newest first,
+	// without the one in MovedFrom*.
+	Past []PastSeat
+}
+
+// PastSeat is a seat a session ran under before a move.
+type PastSeat struct{ Account, Label string }
+
+// pastSeats fills Past for the moved sessions of ps from session_move.
+func (s *Store) pastSeats(ctx context.Context, ps []PeerSession) error {
+	idx := map[string]int{}
+	for i, p := range ps {
+		if p.MovedFromAccount != "" {
+			idx[p.ID] = i
+		}
+	}
+	if len(idx) == 0 {
+		return nil
+	}
+	rows, err := s.r.QueryContext(ctx, `SELECT m.session_id, coalesce(se.account_uuid, ''), coalesce(se.label, '')
+		FROM session_move m JOIN seat se ON se.id = m.from_seat ORDER BY m.session_id, m.at DESC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var x PastSeat
+		if err := rows.Scan(&id, &x.Account, &x.Label); err != nil {
+			return err
+		}
+		i, ok := idx[id]
+		if !ok || x.Account == "" || x.Account == ps[i].Account || x.Account == ps[i].MovedFromAccount {
+			continue
+		}
+		dup := false
+		for _, y := range ps[i].Past {
+			dup = dup || y.Account == x.Account
+		}
+		if !dup {
+			ps[i].Past = append(ps[i].Past, x)
+		}
+	}
+	return rows.Err()
 }
 
 const peerSessionSelect = `SELECT s.id, coalesce(s.name, ''), coalesce(s.project, ''), coalesce(s.cwd, ''),
@@ -64,7 +108,11 @@ func (s *Store) PeerSessions(ctx context.Context, sinceMS int64) ([]PeerSession,
 			out = append(out, p)
 		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	return out, s.pastSeats(ctx, out)
 }
 
 // PeerSession reads one session, live or not; ok is false when the hub has never seen it.

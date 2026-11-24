@@ -31,7 +31,7 @@
 --       push.md 3.9; record.md 4.11).
 --   v20 seat.pick_mode, seat.pick_mode_src (setup.md 8.5, Kind).
 --   v21 peer_trust; peer_message.from_kind/via_tag (peers.md 4.1a, 10).
---   v22 session.moved_from_seat/moved_at (identity.md 5.3: a session moved to another account).
+--   v22 session.moved_from_seat/moved_at, session_move (identity.md 5.3: a session moved to another account).
 --
 -- Conventions
 --   * Times are INTEGER milliseconds since the Unix epoch, UTC (`*_at`, `ts`).
@@ -318,6 +318,18 @@ CREATE TABLE session (
 CREATE INDEX session_seat ON session(seat_id, last_event_at);
 CREATE INDEX session_machine ON session(machine_id, last_event_at);
 CREATE INDEX session_slot ON session(slot_id);
+
+-- Every move of a session to another account (v22, identity.md 5.3), so each seat it left keeps
+-- its peers handle as an alias (peers.md 3.2) after several moves.
+CREATE TABLE session_move (
+  session_id    TEXT    NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+  at            INTEGER NOT NULL,
+  from_seat     TEXT    REFERENCES seat(id),
+  to_seat       TEXT    REFERENCES seat(id),
+  from_slot     INTEGER REFERENCES slot(id),
+  to_slot       INTEGER REFERENCES slot(id)
+) STRICT;
+CREATE INDEX session_move_session ON session_move(session_id, at);
 
 -- Current state only (states.md). History is in hook_event.
 CREATE TABLE session_state (

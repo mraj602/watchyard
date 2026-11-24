@@ -56,3 +56,41 @@ func TestSessionMovesToAnotherSlot(t *testing.T) {
 		t.Fatalf("peer sessions %+v", ps)
 	}
 }
+
+// setup.md 8.6: a long session moved three times (4 -> 2 -> 5 -> 4) keeps every seat it left
+// as an alias source (session_move), and the board shows the last move and the count.
+func TestSessionMovesSeveralTimes(t *testing.T) {
+	f := newFixture(t)
+	f.now = t0.Add(time.Hour)
+	dev := f.device("A", xmA)
+	hook := func(slot, account string, at time.Time) *record.Record {
+		t.Helper()
+		r, err := record.NewHookEvent(record.Meta{Machine: xmA, Slot: slot, Seat: &record.Seat{Account: account, Org: "org-1"},
+			Client: "wy/1.3.2", Now: at}, []byte(`{"session_id":"`+xmSID+`","hook_event_name":"SessionStart","cwd":"/home/a/proj","source":"resume"}`), record.HookOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	f.ingest(dev, hook("~/.claude-4", "acct-4", t0))
+	f.ingest(dev, hook("~/.claude-2", "acct-2", t0.Add(10*time.Minute)))
+	f.ingest(dev, hook("~/.claude-5", "acct-5", t0.Add(20*time.Minute)))
+	f.ingest(dev, hook("~/.claude-4", "acct-4", t0.Add(30*time.Minute)))
+	ps, err := f.st.PeerSessions(f.ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ps) != 1 || ps[0].Account != "acct-4" || ps[0].MovedFromAccount != "acct-5" {
+		t.Fatalf("peer sessions %+v", ps)
+	}
+	if len(ps[0].Past) != 1 || ps[0].Past[0].Account != "acct-2" {
+		t.Fatalf("past seats %+v (want acct-2 only: acct-5 is the last, acct-4 the current)", ps[0].Past)
+	}
+	v, err := f.st.Session(f.ctx, xmSID, f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Moves != 3 || v.MovedFromSeat == nil || v.MovedAt == 0 {
+		t.Fatalf("board view: moves %d from %v at %v", v.Moves, v.MovedFromSeat, v.MovedAt)
+	}
+}

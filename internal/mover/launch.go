@@ -55,7 +55,8 @@ type Launch struct {
 	Wrapper int
 	// RemoteControl: Remote Control was on (the registry has a bridge session id).
 	RemoteControl bool
-	// Status from the registry: "idle" or "busy"; StatusSince when it last changed.
+	// Status from the registry: "idle", "busy" or "shell" (idle, with background shells
+	// running); StatusSince when it last changed.
 	Status      string
 	StatusSince time.Time
 }
@@ -129,7 +130,7 @@ var valueFlags = map[string]bool{
 	"--agents": true, "--agent": true, "--name": true, "-n": true, "--max-turns": true, "--fallback-model": true,
 	"--setting-sources": true, "--betas": true, "--permission-prompt-tool": true, "--resume": true, "-r": true,
 	"--session-id": true, "--debug-file": true, "--max-budget-usd": true, "--json-schema": true, "--tools": true,
-	"--effort": true, "--remote-control-name": true,
+	"--effort": true, "--remote-control-name": true, "--remote-control": true, "--rc": true,
 }
 
 var variadic = map[string]bool{"--add-dir": true, "--allowedTools": true, "--allowed-tools": true,
@@ -138,7 +139,7 @@ var variadic = map[string]bool{"--add-dir": true, "--allowedTools": true, "--all
 // dropFlags are what a resume replaces: the session it resumes or continues, a fresh id, a
 // fork, the background switch (set again by the mode).
 var dropFlags = map[string]bool{"--resume": true, "-r": true, "--continue": true, "-c": true, "--session-id": true,
-	"--fork-session": true, "--bg": true}
+	"--fork-session": true, "--bg": true, "--bg-spare": true}
 
 // KeptArgs are the session's flags without what a resume replaces and without its first
 // prompt (a positional argument): cwd, model, permission mode, settings, MCP and plugin
@@ -184,15 +185,19 @@ func ResumeArgs(l Launch, note string) []string {
 	args = append(args, "--resume", l.SessionID)
 	switch l.Kind {
 	case KindBackground:
-		args = append(args, "--bg", note)
+		args = append(args, "--bg", note+PromptTail)
 	case KindHeadless:
 		if !hasFlag(args, "-p", "--print") {
 			args = append([]string{"-p"}, args...)
 		}
-		args = append(args, note)
+		args = append(args, note+PromptTail)
 	}
 	return args
 }
+
+// PromptTail ends the note where it is the resumed session's prompt (background, headless):
+// without it a resumed background session stopped to ask what to do about its shells (e2e).
+const PromptTail = " Nothing to do about the move: carry on with your task, or stay idle if it was done."
 
 // Target is the account a session moves to.
 type Target struct {
@@ -244,14 +249,23 @@ func Shell(argv []string) string {
 
 // Note is the one line a moved session gets: as SessionStart context on resume, or as the
 // prompt of a background or headless resume.
-func Note(from, to string, at time.Time, mv Move) string {
+//
+// chain is the accounts of the session's earlier moves, oldest first, ending with from (none
+// for a first move): a later move names its number and the whole path in the same line, so
+// the session reads one current note instead of piecing together older ones.
+func Note(from, to string, at time.Time, mv Move, chain ...string) string {
 	s := fmt.Sprintf("Watchyard moved this session from %s to %s at %s", from, to, at.Local().Format("15:04"))
+	if len(chain) > 1 {
+		s += fmt.Sprintf(" (move %d: %s → %s)", len(chain), strings.Join(chain, " → "), to)
+	}
 	switch {
 	case mv.Window != "" && !mv.HitAt.IsZero() && mv.HitAt.After(at):
 		s += fmt.Sprintf(" (%s would have hit at %s, before its %s reset)", mv.Window, mv.HitAt.Local().Format("15:04"),
 			mv.ResetAt.Local().Format("15:04"))
 	case mv.Window != "":
 		s += fmt.Sprintf(" (stopped at the %s limit, which resets at %s)", mv.Window, mv.ResetAt.Local().Format("15:04"))
+	case mv.ByHand:
+		s += " (by hand, with wy move)"
 	}
-	return s + ". Background shells started before are still running but no longer tracked here: check their output files."
+	return s + ". Background shells started before keep running (Claude Code lists them as stopped; they are not) but are no longer tracked here: check their output files."
 }

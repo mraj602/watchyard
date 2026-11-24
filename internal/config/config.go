@@ -126,6 +126,9 @@ type Config struct {
 	Account struct {
 		SmartSwitch bool   `toml:"smart_switch"`
 		MoveLaunch  string `toml:"move_launch"`
+		// SmartSwitchScope is which sessions the switch may move: all (the default), tag:<tag>
+		// (sessions with that peers tag) or sessions:<id>,<id> (ids or 8+ character prefixes).
+		SmartSwitchScope string `toml:"smart_switch_scope"`
 	} `toml:"account"`
 }
 
@@ -194,6 +197,7 @@ func Defaults() Config {
 	c.Terminal.Source = TerminalSourceAuto
 	c.Peers.Delivery = "honest"
 	c.Peers.HubMayWiden = true
+	c.Account.SmartSwitchScope = "all"
 	c.Update.VerifyAttestation = true
 	c.Next = Next{Strategy: NextStrategyLanes, Session5h: 15, Session7d: 2, SessionMin: 120, StaleMin: 30,
 		ReserveMin: 12, StickyMargin: 10, Accounts: map[string]NextAccount{}}
@@ -222,47 +226,48 @@ type spec struct {
 }
 
 var known = map[string]spec{
-	"version":                   {kind: kInt, def: int64(Version), readOnly: true},
-	"hub.url":                   {kind: kString, def: ""},
-	"hub.insecure_lan":          {kind: kBool, def: false},
-	"hub.reach":                 {kind: kString, def: ReachDirect},
-	"hub.dial":                  {kind: kString, def: ""},
-	"push.direct.enabled":       {kind: kBool, def: false},
-	"push.direct.server":        {kind: kString, def: DefaultDirectServer},
-	"push.direct.private":       {kind: kBool, def: true},
-	"push.direct.after_s":       {kind: kInt, def: int64(DefaultDirectAfterS)},
-	"update.base_url":           {kind: kString, def: ""},
-	"update.verify_attestation": {kind: kBool, def: true},
-	"machines.hub_admin":        {kind: kString, def: ""},
-	"privacy.last_message":      {kind: kBool, def: true},
-	"hooks.tool_events":         {kind: kBool, def: false},
-	"statusline.wrap":           {kind: kString, def: ""},
-	"statusline.show":           {kind: kBool, def: true},
-	"outbox.fsync":              {kind: kBool, def: true},
-	"outbox.max_mb":             {kind: kInt, def: int64(50)},
-	"outbox.keep_days":          {kind: kInt, def: int64(7)},
-	"slots.extra":               {kind: kStrings, def: []any{}},
-	"share.primary":             {kind: kString, def: ""},
-	"share.mcp":                 {kind: kMCP, def: ""},
-	"share.mcp_exclude":         {kind: kStrings, def: []any{}},
-	"terminal.titles":           {kind: kBool, def: false, managed: "wy term titles on|off"},
-	"terminal.band":             {kind: kBool, def: true},
-	"terminal.pane_auto_open":   {kind: kBool, def: true},
-	"terminal.source":           {kind: kString, def: TerminalSourceAuto},
-	"terminal.ascii":            {kind: kBool, def: false},
-	"peers.enabled":             {kind: kBool, def: false},
-	"peers.delivery":            {kind: kString, def: "honest"},
-	"peers.hub_may_widen":       {kind: kBool, def: true},
-	"account.smart_switch":      {kind: kBool, def: false},
-	"account.move_launch":       {kind: kString, def: ""},
-	"next.strategy":             {kind: kString, def: NextStrategyLanes},
-	"next.model":                {kind: kString, def: ""},
-	"next.session_5h":           {kind: kFloat, def: float64(15)},
-	"next.session_7d":           {kind: kFloat, def: float64(2)},
-	"next.session_min":          {kind: kFloat, def: float64(120)},
-	"next.stale_min":            {kind: kFloat, def: float64(30)},
-	"next.reserve_min":          {kind: kFloat, def: float64(12)},
-	"next.sticky_margin":        {kind: kFloat, def: float64(10)},
+	"version":                    {kind: kInt, def: int64(Version), readOnly: true},
+	"hub.url":                    {kind: kString, def: ""},
+	"hub.insecure_lan":           {kind: kBool, def: false},
+	"hub.reach":                  {kind: kString, def: ReachDirect},
+	"hub.dial":                   {kind: kString, def: ""},
+	"push.direct.enabled":        {kind: kBool, def: false},
+	"push.direct.server":         {kind: kString, def: DefaultDirectServer},
+	"push.direct.private":        {kind: kBool, def: true},
+	"push.direct.after_s":        {kind: kInt, def: int64(DefaultDirectAfterS)},
+	"update.base_url":            {kind: kString, def: ""},
+	"update.verify_attestation":  {kind: kBool, def: true},
+	"machines.hub_admin":         {kind: kString, def: ""},
+	"privacy.last_message":       {kind: kBool, def: true},
+	"hooks.tool_events":          {kind: kBool, def: false},
+	"statusline.wrap":            {kind: kString, def: ""},
+	"statusline.show":            {kind: kBool, def: true},
+	"outbox.fsync":               {kind: kBool, def: true},
+	"outbox.max_mb":              {kind: kInt, def: int64(50)},
+	"outbox.keep_days":           {kind: kInt, def: int64(7)},
+	"slots.extra":                {kind: kStrings, def: []any{}},
+	"share.primary":              {kind: kString, def: ""},
+	"share.mcp":                  {kind: kMCP, def: ""},
+	"share.mcp_exclude":          {kind: kStrings, def: []any{}},
+	"terminal.titles":            {kind: kBool, def: false, managed: "wy term titles on|off"},
+	"terminal.band":              {kind: kBool, def: true},
+	"terminal.pane_auto_open":    {kind: kBool, def: true},
+	"terminal.source":            {kind: kString, def: TerminalSourceAuto},
+	"terminal.ascii":             {kind: kBool, def: false},
+	"peers.enabled":              {kind: kBool, def: false},
+	"peers.delivery":             {kind: kString, def: "honest"},
+	"peers.hub_may_widen":        {kind: kBool, def: true},
+	"account.smart_switch":       {kind: kBool, def: false},
+	"account.move_launch":        {kind: kString, def: ""},
+	"account.smart_switch_scope": {kind: kString, def: "all"},
+	"next.strategy":              {kind: kString, def: NextStrategyLanes},
+	"next.model":                 {kind: kString, def: ""},
+	"next.session_5h":            {kind: kFloat, def: float64(15)},
+	"next.session_7d":            {kind: kFloat, def: float64(2)},
+	"next.session_min":           {kind: kFloat, def: float64(120)},
+	"next.stale_min":             {kind: kFloat, def: float64(30)},
+	"next.reserve_min":           {kind: kFloat, def: float64(12)},
+	"next.sticky_margin":         {kind: kFloat, def: float64(10)},
 }
 
 // labelsPrefix: "slots.labels.<slot>" is a free-form key; the slot (e.g. "~/.claude-2")
@@ -597,6 +602,10 @@ func parse(key string, k kind, args []string) (any, error) {
 		if err := CheckTerminalSource(v); err != nil {
 			return nil, err
 		}
+	case "account.smart_switch_scope":
+		if err := CheckSwitchScope(v); err != nil {
+			return nil, err
+		}
 	}
 	if key == "hub.url" && v != "" {
 		if !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
@@ -688,6 +697,34 @@ var colourRe = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 // (setup.md step 2). Labels end up in launcher file names and launcher text, so slots.labels.* values
 // are checked on every write.
 var labelRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,23}$`)
+
+// CheckSwitchScope validates account.smart_switch_scope: all, tag:<tag> (a peers tag: a-z,
+// 0-9 and -, 1 to 40 characters) or sessions:<id>[,<id>...] (session ids or prefixes of at
+// least 8 characters).
+func CheckSwitchScope(v string) error {
+	switch {
+	case v == "all":
+		return nil
+	case strings.HasPrefix(v, "tag:"):
+		if t := v[4:]; scopeTagRe.MatchString(t) {
+			return nil
+		}
+	case strings.HasPrefix(v, "sessions:"):
+		ok := true
+		for _, id := range strings.Split(v[9:], ",") {
+			ok = ok && scopeIDRe.MatchString(strings.TrimSpace(id))
+		}
+		if ok {
+			return nil
+		}
+	}
+	return fmt.Errorf("account.smart_switch_scope: want all, tag:<tag> or sessions:<id>,<id>, got %q", v)
+}
+
+var (
+	scopeTagRe = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
+	scopeIDRe  = regexp.MustCompile(`^[A-Za-z0-9_-]{8,80}$`)
+)
 
 // ValidLabel reports whether s is a valid account label (`^[a-z0-9][a-z0-9-]{0,23}$`).
 func ValidLabel(s string) bool { return labelRe.MatchString(s) }

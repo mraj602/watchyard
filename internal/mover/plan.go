@@ -56,9 +56,14 @@ type Params struct {
 	// more than it costs (Benefit).
 	TokenRules bool
 	CacheTTL   time.Duration
+	// OncePer: with TokenRules, a session moves at most once within it (the 5-hour window).
+	OncePer time.Duration
 	// StallValue: the owner's time, 5-hour points per lane-hour stalled at a limit, added to the
 	// session's own burn in the benefit test.
 	StallValue float64
+	// DrainFirst: among destinations with room, the one whose 5-hour window resets soonest
+	// first (its room expires unused otherwise), instead of the picker's order.
+	DrainFirst bool
 	// LindyFrac: a session without an estimate is expected to run this many times its age
 	// again (0: 1, the Lindy rule).
 	LindyFrac float64
@@ -81,14 +86,23 @@ var (
 	// M4 (Smart Account Switch, the default): M3 with the helper burst in the rate, a 90-minute
 	// horizon (a far forecast hit waits for the next readings), 5 points of hysteresis instead
 	// of 10 (more accounts qualify as destinations) and the token rules.
-	M4 = Params{Name: "M4 Smart Account Switch (default)", Horizon: 90 * time.Minute, Slack: 5, Hysteresis: 5,
+	M4 = Params{Name: "M4 Smart Account Switch", Horizon: 90 * time.Minute, Slack: 5, Hysteresis: 5,
 		CostAware: true, MoveCostPerMTok: 1.2, MoveCostFixed: 0.2, WaitHit: 5 * time.Minute, Cooldown: 30 * time.Minute,
 		NoReturn: 2 * time.Hour, AccountMoves: 3, AccountWindow: 30 * time.Minute, BurstWeight: 0.5,
-		TokenRules: true, CacheTTL: 5 * time.Minute, StallValue: 5}
+		TokenRules: true, CacheTTL: 5 * time.Minute, OncePer: 5 * time.Hour, StallValue: 5}
+	// M5 (the default since the end-to-end pass): M4 with the prompt cache taken as cold only
+	// after an hour (a subscription keeps the main conversation's cache for an hour) and the
+	// destination with the soonest 5-hour reset first (its room expires unused otherwise).
+	// 300 runs per pattern: fewer stopped minutes, hits, moves and re-reads than M4.
+	M5 = func() Params {
+		p := M4
+		p.Name, p.CacheTTL, p.DrainFirst = "M5 M4 + 1 h cache, drain-first (default)", time.Hour, true
+		return p
+	}()
 	// DefaultParams is what the auto-mover and `wy move --plan` use.
-	DefaultParams = M4
+	DefaultParams = M5
 	// Strategies in the order the simulator reports them.
-	Strategies = []Params{M0, M1, M2, M3, M4}
+	Strategies = []Params{M0, M1, M2, M3, M4, M5}
 )
 
 // Record is a move that happened (for the cooldown, the rate limit and no ping-pong).
@@ -119,6 +133,9 @@ type Move struct {
 	Window  string
 	HitAt   time.Time
 	ResetAt time.Time
+	// ByHand: asked for with wy move <session>, not planned (the note says so when no
+	// forecast hit explains it).
+	ByHand bool
 	// Saved is the source's 5-hour points the session would burn before the reset; Cost what
 	// the move costs (points).
 	Saved, Cost float64
@@ -129,9 +146,23 @@ type Move struct {
 // that window resets (or that is already stopped), the sessions to move and where. It never
 // changes anything; the caller carries the moves out.
 func Plan(in Input) []Move {
+	moves, _ := PlanWhy(in)
+	return moves
+}
+
+// Skip is a session on an account forecast to hit that the pass leaves where it is, and why.
+type Skip struct {
+	Session string `json:"session"`
+	Account string `json:"account"`
+	Why     string `json:"why"`
+}
+
+// PlanWhy is Plan plus the sessions it considered and left, with the reason (wy move --plan).
+func PlanWhy(in Input) ([]Move, []Skip) {
+	var skips []Skip
 	p := in.Params
 	if p.Off {
-		return nil
+		return nil, nil
 	}
 	now := in.Now
 	byAcc := map[string][]Session{}
@@ -217,19 +248,28 @@ func Plan(in Input) []Move {
 			if p.Fixed5h > 0 && n > 0 {
 				break
 			}
+			skip := func(why string) { skips = append(skips, Skip{s.ID, a.Key, why}) }
 			if s.Pinned {
+				skip("pinned, or outside the scope")
 				continue
 			}
 			if l, ok := lastMove[s.ID]; ok && p.Cooldown > 0 && now.Sub(l.At) < p.Cooldown {
+				skip("moved " + now.Sub(l.At).Round(time.Minute).String() + " ago (cooldown)")
 				continue
 			}
 			hitIn := max(0, sc.f.HitIn)
 			if p.TokenRules && !s.Stopped {
-				if s.Attended || p.remaining(s) <= hitIn {
-					continue // the owner is at it, or it ends before the hit
+				if s.Attended {
+					skip("the owner typed into it in the last minutes")
+					continue
 				}
-				if !s.MovedAt.IsZero() && now.Sub(s.MovedAt) < 5*time.Hour {
-					continue // once per window
+				if p.remaining(s) <= hitIn {
+					skip("expected to end before the hit")
+					continue
+				}
+				if p.OncePer > 0 && !s.MovedAt.IsZero() && now.Sub(s.MovedAt) < p.OncePer {
+					skip("already moved once in this window")
+					continue
 				}
 			}
 			mv := Move{Session: s.ID, From: a.Key, Window: sc.f.Window, HitAt: now.Add(hitIn),
@@ -239,13 +279,15 @@ func Plan(in Input) []Move {
 			if p.TokenRules {
 				stall := math.Max(0, min(p.remaining(s), sc.f.ResetIn).Hours()-hitIn.Hours())
 				if stall*(p.rate(s)+p.StallValue) <= mv.Cost {
-					continue // the move costs more than the stall it saves
+					skip(fmt.Sprintf("the move costs more (%.1f points) than the stall it saves", mv.Cost))
+					continue
 				}
 			}
 			midTurn := !s.Idle && !s.Stopped
 			if midTurn && !p.MidTurn {
 				if sc.f.HitIn > p.WaitHit {
-					continue // moved at its next stop, if the account still needs it
+					skip("mid-turn: moved at its next stop if the account still needs it")
+					continue
 				}
 				mv.Wait = true
 			}
@@ -264,7 +306,7 @@ func Plan(in Input) []Move {
 			left = without(left, s.ID)
 		}
 	}
-	return out
+	return out, skips
 }
 
 func stoppedAny(ss []Session) bool {
@@ -362,9 +404,25 @@ func (p Params) destination(in Input, s Session, last Record, movedIn map[string
 		ss = append(ss, x)
 	}
 	why := "no account has room for it until its reset"
-	for _, protected := range []bool{false, true} {
-		for _, a := range in.Accounts {
-			if a.Protected != protected || a.Key == s.Account || a.Stale || a.Excluded {
+	// The same organisation first: a session resumed under another organisation loses its
+	// preserved thinking ("Claude can't use thinking from another organization") and rereads
+	// and re-thinks at more tokens (e2e).
+	type tier struct{ protected, sameOrg bool }
+	accs := in.Accounts
+	if p.DrainFirst {
+		accs = append([]Account(nil), accs...)
+		far := in.Now.Add(1000 * time.Hour)
+		at := func(a Account) time.Time {
+			if a.W5.Reset.After(in.Now) {
+				return a.W5.Reset
+			}
+			return far // not started: its room does not expire
+		}
+		sort.SliceStable(accs, func(i, j int) bool { return at(accs[i]).Before(at(accs[j])) })
+	}
+	for _, tr := range []tier{{false, true}, {false, false}, {true, true}, {true, false}} {
+		for _, a := range accs {
+			if a.Protected != tr.protected || (Org(a.Key) == Org(s.Account)) != tr.sameOrg || a.Key == s.Account || a.Stale || a.Excluded {
 				continue
 			}
 			if p.NoReturn > 0 && last.From == a.Key && in.Now.Sub(last.At) < p.NoReturn {
@@ -395,6 +453,14 @@ func (p Params) destination(in Input, s Session, last Record, movedIn map[string
 		}
 	}
 	return "", why
+}
+
+// Org is the organisation part of an account key ("acct:<account>/<org>"; "" when none).
+func Org(key string) string {
+	if i := strings.LastIndexByte(key, '/'); i >= 0 {
+		return key[i+1:]
+	}
+	return ""
 }
 
 // reason is the move's one-line explanation.

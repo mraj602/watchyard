@@ -26,6 +26,9 @@ const (
 	OpLease    = "lease"
 	OpLaunched = "launched"
 	OpEnded    = "ended"
+	// OpBind gives the lease with ID its session id after the launch: claude --bg ignores
+	// --session-id and its supervisor names the session (setup.md 8.5).
+	OpBind = "bind"
 )
 
 // Days is how many UTC day files are read (today and the 7 before it); older files are
@@ -65,6 +68,9 @@ type Line struct {
 	FinishBy *time.Time `json:"finish_by,omitempty"`
 	// MovedFrom: the session moved here from the account with this label (setup.md 8.6).
 	MovedFrom string `json:"moved_from,omitempty"`
+	// Parent is the session that asked for the lease (its id), when it was asked from inside
+	// a session: Watchyard tells it when the lane moves (setup.md 8.6).
+	Parent string `json:"parent,omitempty"`
 }
 
 // Lease is a lease line with the times of its `launched` and `ended` lines (zero when absent).
@@ -107,6 +113,7 @@ func (g Ledger) Read(now time.Time) ([]Lease, int, error) {
 	var out []Lease
 	skipped := 0
 	latest := map[string]int{} // session id -> index of its newest lease so far
+	byID := map[string]int{}   // lease id -> index
 	for i := Days - 1; i >= 0; i-- {
 		name := filepath.Join(g.days(), dayName(now.AddDate(0, 0, -i)))
 		b, err := os.ReadFile(name)
@@ -122,6 +129,14 @@ func (g Ledger) Read(now time.Time) ([]Lease, int, error) {
 				out = append(out, Lease{Line: l})
 				if l.SessionID != "" {
 					latest[l.SessionID] = len(out) - 1
+				}
+				if l.ID != "" {
+					byID[l.ID] = len(out) - 1
+				}
+			case OpBind:
+				if j, ok := byID[l.ID]; ok {
+					out[j].SessionID = l.SessionID
+					latest[l.SessionID] = j
 				}
 			case OpLaunched, OpEnded:
 				j, ok := latest[l.SessionID]
@@ -176,6 +191,8 @@ func parse(raw []byte) (Line, bool) {
 		return l, l.Key != ""
 	case OpLaunched, OpEnded:
 		return l, l.SessionID != ""
+	case OpBind:
+		return l, l.SessionID != "" && l.ID != ""
 	}
 	return Line{}, false
 }
@@ -290,7 +307,7 @@ func (g Ledger) Mark(sid, op string, now time.Time) (bool, error) {
 				return
 			}
 			switch l.Op {
-			case OpLease:
+			case OpLease, OpBind:
 				found, done = true, false
 			case op:
 				if found {

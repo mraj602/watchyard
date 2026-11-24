@@ -25,8 +25,11 @@ const (
 	simMidTurn   = 3   // busy minutes a lane loses when it is killed mid-turn
 	simCostFixed = 0.2 // the true cost of a move, 5-hour points: fixed plus per million context tokens
 	simCostMTok  = 1.2
-	simCacheTTL  = 5 // minutes
 )
+
+// simCacheTTL is the true prompt-cache lifetime, minutes: WY_SIM_TTL, default 60 (a
+// subscription's main conversation keeps its cache for an hour; research, REPORT-MOVE-E2E).
+var simCacheTTL = envInt("WY_SIM_TTL", 60)
 
 // simHolds reports whether the picker holds a new lane of rate off account i: its 5-hour window
 // with the running lanes (true rates, the rest of their work) and the new lane for 2 hours
@@ -209,7 +212,7 @@ func simulate(p Params, pat simPattern, seed uint64, check func(Input, []Move)) 
 	place := func(m int, rate float64) int {
 		best := -1
 		for i, a := range accs {
-			if a.protected || a.l5 >= 90 || a.l7 >= 95 || simHolds(accs, lanes, i, m, rate) {
+			if a.protected || a.l5 >= 90 || a.l7 >= 95 || (!looseFloor(p) && simHolds(accs, lanes, i, m, rate)) {
 				continue
 			}
 			if best < 0 || a.l5 < accs[best].l5 {
@@ -393,6 +396,10 @@ func simulate(p Params, pat simPattern, seed uint64, check func(Input, []Move)) 
 	return res
 }
 
+// looseFloor: the picker variant that skips its forward-burn hold when the mover is on (a
+// variant of the optimization pass, never the default).
+func looseFloor(p Params) bool { return strings.Contains(p.Name, "loose picker") && !p.Off }
+
 func clamp(x float64) float64 { return math.Min(100, math.Max(0, x)) }
 
 func envInt(k string, def int) int {
@@ -400,6 +407,19 @@ func envInt(k string, def int) int {
 		return n
 	}
 	return def
+}
+
+// SimVariants are the optimization pass's candidates (WY_SIM_VARIANTS=1).
+func SimVariants() []Params {
+	ttl := M4
+	ttl.Name, ttl.CacheTTL = "V1 M4, cache TTL 60 min", time.Hour
+	drain := M4
+	drain.Name, drain.DrainFirst = "V2 M4 + drain-first destination", true
+	loose := M4
+	loose.Name = "V3 M4 + loose picker floor"
+	both := ttl
+	both.Name, both.DrainFirst = "V4 V1 + drain-first", true
+	return []Params{ttl, drain, loose, both}
 }
 
 // TestSimulateStrategies compares M0-M4 on every pattern and writes the table to WY_SIM_OUT.
@@ -414,9 +434,13 @@ func TestSimulateStrategies(t *testing.T) {
 		"re-reading context after moves (a cold cache costs only the fixed part), re-read Mtok = context tokens re-read uncached by moves, protected = 5-hour points burnt on the protected account, waste = weekly percent unused at a weekly reset (per reset), mid-turn = lanes killed mid-turn, waits = planned waits.\n\n",
 		runs, simDays, simPass)
 	totals := map[string]simResult{}
+	strategies := Strategies
+	if os.Getenv("WY_SIM_VARIANTS") != "" {
+		strategies = append(append([]Params(nil), Strategies...), SimVariants()...)
+	}
 	for _, pat := range simPatterns {
 		fmt.Fprintf(&b, "### %s\n\n| strategy | stopped | hits | moves | cost | re-read Mtok | ping-pong | protected | waste | mid-turn | waits | no room |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n", pat.name)
-		for _, p := range Strategies {
+		for _, p := range strategies {
 			sum := runMany(p, pat, runs, par)
 			tot := totals[p.Name]
 			tot.add(sum)
@@ -426,7 +450,7 @@ func TestSimulateStrategies(t *testing.T) {
 		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "### all patterns\n\n| strategy | stopped | hits | moves | cost | re-read Mtok | ping-pong | protected | waste | mid-turn | waits | no room |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n")
-	for _, p := range Strategies {
+	for _, p := range strategies {
 		writeRow(&b, p.Name, totals[p.Name], float64(runs*simDays*len(simPatterns)))
 	}
 	t.Log("\n" + b.String())
@@ -483,7 +507,7 @@ func TestPlanInvariants(t *testing.T) {
 	if testing.Short() {
 		runs = 3
 	}
-	for _, p := range []Params{M2, M3, M4} {
+	for _, p := range []Params{M2, M3, M4, M5} {
 		for _, pat := range simPatterns {
 			for i := range runs {
 				fails := 0

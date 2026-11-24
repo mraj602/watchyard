@@ -157,7 +157,9 @@ files `<config>/sessions/<digits>.json` (pid, session id, cwd, socket path, name
    setup.md 8.6): a *live* record of it from another slot of the same machine, newer than every
    record of it seen so far (a `hook_event`, or a complete `session_list` that lists it), gives
    it that slot and that record's seat (hub: `session.moved_from_seat` keeps the seat it left,
-   `moved_at` when; schema v22). Its token rows and limit hits keep their seats: what it used
+   `moved_at` when; schema v22) and the table `session_move` one row per move (`at`,
+   `from_seat`, `to_seat`, `from_slot`, `to_slot`), so the board API's `moves` counts them and
+   peers keep every seat it left as an alias. Its token rows and limit hits keep their seats: what it used
    before the move stays on the old account. A late record of the old slot (older than what
    was seen) does not move it back, and the old slot's complete lists no longer count it as
    missing, so it is not marked gone. `wy status` and the board apply the same rule to the

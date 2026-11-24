@@ -58,6 +58,7 @@ var peersEnv = func() (peerEnv, error) {
 			Home: home, State: dirs.State.Path, Runtime: os.Getenv("XDG_RUNTIME_DIR"), Machine: m,
 			SlotExtra: cfg.Slots.Extra, SlotLabels: cfg.Slots.Labels,
 			Proc: peerspkg.NewProc(), StartPID: os.Getppid(), FS: identity.OSFS{},
+			PastSlots: movedSlots(dirs.State.Path), MarkerTags: scopeTags(cfg.Account.SmartSwitchScope),
 		},
 		Enabled: cfg.Peers.Enabled, NoHubWiden: !cfg.Peers.HubMayWiden,
 	}, nil
@@ -372,7 +373,7 @@ func peersDeliver(pe peerEnv, caller peerspkg.Caller, to, text string, ttl time.
 		if rf := rep.Refusal(); rf != nil {
 			return peerspkg.SendResult{}, rf, nil
 		}
-		res := peerspkg.SendResult{Msg: rep.Msg, Thread: rep.Thread, Target: peerspkg.Session{Handle: rep.To}, HeldLikely: rep.HeldLikely}
+		res := peerspkg.SendResult{Msg: rep.Msg, Thread: rep.Thread, Target: peerspkg.Session{Handle: rep.To}, HeldLikely: rep.HeldLikely, Via: rep.Via}
 		if rep.Status == "queued" {
 			res.Status, res.Offline, res.Unconfirmed = "queued", rep.Detail == "offline", rep.Detail == "unconfirmed"
 			res.Expires, _ = time.Parse(time.RFC3339, rep.Expires)
