@@ -57,6 +57,8 @@ type simPattern struct {
 	// setup changes the accounts after the default draw (weekly pressure, orgs, logins).
 	setup func(r *rand.Rand, accs []*simAcc)
 	orgs  bool // the move_orgs rows apply
+	// integer: readings are whole percents (floored), as Claude Code reports them.
+	integer bool
 }
 
 func uniform(r *rand.Rand, lo, hi float64) float64 { return lo + r.Float64()*(hi-lo) }
@@ -145,6 +147,16 @@ var simPatterns = []simPattern{
 			}
 		}
 	}},
+	// remote-integer: the owner's own sessions run on another machine on four accounts (the
+	// hub measures two of them), this machine has a few lanes, readings are whole percents.
+	{name: "remote-integer", lag: [2]int{1, 10}, noise: 0.3, rateNoise: 0.15, integer: true, lanes: func(r *rand.Rand) []laneSpec {
+		return spread(r, 10, 60, 300, 8, 18, 0.2, 0.5, 3)
+	}, setup: func(r *rand.Rand, accs []*simAcc) {
+		for k, i := range r.Perm(simAccounts)[:4] {
+			accs[i].other = uniform(r, 2, 9) // 2-9 %/h of the other machine's sessions
+			accs[i].otherSeen = k < 2
+		}
+	}},
 	{name: "noisy", lag: [2]int{3, 10}, noise: 3, rateNoise: 0.4, lanes: func(r *rand.Rand) []laneSpec {
 		return append(append(spread(r, 10, 60, 240, 10, 18, 0.3, 0.3, 5), spread(r, 6, 240, 600, 16, 26, 0.05, 0.6, 2)...), pileups(r, 900)...)
 	}},
@@ -175,6 +187,9 @@ type simLane struct {
 	coord      *coordSpec
 	lastBurn   int
 	wasStopped bool
+	// mf: its model's re-read factor (opus 5, sonnet 3); expMult: the picker's estimate of its
+	// remaining time over the truth.
+	mf, expMult float64
 }
 
 // rate10 is the lane's measured burn over the last 10 minutes, points per hour.
@@ -199,8 +214,11 @@ type simAcc struct {
 	l5, l7    float64
 	r5, r7    int // the minute the window resets; r5 -1: not started
 	other     float64
-	cum       float64 // local burn so far
-	h         []simObs
+	// otherSeen: the hub measures the other machines' sessions on it (their leases' burn).
+	otherSeen  bool
+	readStreak int     // passes in a row the readings rose over twice the meter
+	cum        float64 // local burn so far
+	h          []simObs
 }
 
 type simResult struct {
@@ -212,7 +230,10 @@ type simResult struct {
 	PinHits7d, CoordBurn, OwnerMoves, PinStoppedNoRoom, PinHitsShared                                      float64
 	RunsOver80                                                                                             float64 // runs whose protected level went over 80
 	Over80Min, Over80Owner, Over80NoRoom, Over80Other                                                      float64 // protected minutes over 80, by cause
-	runs                                                                                                   float64
+	// FalseMoves: moves whose source was under its caps at its true burn; ReReadCost: re-read
+	// context in opus-equivalent Mtok (× model factor / 5).
+	FalseMoves, ReReadCost float64
+	runs                   float64
 }
 
 func (r *simResult) add(o simResult) {
@@ -236,6 +257,8 @@ func (r *simResult) add(o simResult) {
 	r.MaxProt7 += o.MaxProt7
 	r.RunsOver80 += o.RunsOver80
 	r.Over80Min += o.Over80Min
+	r.FalseMoves += o.FalseMoves
+	r.ReReadCost += o.ReReadCost
 	r.Over80Owner += o.Over80Owner
 	r.Over80NoRoom += o.Over80NoRoom
 	r.Over80Other += o.Over80Other
@@ -272,6 +295,10 @@ type simStrat struct {
 	// ownerActs: the owner moves an alerted pinned session by hand 30 minutes after the alert
 	// (to the account wy move would pick).
 	ownerActs bool
+	// oldRate: the account's burn as before the live-run fixes (the reading delta over 10
+	// minutes, used at once; other machines' sessions not counted from the hub). pickProj:
+	// the picker places no lane where the switch's projection would go over its caps.
+	oldRate, pickProj bool
 }
 
 func v2(name string, f func(p *Params)) simStrat {
@@ -346,7 +373,13 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 	byID := map[string]*simLane{}
 	for i, s := range specs {
 		l := &simLane{laneSpec: s, id: fmt.Sprintf("s%03d", i), r: rand.New(rand.NewPCG(s.seed, 4)), movedFrm: -1, typed: -1, ctx: 30_000,
-			sr: rand.New(rand.NewPCG(s.seed, 5)), pendTo: -1}
+			sr: rand.New(rand.NewPCG(s.seed, 5)), pendTo: -1, mf: 5, expMult: 1}
+		if mr := rand.New(rand.NewPCG(s.seed, 6)); true {
+			if mr.Float64() < 0.4 {
+				l.mf = 3 // a sonnet lane
+			}
+			l.expMult = logUniform(mr, 0.5, 2)
+		}
 		lanes[i], byID[l.id] = l, l
 	}
 	if st.coord {
@@ -405,9 +438,32 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 		if !useR {
 			r5, r7 = make([]float64, len(accs)), make([]float64, len(accs))
 		}
+		// over: the switch's projection (projection.Levels via Project) with the new lane's
+		// estimate added goes over its caps (the picker's check while the switch is on).
+		over := func(i int) bool {
+			if !st.pickProj {
+				return false
+			}
+			a := accs[i]
+			r := est
+			for _, l := range lanes {
+				if l.on && !l.done && !l.stopped && l.acc == i {
+					r += l.rate10()
+				}
+			}
+			if a.otherSeen {
+				r += a.other
+			}
+			acc := Account{Key: a.key, Protected: a.protected, Ratio: simRatio, Rate: r, Reserve5: r5[i], Reserve7: r7[i],
+				W7: Window{Level: a.l7, Reset: simAt(a.r7)}}
+			if a.r5 > m {
+				acc.W5 = Window{Level: a.l5, Reset: simAt(a.r5)}
+			}
+			return st.p.Project(acc, nil, 0, simAt(m)).Window != ""
+		}
 		best := -1
 		for i, a := range accs {
-			if !a.loggedIn || a.protected || a.l5 >= 90-r5[i] || a.l7 >= 95-r7[i] || holds(i, m, est, r5[i]) {
+			if !a.loggedIn || a.protected || a.l5 >= 90-r5[i] || a.l7 >= 95-r7[i] || holds(i, m, est, r5[i]) || over(i) {
 				continue
 			}
 			if best < 0 || a.l5 < accs[best].l5 {
@@ -418,7 +474,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			return best
 		}
 		for i, a := range accs {
-			if a.loggedIn && a.protected && a.l5 < 60-r5[i] && a.l7 < 70-r7[i] && (best < 0 || a.l5 < accs[best].l5) {
+			if a.loggedIn && a.protected && a.l5 < 60-r5[i] && a.l7 < 70-r7[i] && !over(i) && (best < 0 || a.l5 < accs[best].l5) {
 				best = i
 			}
 		}
@@ -427,7 +483,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 		}
 		// No room under the soft limits: the picker's hard limits (98 less the reserve), then any.
 		for i, a := range accs {
-			if a.loggedIn && !a.protected && a.l5 < 98-r5[i] && a.l7 < 98-r7[i] && (best < 0 || a.l5 < accs[best].l5) {
+			if a.loggedIn && !a.protected && a.l5 < 98-r5[i] && a.l7 < 98-r7[i] && !over(i) && (best < 0 || a.l5 < accs[best].l5) {
 				best = i
 			}
 		}
@@ -672,10 +728,17 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 		lag := pat.lag[0] + obsR.IntN(pat.lag[1]-pat.lag[0]+1)
 		// What the machine reads: the lagged reading plus the local meter since it.
 		type seen struct {
-			l5, l7 float64
-			r5, r7 int
-			rate   float64
-			note   string
+			l5, l7       float64
+			r5, r7       int
+			rate, meter  float64
+			note         string
+			fromReadings bool
+		}
+		read := func(x float64) float64 {
+			if pat.integer {
+				return math.Floor(clamp(x))
+			}
+			return x
 		}
 		view := make([]seen, len(accs))
 		for i, a := range accs {
@@ -689,6 +752,9 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 					v.l5 = a.l5 // a new window since the reading: the meter has all of it (approximately)
 				}
 				v.l5 = clamp(v.l5 + pat.noise*obsR.NormFloat64())
+				if pat.integer {
+					v.l5 = clamp(read(o.l5+pat.noise*obsR.NormFloat64()) + v.l5 - o.l5)
+				}
 			}
 			if o.r7 == a.r7 {
 				v.l7 = o.l7 + since/simRatio
@@ -703,13 +769,52 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 					meter += l.rate10()
 				}
 			}
-			v.rate = meter
-			if j := len(a.h) - 1 - lag - 10; j >= 0 {
-				o1 := a.h[j]
-				if o1.r5 == o.r5 && o.r5 >= 0 {
-					if d := (o.l5 - o1.l5 + pat.noise*obsR.NormFloat64()) * 6; d > 2*meter && d > 1 {
-						v.rate, v.note = d, "reading delta"
+			if !st.oldRate && a.otherSeen {
+				meter += a.other // other machines' sessions the hub measured
+			}
+			v.rate, v.meter = meter, meter
+			if st.oldRate {
+				if j := len(a.h) - 1 - lag - 10; j >= 0 {
+					o1 := a.h[j]
+					if o1.r5 == o.r5 && o.r5 >= 0 {
+						if d := (read(o.l5+pat.noise*obsR.NormFloat64()) - read(o1.l5+pat.noise*obsR.NormFloat64())) * 6; d > 2*meter && d > 1 {
+							v.rate, v.note, v.fromReadings = d, "reading delta", true
+						}
 					}
+				}
+			} else if o.r5 >= 0 {
+				// The slope of the readings of the last 30 minutes, 5 minutes apart, of this window;
+				// used when over twice the meter on two passes in a row.
+				var xs, ys []float64
+				for k := 0; k <= 30; k += 5 {
+					j := len(a.h) - 1 - lag - k
+					if j < 0 || a.h[j].r5 != o.r5 {
+						break
+					}
+					xs, ys = append(xs, -float64(k)/60), append(ys, read(a.h[j].l5+pat.noise*obsR.NormFloat64()))
+				}
+				used := false
+				if len(xs) >= 4 {
+					var mx, my float64
+					for q := range xs {
+						mx, my = mx+xs[q], my+ys[q]
+					}
+					mx, my = mx/float64(len(xs)), my/float64(len(xs))
+					var sxy, sxx float64
+					for q := range xs {
+						sxy += (xs[q] - mx) * (ys[q] - my)
+						sxx += (xs[q] - mx) * (xs[q] - mx)
+					}
+					if d := math.Max(0, sxy/sxx); d > 2*meter && d > 1 {
+						used = true
+						a.readStreak++
+						if a.readStreak >= 2 {
+							v.rate, v.note, v.fromReadings = d, "readings", true
+						}
+					}
+				}
+				if !used {
+					a.readStreak = 0
 				}
 			}
 			view[i] = v
@@ -761,7 +866,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 		for i, a := range accs {
 			v := view[i]
 			acc := Account{Key: a.key, Label: a.key, Protected: a.protected, Ratio: simRatio, Rate: v.rate, RateNote: v.note, LoggedIn: a.loggedIn,
-				Pins: pinsOn[i], Reserve5: rsv5[i], Reserve7: rsv7[i]}
+				Pins: pinsOn[i], Reserve5: rsv5[i], Reserve7: rsv7[i], Meter: v.meter, FromReadings: v.fromReadings && !st.oldRate}
 			if v.r5 > m {
 				acc.W5 = Window{Level: v.l5, Reset: simAt(v.r5)}
 			}
@@ -773,7 +878,11 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 				continue
 			}
 			s := Session{ID: l.id, Account: accs[l.acc].key, Rate: l.rate10(), Busy: l.busy > 0 && l.restart == 0 && !l.stopped,
-				Stopped: l.stopped, Interactive: l.owner, Movable: true, Context: l.ctx, Pinned: l.coord != nil && st.pinned}
+				Stopped: l.stopped, Interactive: l.owner, Movable: true, Context: l.ctx, Pinned: l.coord != nil && st.pinned,
+				ModelFactor: l.mf, Started: simAt(l.start)}
+			if l.coord == nil && !l.owner && l.work > l.age {
+				s.Expected = time.Duration(float64(l.work-l.age)*l.expMult) * time.Minute // the picker's estimate
+			}
 			if l.typed >= 0 {
 				s.Typed = simAt(l.typed)
 			}
@@ -825,6 +934,25 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			if mv.To == "" {
 				res.NoDest++
 				continue
+			}
+			// A false move: at its true burn (its lanes' and every other machine's) the source
+			// was under its caps.
+			if i := accIdx[mv.From]; true {
+				a := accs[i]
+				tr := a.other
+				for _, x := range lanes {
+					if x.on && !x.done && !x.stopped && x.acc == i {
+						tr += x.rate10()
+					}
+				}
+				ta := Account{Key: a.key, Protected: a.protected, Ratio: simRatio, Rate: tr, Reserve5: rsv5[i], Reserve7: rsv7[i],
+					W7: Window{Level: a.l7, Reset: simAt(a.r7)}}
+				if a.r5 > m {
+					ta.W5 = Window{Level: a.l5, Reset: simAt(a.r5)}
+				}
+				if st.p.Project(ta, nil, 0, simAt(m)).Window == "" && !byID[mv.Session].stopped {
+					res.FalseMoves++
+				}
 			}
 			l := byID[mv.Session]
 			if l.pendTo >= 0 {
@@ -880,8 +1008,9 @@ func execMove(res *simResult, l *simLane, accs []*simAcc, to, m int, burnAcc fun
 	mid := l.busy > 0 && !l.stopped && l.restart == 0
 	cost := simCostFixed
 	if !(l.busy == 0 && l.idleFor >= simCacheTTL) {
-		cost += simCostMTok * l.ctx / 1e6
+		cost += simCostMTok * l.ctx / 1e6 * l.mf / 5
 		res.ReReadMTok += l.ctx / 1e6
+		res.ReReadCost += l.ctx / 1e6 * l.mf / 5
 		if mid {
 			res.MidTurnMTok += l.ctx / 1e6
 		}
@@ -1098,6 +1227,7 @@ func invariantRun(st simStrat, pat simPattern, i int) []string {
 			byAcc[s.Account] = append(byAcc[s.Account], s)
 		}
 		delta := map[string]float64{}
+		horizon := map[string]bool{} // judged on the horizon rule (above)
 		into := map[string]int{}
 		last := map[string]Record{}
 		for _, rc := range in.Recent {
@@ -1135,13 +1265,29 @@ func invariantRun(st simStrat, pat simPattern, i int) []string {
 			if into[mv.To] > p.AccountMoves {
 				fail(in, "%d moves into %s within %s", into[mv.To], mv.To, p.AccountWindow)
 			}
+			if p.DestHorizon > 0 && !a.Protected {
+				// The horizon rule: its own projection (with the moves planned before) plus
+				// this session for the horizon.
+				pr := p.Project(a, byAcc[mv.To], delta[mv.To], in.Now)
+				h := s.Expected
+				if h <= 0 {
+					h = p.DestHorizon
+				}
+				h = max(min(h, pr.Reset5), DestFloor)
+				p5 := pr.P5 + s.Rate*min(h, pr.Reset5).Hours()
+				p7 := pr.P7 + s.Rate/pr.ratio*math.Min(h.Hours(), math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours()))
+				if p5 > pr.Cap5-p.Hysteresis+1e-9 || p7 > pr.Cap7-p.Hysteresis+1e-9 {
+					fail(in, "destination %s projects 5h %.1f / 7d %.1f with the moved burn for %s (caps %v/%v)", mv.To, p5, p7, h, pr.Cap5, pr.Cap7)
+				}
+				horizon[mv.To] = true
+			}
 			delta[mv.To] += s.Rate
 			if !s.Stopped {
 				delta[mv.From] -= s.Rate
 			}
 		}
 		for key, d := range delta {
-			if d <= 0 {
+			if d <= 0 || horizon[key] {
 				continue
 			}
 			pr := p.Project(accs[key], byAcc[key], d, in.Now)

@@ -394,6 +394,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	}
 	w.pins = livePins(w.launches, w.keyOfDir, pins, tags, now)
 	in.PinReserves = pinReserves(params, w.pins)
+	in.Mover = moverView(cfg, w.launches, w.keyOfDir, ob.Tokens, in.Candidates, now)
 	var lin *picker.LaneInput
 	in.OnLanes = func(l picker.LaneInput) { lin = &l }
 	res, err := picker.Decide(in)
@@ -437,9 +438,13 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	// Sessions: the registry of every folder, with their burn (their token rows of the burn
 	// window, helpers included, × f) and their context.
 	expect := map[string]time.Duration{}
+	started := map[string]time.Time{}
 	for _, l := range lanes {
 		if l.Expect > 0 {
 			expect[l.SID] = max(0, l.Expect-now.Sub(l.T0))
+		}
+		if l.SID != "" {
+			started[l.SID] = l.T0
 		}
 	}
 	w.tokens, w.f5 = ob.Tokens, f5
@@ -507,6 +512,8 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		}
 		s := mover.Session{ID: l.SessionID, Account: key, Name: l.Name, Expected: expect[l.SessionID]}
 		s.Rate = burns[l.SessionID].rate(f5[key])
+		s.Started = started[l.SessionID]
+		s.ModelFactor = mover.ModelFactor(topModel(burns[l.SessionID].Calls, l.Argv))
 		if inject != nil {
 			if r, ok := inject.rate(l.SessionID); ok {
 				s.Rate = r
@@ -539,32 +546,52 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		w.input.Sessions = append(w.input.Sessions, s)
 		w.byID[s.ID] = s
 	}
-	// The account's burn: its sessions' meter here, cross-checked with the reading delta
-	// (which also sees other machines and claude.ai): the larger when they disagree by more
-	// than 2x.
+	// The account's burn (setup.md 8.6, Burn): its sessions' meter here plus other machines'
+	// sessions the hub measured, cross-checked with the readings' slope (which also sees
+	// claude.ai and sessions the hub does not measure): the readings are used when they are
+	// over twice the meter on two passes in a row.
 	meter := map[string]float64{}
 	for _, s := range w.input.Sessions {
 		if !s.Stopped {
 			meter[s.Account] += s.Rate
 		}
 	}
+	readStreak := map[string]int{}
 	for i := range w.input.Accounts {
 		a := &w.input.Accounts[i]
-		a.Rate = meter[a.Key]
-		if inject != nil && inject.Accounts[a.Label].Rate != nil {
-			a.Rate, a.RateNote = *inject.Accounts[a.Label].Rate, "injected"
-			continue
+		remote := remoteRate(in.Candidates, w.keyOfDir, a.Key, now, params.BurnWindow, f5[a.Key])
+		a.Rate = meter[a.Key] + remote
+		a.Meter = a.Rate
+		if remote > 0 {
+			a.RateNote = fmt.Sprintf("%.1f points/h of it from other machines' sessions (hub)", remote)
 		}
-		if rd, ok := readingRate(in.Candidates, w.keyOfDir, a.Key, now, params.BurnWindow); ok {
-			switch {
-			case rd > 2*a.Rate && rd > 1:
-				a.RateNote = fmt.Sprintf("the readings rose %.1f points/h, over twice the meter's %.1f: used the readings", rd, a.Rate)
-				a.Rate = rd
-			case a.Rate > 2*rd && a.Rate > 1:
-				a.RateNote = fmt.Sprintf("the meter's %.1f points/h is over twice the readings' %.1f: used the meter", a.Rate, rd)
+		if inject != nil && inject.Accounts[a.Label].Rate != nil {
+			a.Rate, a.Meter, a.RateNote = *inject.Accounts[a.Label].Rate, *inject.Accounts[a.Label].Rate, "injected"
+			if inject.Accounts[a.Label].Readings == nil {
+				continue
 			}
 		}
+		rd, ok := readingSlope(in.Candidates, w.keyOfDir, a.Key, now, params.BurnWindow)
+		if inject != nil && inject.Accounts[a.Label].Readings != nil {
+			rd, ok = *inject.Accounts[a.Label].Readings, true
+		}
+		if !ok {
+			continue
+		}
+		switch {
+		case rd > 2*a.Rate && rd > 1:
+			readStreak[a.Key] = w.sw.ReadStreak[a.Key] + 1
+			if readStreak[a.Key] < 2 {
+				a.RateNote = fmt.Sprintf("the readings rose %.1f points/h, over twice the meter's %.1f: used if it holds on the next pass", rd, a.Rate)
+				continue
+			}
+			a.RateNote = fmt.Sprintf("the readings rose %.1f points/h, over twice the meter's %.1f on %d passes: used the readings", rd, a.Rate, readStreak[a.Key])
+			a.Rate, a.FromReadings = rd, true
+		case a.Rate > 2*rd && a.Rate > 1:
+			a.RateNote = fmt.Sprintf("the meter's %.1f points/h is over twice the readings' %.1f: used the meter", a.Rate, rd)
+		}
 	}
+	w.sw.ReadStreak = readStreak
 	byAcc := map[string][]mover.Session{}
 	for _, s := range w.input.Sessions {
 		byAcc[s.Account] = append(byAcc[s.Account], s)
@@ -629,42 +656,6 @@ func lastOwnerPrompt(ps []promptSeen) time.Time {
 	return t
 }
 
-// readingRate is the rise of account key's 5-hour readings over the burn window, points per
-// hour, from its two newest readings of the same window at least 2 minutes apart and both
-// within the last window+5 minutes.
-func readingRate(cands []picker.Candidate, keyOfDir map[string]string, key string, now time.Time, window time.Duration) (float64, bool) {
-	for _, c := range cands {
-		if keyOfDir[c.Dir] != key {
-			continue
-		}
-		for _, wd := range c.Windows {
-			if wd.Key != "five_hour" {
-				continue
-			}
-			ss := append([]picker.Sample(nil), wd.Samples...)
-			sort.Slice(ss, func(i, j int) bool { return ss[i].At.After(ss[j].At) })
-			var fresh []picker.Sample
-			for _, x := range ss {
-				if now.Sub(x.At) <= window+5*time.Minute {
-					fresh = append(fresh, x)
-				}
-			}
-			if len(fresh) < 2 {
-				return 0, false
-			}
-			a := fresh[0]
-			for _, b := range fresh[1:] {
-				dt := a.At.Sub(b.At).Hours()
-				if dt*60 < 2 || !a.ResetsAt.Equal(b.ResetsAt) {
-					continue
-				}
-				return math.Max(0, (a.Pct-b.Pct)/dt), true
-			}
-		}
-	}
-	return 0, false
-}
-
 // moveParams are the decision rules from the account.move_* settings.
 func moveParams(cfg config.Config) mover.Params {
 	a := cfg.Account
@@ -676,6 +667,7 @@ func moveParams(cfg config.Config) mover.Params {
 		p.BurnWindow = mins(a.MoveBurnMin)
 	}
 	p.WeekSpan = mins(60 * a.MoveWeekSpanH)
+	p.DestHorizon = mins(a.MoveDestHorizonMin)
 	p.SpikePasses, p.SpikeNear = int(a.MoveSpikePasses), mins(a.MoveSpikeNearMin)
 	p.Cooldown, p.NoReturn = mins(a.MoveCooldownMin), mins(a.MoveNoReturnMin)
 	p.AccountMoves, p.AccountWindow = int(a.MoveAccountMoves), mins(a.MoveAccountWindowMin)
@@ -835,7 +827,11 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		state = "on"
 	}
 	fmt.Fprintf(out, "\nSmart Account Switch is %s (organisations: %s).\n", state, w.input.Params.Orgs)
-	if p := w.input.Params; p.PinReserve5 > 0 || p.PinReserve7 > 0 {
+	pinned := false
+	for _, pr := range r.Accounts {
+		pinned = pinned || pr.Pins > 0
+	}
+	if p := w.input.Params; pinned && (p.PinReserve5 > 0 || p.PinReserve7 > 0) {
 		fmt.Fprintf(out, "Each live pinned session keeps %.0f%% of its account's 5-hour window and %.0f%% of its week free (CAPS are less that).\n",
 			p.PinReserve5, p.PinReserve7)
 	}

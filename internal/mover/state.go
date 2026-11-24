@@ -254,6 +254,9 @@ func Records(es []LogEntry) []Record {
 type SwitchState struct {
 	At     time.Time      `json:"at"`
 	Streak map[string]int `json:"streak"`
+	// ReadStreak: per account, on how many passes in a row its readings rose over twice its
+	// meter (the readings are used from the second).
+	ReadStreak map[string]int `json:"read_streak,omitempty"`
 }
 
 // LoadSwitch reads the switch state at now. Streaks older than three passes are dropped (the
@@ -264,7 +267,10 @@ func (s State) LoadSwitch(now time.Time, pass time.Duration) SwitchState {
 		_ = json.Unmarshal(b, &x)
 	}
 	if x.Streak == nil || now.Sub(x.At) > 3*max(pass, time.Minute) {
-		x.Streak = map[string]int{}
+		x.Streak, x.ReadStreak = map[string]int{}, nil
+	}
+	if x.ReadStreak == nil {
+		x.ReadStreak = map[string]int{}
 	}
 	return x
 }

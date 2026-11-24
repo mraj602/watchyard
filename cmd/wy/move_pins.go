@@ -46,13 +46,14 @@ func pinReserves(p mover.Params, live map[string][]string) map[string]picker.Pin
 	return out
 }
 
-// nextPins are the pin reserves for `wy account next`: this machine's sessions (the registry
-// and the process table; no tmux or command lines needed), the pins file and, only when a
-// session runs, the peers tags.
-func nextPins(e nextEnv, cfg config.Config, slots []picker.Slot, now time.Time) map[string]picker.PinReserve {
+// nextSwitch is what `wy account next` needs of Smart Account Switch: the pin reserves
+// (setup.md 8.6, Pinned sessions) and, while the switch is on, its view for the lanes picker
+// (moverView). It reads this machine's sessions (the registry and the process table; no tmux
+// or command lines needed), the pins file and, only when a session runs, the peers tags.
+func nextSwitch(e nextEnv, cfg config.Config, slots []picker.Slot, cands []picker.Candidate, tokens []picker.TokenUse, now time.Time) (map[string]picker.PinReserve, *picker.MoverView) {
 	p := moveParams(cfg)
-	if p.PinReserve5 <= 0 && p.PinReserve7 <= 0 {
-		return nil
+	if p.PinReserve5 <= 0 && p.PinReserve7 <= 0 && !cfg.Account.SmartSwitch {
+		return nil, nil
 	}
 	var islots []identity.Slot
 	keyOfDir := map[string]string{}
@@ -65,15 +66,16 @@ func nextPins(e nextEnv, cfg config.Config, slots []picker.Slot, now time.Time) 
 	st := mover.NewState(e.dirs.State.Path)
 	sys := mover.Sys{FS: identity.OSFS{}, Proc: peerspkg.NewProc(), State: st}
 	launches := sys.Sessions(islots)
+	view := moverView(cfg, launches, keyOfDir, tokens, cands, now)
 	known := false
 	for _, l := range launches {
 		known = known || keyOfDir[l.Slot] != ""
 	}
-	if !known {
-		return nil
+	if !known || (p.PinReserve5 <= 0 && p.PinReserve7 <= 0) {
+		return nil, view
 	}
 	tags, _ := peersTags()
-	return pinReserves(p, livePins(launches, keyOfDir, st.Pins(), tags, now))
+	return pinReserves(p, livePins(launches, keyOfDir, st.Pins(), tags, now)), view
 }
 
 // pinAlerts keeps the pass's new pin alerts (one per session and window until it resets) with

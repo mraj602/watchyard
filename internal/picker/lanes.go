@@ -9,6 +9,7 @@ package picker
 import (
 	"errors"
 	"fmt"
+	"github.com/mraj602/watchyard/internal/projection"
 	"math"
 	"sort"
 	"strconv"
@@ -234,6 +235,8 @@ type LaneAccount struct {
 	// setup.md 8.6, Pinned sessions): every limit of the account is that much lower for new lanes.
 	Pins                     int
 	PinReserve5, PinReserve7 float64
+	// MoveUnits is its measured burn now, units per hour (MoverView.Units).
+	MoveUnits float64
 }
 
 // LaneLease is one lease, local or another machine's.
@@ -305,7 +308,9 @@ type LaneInput struct {
 	Expect  time.Duration
 	Expects []LaneExpect // per lane (the last repeats); empty: Expect for every lane
 	HubDown bool
-	cur     LaneExpect // the estimate of the lane being placed (RankLanes)
+	// Mover: Smart Account Switch's caps while it is on (nil: off).
+	Mover *MoverView
+	cur   LaneExpect // the estimate of the lane being placed (RankLanes)
 	// prior are picks of the same batch already made by earlier calls (tests that rank a
 	// batch one pick at a time).
 	prior []LanePick
@@ -932,6 +937,13 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 						soft = hardOK && v.h < p.Backstop5h
 					}
 				}
+				// The switch's projection (setup.md 8.5): with this lane's burn added, the account
+				// must stay under the caps at which Smart Account Switch would move a session off.
+				if in.Mover != nil && !skip && len(v.unknown) == 0 {
+					if why5 := moverOver(in.Mover, acc, v, lr, p, now); why5 != "" {
+						skip, why, level, capped, soft = true, why5, 3, false, false
+					}
+				}
 			case OrderFill:
 				// fill_exp groups (LaneParams.Order); ties within a group by the time left per hour
 				// needed (most at risk first).
@@ -1208,4 +1220,34 @@ func cut(s string, n int) string {
 		return s[:n]
 	}
 	return s
+}
+
+// moverOver is why Smart Account Switch would move a session off acc once a new lane burning
+// lr 5-hour points per hour runs there ("" when it would not): its projection at its measured
+// burn plus the lane (projection.Levels, the switch's own maths) over the switch's caps less
+// the pin reserve.
+func moverOver(m *MoverView, acc LaneAccount, v laneState, lr float64, p LaneParams, now time.Time) string {
+	pa := p.account(acc)
+	c5, c7 := m.Cap5, m.Cap7
+	if acc.Protected {
+		c5, c7 = m.Cap5Protected, m.Cap7Protected
+	}
+	if c5 <= 0 && c7 <= 0 {
+		return ""
+	}
+	h5 := 5.0
+	if !v.fiveRst.IsZero() && v.fiveRst.After(now) {
+		h5 = v.fiveRst.Sub(now).Hours()
+	}
+	r := acc.MoveUnits*pa.F5 + math.Max(0, lr)
+	p5, p7 := projection.Levels(v.hM, v.wM, r, pa.ratio(), h5, v.hrs, m.WeekSpanH)
+	if !projection.Over(p5, p7, c5, c7, acc.PinReserve5, acc.PinReserve7, 0) {
+		return ""
+	}
+	if p5-pinLess(c5, acc.PinReserve5) >= p7-pinLess(c7, acc.PinReserve7) {
+		return fmt.Sprintf("5h %s%%: at %s points/h with this lane the switch's projection is %s%%, over its cap %s%% (it would move a session off)",
+			f0(v.hM), f0(pyRound(r, 1)), f0(p5), f0(pinLess(c5, acc.PinReserve5)))
+	}
+	return fmt.Sprintf("7d %s%%: at %s points/h with this lane the switch's projection is %s%%, over its cap %s%% (it would move a session off)",
+		f0(v.wM), f0(pyRound(r, 1)), f0(p7), f0(pinLess(c7, acc.PinReserve7)))
 }

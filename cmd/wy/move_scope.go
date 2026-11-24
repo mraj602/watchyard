@@ -88,6 +88,9 @@ type moveTest struct {
 		Weekly         *float64 `json:"weekly"`
 		WeeklyResetMin *float64 `json:"weekly_reset_min"`
 		Rate           *float64 `json:"rate"`
+		// Readings: the readings' slope, points per hour (instead of the outbox and hub
+		// readings).
+		Readings *float64 `json:"readings"`
 	} `json:"accounts"`
 	// Rates: 5-hour points per hour by session id (or a prefix of 8+ characters).
 	Rates map[string]float64 `json:"rates"`

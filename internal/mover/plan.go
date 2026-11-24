@@ -2,6 +2,7 @@ package mover
 
 import (
 	"fmt"
+	"github.com/mraj602/watchyard/internal/projection"
 	"math"
 	"sort"
 	"strings"
@@ -33,7 +34,9 @@ type Params struct {
 	// SpikePasses: a trigger must hold on this many consecutive passes, unless the projected
 	// hit of 100 is within SpikeNear or a cap is reached now (0 or 1: no spike filter).
 	SpikePasses int
-	SpikeNear   time.Duration
+	// ReadingPasses: the passes a trigger needs when only the readings' rate makes it.
+	ReadingPasses int
+	SpikeNear     time.Duration
 	// Cooldown: a session moves at most once within it. NoReturn: never back to the account it
 	// left within it, unless that account's 5-hour window reset since.
 	Cooldown time.Duration
@@ -54,6 +57,16 @@ type Params struct {
 	Orgs string
 	// IdleMoves: idle sessions with no burn are candidates too (a simulator variant only).
 	IdleMoves bool
+	// DestHorizon: an aggressive destination qualifies when the moved session fits under its
+	// caps less Hysteresis for min(its expected remaining time (DestHorizon when unknown), the
+	// time to the destination's 5-hour reset), at least DestFloor, on top of the
+	// destination's own projection; a protected one only with room to its resets, and only
+	// when no aggressive one fits. 0: every destination needs room to its resets.
+	DestHorizon time.Duration
+	// CheapMoves: among the sessions whose move alone fixes the overload, the most points
+	// freed per re-read cost (context × ModelFactor) first, then the highest burn, then the
+	// youngest.
+	CheapMoves bool
 	// PinReserve5 and PinReserve7: the points of the 5-hour and weekly windows kept free for
 	// each live pinned session on an account (account.pin_reserve_5h / _7d): its caps for the
 	// other sessions are cap - pins x reserve. The caller counts the live pins (Account.Pins)
@@ -82,10 +95,11 @@ var DefaultParams = Params{
 	Name: "V2 move the burners (default)",
 	Cap5: 95, Cap7: 98, Cap5Protected: 80, Cap7Protected: 80,
 	Hysteresis: 5, BurnWindow: 10 * time.Minute, Pass: time.Minute, WeekSpan: 5 * time.Hour,
-	SpikePasses: 2, SpikeNear: 30 * time.Minute,
+	SpikePasses: 2, ReadingPasses: 3, SpikeNear: 30 * time.Minute,
 	Cooldown: 20 * time.Minute, NoReturn: time.Hour, AccountMoves: 3, AccountWindow: 15 * time.Minute,
 	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, Orgs: OrgsAny,
 	PinReserve5: 10, PinReserve7: 5, PinAlertWithin: 2 * time.Hour,
+	DestHorizon: 90 * time.Minute, CheapMoves: true,
 }
 
 // PinIdle: a pinned session idle this long holds no reserve (the caller counts the live pins).
@@ -118,6 +132,11 @@ type Account struct {
 	Rate float64
 	// RateNote says which measure Rate is when they disagreed (for --plan).
 	RateNote string
+	// Meter is the token meter's burn (this machine's sessions and other machines' the hub
+	// measured); FromReadings: Rate is the readings' slope instead (over twice the meter). A
+	// trigger that only the readings make needs ReadingPasses passes (they are noisy).
+	Meter        float64
+	FromReadings bool
 	// LoggedIn: logged in on this machine (the folder exists and `wy account next` does not
 	// call it "not logged in on this machine"). Only such an account is a destination.
 	LoggedIn bool
@@ -161,6 +180,10 @@ type Session struct {
 	Context float64
 	// Expected is how much longer it is expected to run (0: unknown).
 	Expected time.Duration
+	// ModelFactor is its model's re-read price relative to haiku (opus 5, sonnet 3, haiku 1;
+	// 0: 3); Started is when it started (zero: unknown, taken as old).
+	ModelFactor float64
+	Started     time.Time
 	// MovedAt and MovedFrom: its last move (zero: never moved).
 	MovedAt   time.Time
 	MovedFrom string
@@ -213,7 +236,9 @@ type Projection struct {
 	Streak    int
 	Triggered bool
 	Held      bool
-	ratio     float64
+	// ReadingsOnly: over the caps only at the readings' rate (ReadingPasses passes needed).
+	ReadingsOnly bool `json:",omitempty"`
+	ratio        float64
 }
 
 // Move is one planned move.
@@ -294,12 +319,25 @@ func Plan(in Input) Result {
 	for _, a := range in.Accounts {
 		pr := p.Project(a, byAcc[a.Key], 0, now)
 		over := pr.Window != ""
+		// The streak is the trigger's (account and window): a 5-hour trigger after a weekly
+		// one starts again.
 		if over {
-			pr.Streak = in.Streak[a.Key] + 1
-			res.Streak[a.Key] = pr.Streak
+			k := a.Key + " " + pr.Window
+			pr.Streak = in.Streak[k] + 1
+			res.Streak[k] = pr.Streak
 		}
 		near := pr.Hit >= 0 && pr.Hit <= p.SpikeNear
-		pr.Triggered = over && (p.SpikePasses <= 1 || pr.Streak >= p.SpikePasses || pr.Hard || near)
+		passes := p.SpikePasses
+		if over && a.FromReadings && !pr.Hard {
+			// Only the readings make it: the meter's projection is under the caps.
+			m := a
+			m.Rate = a.Meter
+			if p.Project(m, byAcc[a.Key], 0, now).Window == "" {
+				passes, near = max(passes, p.ReadingPasses), false
+				pr.ReadingsOnly = true
+			}
+		}
+		pr.Triggered = over && (passes <= 1 || pr.Streak >= passes || pr.Hard || near)
 		pr.Held = over && !pr.Triggered
 		proj[a.Key] = pr
 		res.Accounts = append(res.Accounts, pr)
@@ -359,7 +397,11 @@ func Plan(in Input) Result {
 					if s.burned() && !s.Stopped && s.Pinned {
 						skip(s, "pinned, or outside the scope")
 					} else if s.burned() && !s.Stopped {
-						skip(s, fmt.Sprintf("%s over its cap on %d of %d passes (spike filter)", pr.Window, pr.Streak, p.SpikePasses))
+						need, by := p.SpikePasses, "spike filter"
+						if pr.ReadingsOnly {
+							need, by = max(need, p.ReadingPasses), "spike filter; only the readings' rate is over"
+						}
+						skip(s, fmt.Sprintf("%s over its cap on %d of %d passes (%s)", pr.Window, pr.Streak, need, by))
 					}
 				}
 			}
@@ -395,6 +437,17 @@ func Plan(in Input) Result {
 				ex, ey := cur.enoughWithout(p, x.Rate), cur.enoughWithout(p, y.Rate)
 				if ex != ey {
 					return ex // the fewest moves: one that brings it under alone first
+				}
+				if ex && p.CheapMoves {
+					if cx, cy := x.Rate/reRead(x), y.Rate/reRead(y); cx != cy {
+						return cx > cy // the most points freed per re-read
+					}
+					if x.Rate != y.Rate {
+						return x.Rate > y.Rate
+					}
+					if !x.Started.Equal(y.Started) {
+						return x.Started.After(y.Started) // the youngest
+					}
 				}
 				if x.Rate != y.Rate {
 					return x.Rate > y.Rate // the highest burn
@@ -572,8 +625,7 @@ func (p Params) Project(a Account, ss []Session, extra float64, now time.Time) P
 		pr.Level5 = 0 // not started (or reset since the reading)
 	}
 	h7 := math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())
-	pr.P5 = pr.Level5 + r5*pr.Reset5.Hours()
-	pr.P7 = pr.Level7 + r5/pr.ratio*h7
+	pr.P5, pr.P7 = projection.Levels(pr.Level5, pr.Level7, r5, pr.ratio, pr.Reset5.Hours(), pr.Reset7.Hours(), p.WeekSpan.Hours())
 	pr.Hard = pr.Level5 >= c5 || pr.Level7 >= c7
 	switch {
 	case pr.P5 > c5 || pr.Level5 >= c5:
@@ -628,6 +680,26 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 		pr := p.Project(a, byAcc[a.Key], delta[a.Key]+math.Max(0, s.Rate), now)
 		return pr, pr.P5 <= pr.Cap5-p.Hysteresis && pr.P7 <= pr.Cap7-p.Hysteresis && pr.Level5 < pr.Cap5-p.Hysteresis &&
 			pr.Level7 < pr.Cap7-p.Hysteresis
+	}
+	if p.DestHorizon > 0 {
+		full := room
+		room = func(a Account) (Projection, bool) {
+			if a.Protected {
+				return full(a)
+			}
+			// Its own projection, plus this session for the horizon only.
+			pr := p.Project(a, byAcc[a.Key], delta[a.Key], now)
+			h := s.Expected
+			if h <= 0 {
+				h = p.DestHorizon
+			}
+			h = max(min(h, pr.Reset5), DestFloor)
+			r := math.Max(0, s.Rate)
+			pr.P5 += r * min(h, pr.Reset5).Hours()
+			pr.P7 += r / pr.ratio * math.Min(h.Hours(), math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours()))
+			return pr, pr.P5 <= pr.Cap5-p.Hysteresis && pr.P7 <= pr.Cap7-p.Hysteresis && pr.Level5 < pr.Cap5-p.Hysteresis &&
+				pr.Level7 < pr.Cap7-p.Hysteresis
+		}
 	}
 	idx := map[string]int{}
 	for i, a := range in.Accounts {
@@ -777,4 +849,30 @@ func Destination(in Input, id string) (string, string) {
 		}
 	}
 	return "", "the session is not known"
+}
+
+// DestFloor is the shortest horizon a destination is judged on (Params.DestHorizon).
+const DestFloor = time.Hour
+
+// reRead is s's re-read cost: its context (at least 20,000 tokens) × its model factor.
+func reRead(s Session) float64 {
+	f := s.ModelFactor
+	if f <= 0 {
+		f = 3
+	}
+	return math.Max(s.Context, 20_000) * f
+}
+
+// ModelFactor is a model's re-read price relative to haiku: opus 5, sonnet 3, haiku 1 (0:
+// unknown).
+func ModelFactor(model string) float64 {
+	switch m := strings.ToLower(model); {
+	case strings.Contains(m, "opus"):
+		return 5
+	case strings.Contains(m, "sonnet"):
+		return 3
+	case strings.Contains(m, "haiku"):
+		return 1
+	}
+	return 0
 }

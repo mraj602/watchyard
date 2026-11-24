@@ -52,6 +52,19 @@ type Input struct {
 	// pinned sessions on this machine and the points kept free for them (setup.md 8.6, Pinned
 	// sessions). The lanes strategy lowers the account's limits for new lanes by them.
 	PinReserves map[string]PinReserve
+	// Mover is Smart Account Switch's view while it is on (setup.md 8.5, The switch's
+	// projection): the lanes strategy places no new lane where the switch would move it off.
+	Mover *MoverView
+}
+
+// MoverView is what the lanes strategy needs of Smart Account Switch: its trigger caps
+// (aggressive and protected, before the pin reserve), how far its weekly projection looks,
+// and each account's measured burn now (this machine's sessions and other machines' the hub
+// measured), units per hour by account key.
+type MoverView struct {
+	Cap5, Cap7, Cap5Protected, Cap7Protected float64
+	WeekSpanH                                float64
+	Units                                    map[string]float64
 }
 
 // PinReserve is one account's pin reserve: Pins live pinned sessions keep R5 points of its

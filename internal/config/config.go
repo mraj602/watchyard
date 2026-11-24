@@ -140,6 +140,7 @@ type Config struct {
 		MoveHysteresis       float64 `toml:"move_hysteresis"`
 		MoveBurnMin          float64 `toml:"move_burn_min"`
 		MoveWeekSpanH        float64 `toml:"move_week_span_h"`
+		MoveDestHorizonMin   float64 `toml:"move_dest_horizon_min"`
 		MoveSpikePasses      float64 `toml:"move_spike_passes"`
 		MoveSpikeNearMin     float64 `toml:"move_spike_near_min"`
 		MoveCooldownMin      float64 `toml:"move_cooldown_min"`
@@ -305,7 +306,7 @@ var moveDefaults = map[string]float64{
 	"move_hysteresis": 5, "move_burn_min": 10, "move_week_span_h": 5, "move_spike_passes": 2, "move_spike_near_min": 30,
 	"move_cooldown_min": 20, "move_no_return_min": 60, "move_account_moves": 3, "move_account_window_min": 15,
 	"move_stopped_wait_min": 20, "move_owner_grace_min": 0, "move_step_wait_min": 3,
-	"pin_reserve_5h": 10, "pin_reserve_7d": 5,
+	"pin_reserve_5h": 10, "pin_reserve_7d": 5, "move_dest_horizon_min": 90,
 }
 
 func init() {
@@ -332,6 +333,8 @@ func (c *Config) moveField(k string) *float64 {
 		return &a.MoveBurnMin
 	case "move_week_span_h":
 		return &a.MoveWeekSpanH
+	case "move_dest_horizon_min":
+		return &a.MoveDestHorizonMin
 	case "move_spike_passes":
 		return &a.MoveSpikePasses
 	case "move_spike_near_min":

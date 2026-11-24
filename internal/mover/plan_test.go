@@ -31,7 +31,7 @@ func plan(in Input) Result {
 	if in.Streak == nil {
 		in.Streak = map[string]int{}
 		for _, a := range in.Accounts {
-			in.Streak[a.Key] = 1
+			in.Streak[a.Key+" "+Win5h], in.Streak[a.Key+" "+Win7d] = 1, 1
 		}
 	}
 	return Plan(in)
@@ -175,19 +175,19 @@ func TestPlanHardNowAndSpikeFilter(t *testing.T) {
 		Accounts: []Account{acc("a", 70, 3*time.Hour, 30), acc("b", 0, 5*time.Hour, 10)},
 		Sessions: []Session{lane("s", "a", 10, true)}} // P5 100, hit of 100 in 3 h
 	r := Plan(in)
-	if len(r.Moves) != 0 || r.Streak["a"] != 1 || !r.Accounts[0].Held {
+	if len(r.Moves) != 0 || r.Streak["a 5h"] != 1 || !r.Accounts[0].Held {
 		t.Fatalf("first pass moved: %+v %v", r.Moves, r.Streak)
 	}
 	if !strings.Contains(skipWhy(r, "s"), "spike filter") {
 		t.Fatalf("skip %q", skipWhy(r, "s"))
 	}
 	in.Streak = r.Streak
-	if r := Plan(in); len(r.Moves) != 1 || r.Streak["a"] != 2 {
+	if r := Plan(in); len(r.Moves) != 1 || r.Streak["a 5h"] != 2 {
 		t.Fatalf("second pass: %+v", r.Moves)
 	}
 	// A projection back under resets the streak.
 	in.Sessions[0].Rate = 1
-	if r := Plan(in); r.Streak["a"] != 0 {
+	if r := Plan(in); r.Streak["a 5h"] != 0 {
 		t.Fatalf("streak %v", r.Streak)
 	}
 	// Hit within 30 min: at once.
@@ -416,9 +416,49 @@ func TestPlanDestinationAddsPlanned(t *testing.T) {
 		Accounts: []Account{acc("a", 90, 3*time.Hour, 30), acc("b", 0, 4*time.Hour, 10), acc("c", 0, 5*time.Hour, 10)},
 		Sessions: []Session{lane("s1", "a", 15, true), lane("s2", "a", 15, true)}, // b: 4 h × 15 = 60; both: 120
 	}
+	in.Params = DefaultParams
+	in.Params.DestHorizon = 0 // room to the resets
 	got := moved(plan(in))
 	if got["s1"] == got["s2"] || got["s1"] == "" || got["s2"] == "" {
 		t.Fatalf("moves %v", got)
+	}
+}
+
+// Params.DestHorizon: an aggressive destination needs room for the moved session's burn for
+// min(its expected remaining (else DestHorizon), the destination's 5-hour reset), at least
+// DestFloor; a protected one room to its resets, and only when no aggressive one fits.
+func TestPlanDestinationHorizon(t *testing.T) {
+	// b resets in 4 h: 26.5 points/h to the reset is 106, over 90; for 90 minutes it is 40.
+	mk := func() Input {
+		return Input{Accounts: []Account{acc("a", 90, 3*time.Hour, 30), acc("b", 0, 4*time.Hour, 10), prot("p", 0, 30*time.Minute, 10)},
+			Sessions: []Session{lane("s", "a", 26.5, true)}}
+	}
+	in := mk()
+	in.Params = DefaultParams
+	in.Params.DestHorizon = 0
+	if got := moved(plan(in)); got["s"] != "p" {
+		t.Fatalf("room to the resets: %v", got)
+	}
+	in = mk()
+	in.Params = DefaultParams
+	if got := moved(plan(in)); got["s"] != "b" {
+		t.Fatalf("horizon: %v", got)
+	}
+	// Expected to run 4 more hours: its burn to b's reset does not fit; the protected one
+	// (room to its reset in 30 min) takes it.
+	in = mk()
+	in.Params = DefaultParams
+	in.Sessions[0].Expected = 4 * time.Hour
+	if got := moved(plan(in)); got["s"] != "p" {
+		t.Fatalf("long session: %v", got)
+	}
+	// The floor: a session about to end is still judged on an hour.
+	in = mk()
+	in.Params = DefaultParams
+	in.Accounts[1].W5.Level = 60 // 60 + 26.5 × 1 h = 86.5 fits under 90; 60 + 26.5 × 1.5 h would not
+	in.Sessions[0].Expected = 5 * time.Minute
+	if got := moved(plan(in)); got["s"] != "b" {
+		t.Fatalf("floor: %v", got)
 	}
 }
 
@@ -454,4 +494,51 @@ func hasSkip(r Result, id, why string) bool {
 		}
 	}
 	return false
+}
+
+// prot is a protected acc.
+func prot(key string, l5 float64, reset5 time.Duration, l7 float64) Account {
+	a := acc(key, l5, reset5, l7)
+	a.Protected = true
+	return a
+}
+
+// Params.CheapMoves: of the sessions whose move alone fixes the overload, the most points
+// freed per re-read (context × model factor) goes first, then the burn, then the youngest.
+func TestPlanCheapMoves(t *testing.T) {
+	mk := func() Input {
+		big := lane("big", "a", 20, true)
+		big.Context, big.ModelFactor = 400_000, ModelFactor("claude-opus-4-8")
+		small := lane("small", "a", 15, true)
+		small.Context, small.ModelFactor = 50_000, ModelFactor("sonnet")
+		return Input{Accounts: []Account{acc("a", 40, 3*time.Hour, 30), acc("b", 0, 4*time.Hour, 10), acc("c", 0, 4*time.Hour, 10)},
+			Sessions: []Session{big, small}}
+	}
+	// a: 20 + 3 h × 35 = 125 > 95; without big 65, without small 80: either alone fixes it.
+	in := mk()
+	in.Accounts[0].W5.Level = 20
+	in.Params = DefaultParams
+	r := plan(in)
+	if len(r.Moves) == 0 || r.Moves[0].Session != "small" {
+		t.Fatalf("cheap first: %+v", r.Moves)
+	}
+	in = mk()
+	in.Accounts[0].W5.Level = 20
+	in.Params = DefaultParams
+	in.Params.CheapMoves = false
+	if r := plan(in); len(r.Moves) == 0 || r.Moves[0].Session != "big" {
+		t.Fatalf("highest burn first: %+v", r.Moves)
+	}
+	// Same cost and burn: the youngest first.
+	in = mk()
+	in.Accounts[0].W5.Level = 20
+	in.Params = DefaultParams
+	in.Sessions[0].Rate, in.Sessions[0].Context, in.Sessions[0].ModelFactor = 15, 50_000, 3
+	in.Sessions[0].Started, in.Sessions[1].Started = t0.Add(-10*time.Minute), t0.Add(-3*time.Hour)
+	if r := plan(in); len(r.Moves) == 0 || r.Moves[0].Session != "big" {
+		t.Fatalf("youngest first: %+v", r.Moves)
+	}
+	if ModelFactor("claude-haiku-4-5") != 1 || ModelFactor("x") != 0 {
+		t.Error("model factors")
+	}
 }

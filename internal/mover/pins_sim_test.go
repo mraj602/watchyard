@@ -352,6 +352,7 @@ func TestPinReserveMovesTheOthers(t *testing.T) {
 	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 	p := DefaultParams
 	p.PinReserve5, p.PinReserve7 = 15, 3 // not the defaults: the numbers below
+	p.DestHorizon = 0                    // destinations need room to their resets
 	r5, r7 := p.PinReserve(1)
 	in := Input{Now: now, Params: p, Accounts: []Account{
 		{Key: "acct:a/o", Label: "a", LoggedIn: true, W5: Window{Level: 60, Reset: now.Add(3 * time.Hour)}, W7: Window{Level: 40, Reset: now.Add(72 * time.Hour)},
@@ -360,7 +361,7 @@ func TestPinReserveMovesTheOthers(t *testing.T) {
 	}, Sessions: []Session{
 		{ID: "pin", Account: "acct:a/o", Rate: 1, Busy: true, Pinned: true, Movable: true},
 		{ID: "lane", Account: "acct:a/o", Rate: 6, Busy: true, Movable: true},
-	}, Streak: map[string]int{"acct:a/o": 5}}
+	}, Streak: map[string]int{"acct:a/o 5h": 5, "acct:a/o 7d": 5}}
 	// Without the reserve: 60 + 7 × 3 = 81 < 95, nothing moves.
 	noRes := in
 	noRes.Accounts = append([]Account(nil), in.Accounts...)

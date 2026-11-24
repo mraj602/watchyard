@@ -621,6 +621,9 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 			}
 		}
 		acc.Limit7d, acc.Limit5h = laneLimits(rs[g.rep].policy, acc.Protected, p)
+		if in.Mover != nil {
+			acc.MoveUnits = math.Max(0, in.Mover.Units[g.key])
+		}
 		if pr, ok := in.PinReserves[g.key]; ok && pr.Pins > 0 {
 			acc.Pins, acc.PinReserve5, acc.PinReserve7 = pr.Pins, math.Max(0, pr.R5), math.Max(0, pr.R7)
 		}
@@ -631,7 +634,7 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 	for _, a := range accts {
 		f5Of[a.Key] = p.account(a).F5
 	}
-	lin := LaneInput{Now: now, Params: p, Accounts: accts, Leases: ls, N: n, SIDs: in.SIDs, Urgent: in.Urgent,
+	lin := LaneInput{Now: now, Params: p, Mover: in.Mover, Accounts: accts, Leases: ls, N: n, SIDs: in.SIDs, Urgent: in.Urgent,
 		Stats: measureLanes(in.Leases, ls[:nLocal], ls[nLocal:], f5Of, res.Model, now), Expect: in.Expect, HubDown: in.HubDown, Expects: in.Expects}
 	if in.OnLanes != nil {
 		in.OnLanes(lin)
