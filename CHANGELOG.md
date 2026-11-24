@@ -6,6 +6,8 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-11-24
+
 ### Changed
 
 - `wy account next` (lanes) **drains** weekly room before it resets. An aggressive account whose
@@ -17,8 +19,7 @@ All notable changes to Watchyard are recorded here. The format follows
   reason, and `WY_FINISH_BY` / `WY_ACCOUNT_RESET` in the `--exec` environment. A protected account
   drains only when its room would expire even at full speed, after every aggressive drain
   account. Outside drain: at-risk aggressive accounts, then the others in turn, then aggressive
-  accounts with an unknown weekly level, then protected ones. A batch blocked only by aggressive
-  hourly caps waits (exit 4) instead of using a protected account. On 2026-11-23 the old round
+  accounts with an unknown weekly level, then protected ones. On 2026-11-23 the old round
   robin sent three of six lanes to protected accounts while claude-2 had 12% of its week left
   hours before its reset; now all six go to claude-2.
 - `wy account next` (lanes) skips an aggressive account whose running lanes will still burn its
