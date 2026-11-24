@@ -157,6 +157,9 @@ type Config struct {
 		MoveStoppedWaitMin   float64 `toml:"move_stopped_wait_min"`
 		MoveOwnerGraceMin    float64 `toml:"move_owner_grace_min"`
 		MoveStepWaitMin      float64 `toml:"move_step_wait_min"`
+		// MovePassWaitS: a pass waits at most this long in all for mid-turn sessions to reach
+		// a step boundary (the waits run side by side); the rest wait on in the next pass.
+		MovePassWaitS float64 `toml:"move_pass_wait_s"`
 		// PinReserve5h and PinReserve7d: the points of an account's 5-hour and weekly windows
 		// kept free for each live pinned session on it (setup.md 8.6, Pinned sessions).
 		PinReserve5h float64 `toml:"pin_reserve_5h"`
@@ -316,7 +319,7 @@ var moveDefaults = map[string]float64{
 	"move_cap_5h": 95, "move_cap_7d": 98, "move_cap_5h_protected": 80, "move_cap_7d_protected": 80,
 	"move_hysteresis": 5, "move_burn_min": 10, "move_week_span_h": 5, "move_spike_passes": 2, "move_spike_near_min": 30,
 	"move_cooldown_min": 20, "move_no_return_min": 60, "move_account_moves": 3, "move_account_window_min": 15,
-	"move_stopped_wait_min": 20, "move_owner_grace_min": 0, "move_step_wait_min": 3,
+	"move_stopped_wait_min": 20, "move_owner_grace_min": 0, "move_step_wait_min": 3, "move_pass_wait_s": 90,
 	"pin_reserve_5h": 10, "pin_reserve_7d": 5, "move_dest_horizon_min": 90,
 	"move_young_min": 15, "move_min_burn": 1,
 }
@@ -369,6 +372,8 @@ func (c *Config) moveField(k string) *float64 {
 		return &a.MoveOwnerGraceMin
 	case "move_step_wait_min":
 		return &a.MoveStepWaitMin
+	case "move_pass_wait_s":
+		return &a.MovePassWaitS
 	case "pin_reserve_5h":
 		return &a.PinReserve5h
 	case "pin_reserve_7d":

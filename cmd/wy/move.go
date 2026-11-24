@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -182,8 +183,10 @@ func moveCmd(e moveEnv, args []string) error {
 			fmt.Fprintln(e.stdout, "Another Smart Account Switch pass is running (it may be waiting for a step to end).")
 			return nil
 		}
-		defer unlock()
-		return w.autoPass(e, cfg, st)
+		var once sync.Once
+		release := func() { once.Do(unlock) }
+		defer release()
+		return w.autoPass(e, cfg, st, release)
 	}
 	l, err := w.find(pos[0])
 	if err != nil {
@@ -233,6 +236,17 @@ func moveCmd(e moveEnv, args []string) error {
 			return fmt.Errorf("%s was moved %s ago (%s -> %s): its resumed copy may still be starting; check `claude agents` there, or pass --force",
 				short(l.SessionID), e.now().Sub(x.At).Round(time.Second), w.slotLabel(x.FromDir), w.slotLabel(x.ToDir))
 		}
+	}
+	if !*dry {
+		// A switch pass may be waiting to move it: never both.
+		unlock, ok, err := st.SessionLock(l.SessionID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("a Smart Account Switch move of %s is under way (waiting for its step): nothing done", short(l.SessionID))
+		}
+		defer unlock()
 	}
 	if pr, ok := w.proj[w.keyOfDir[l.Slot]]; ok && pr.Window != "" {
 		mv = mover.Move{Window: pr.Window, P: pr.P5, ResetAt: e.now().Add(pr.Reset5), Stopped: w.byID[l.SessionID].Stopped}
@@ -579,6 +593,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		}
 		s.Movable = l.Kind != mover.KindCloud
 		s.Copies = len(l.Copies)
+		s.Moving = st.Moving(l.SessionID)
 		if x, ok := last[l.SessionID]; ok {
 			s.MovedAt, s.MovedFrom = x.At, x.From
 		}
@@ -724,6 +739,7 @@ func moveParams(cfg config.Config) mover.Params {
 	p.Cooldown, p.NoReturn = mins(a.MoveCooldownMin), mins(a.MoveNoReturnMin)
 	p.AccountMoves, p.AccountWindow = int(a.MoveAccountMoves), mins(a.MoveAccountWindowMin)
 	p.StoppedWait, p.OwnerGrace, p.StepWait = mins(a.MoveStoppedWaitMin), mins(a.MoveOwnerGraceMin), mins(a.MoveStepWaitMin)
+	p.PassWait = time.Duration(math.Max(0, a.MovePassWaitS) * float64(time.Second))
 	p.PinReserve5, p.PinReserve7 = math.Max(0, a.PinReserve5h), math.Max(0, a.PinReserve7d)
 	if a.MoveOrgs != "" {
 		p.Orgs = a.MoveOrgs
@@ -977,8 +993,10 @@ func (w *moveWorld) humanMessage(cfg config.Config, l mover.Launch, t mover.Targ
 }
 
 // autoPass carries out the plan (the moves that have a destination) and keeps the switch
-// state for the next pass.
-func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State) error {
+// state for the next pass. The pass lock (release) is held only while it plans: each move holds
+// its session's lock instead, the mid-turn ones wait for their step side by side, at most
+// Params.PassWait in all, so the next pass is never blind behind a waiting move.
+func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State, release func()) error {
 	for _, x := range mover.Reap(moveHost(e, st), st, e.now()) {
 		fmt.Fprintf(e.stdout, "stopped a copy of %s that the supervisor of %s restarted after its move\n", short(x.SessionID), filepath.Base(x.FromDir))
 	}
@@ -987,34 +1005,114 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State) error
 	}
 	r := mover.Plan(w.input)
 	var first error
-	var told []laneNotice
+	type pick struct {
+		m      mover.Move
+		l      mover.Launch
+		unlock func()
+	}
+	var picks []pick
+	picked := map[string]bool{}
 	for _, m := range r.Moves {
 		l, ok := w.launch(m.Session)
 		if !ok || m.To == "" || !l.Kind.Movable() {
 			continue
 		}
-		l.MidTurn = m.MidTurn
-		if m.MidTurn {
-			w.betweenSteps(e, st, l, &m)
-		}
-		note := mover.Note(w.accLabel(m.From), w.targets[m.To].Label, e.now(), m, w.chainLabels(st, m.Session, e.now())...)
-		n, err := w.carryOut(e, cfg, st, l, w.targets[m.To], note, m.Reason, true, m)
-		if err != nil {
-			if first == nil {
-				first = err
-			}
+		unlock, ok, err := st.SessionLock(m.Session)
+		if err != nil || !ok {
+			fmt.Fprintf(e.stdout, "%s %s: a move of it is already under way\n", short(m.Session), l.Name)
 			continue
 		}
-		told = append(told, n)
+		l.MidTurn = m.MidTurn
+		picks = append(picks, pick{m, l, unlock})
+		picked[m.Session] = true
+	}
+	// A session that waited for its step in an earlier pass and is no longer picked waits no more.
+	for _, s := range w.input.Sessions {
+		if !picked[s.ID] && !s.Moving {
+			st.ClearWait(s.ID)
+		}
 	}
 	w.pinAlerts(e.stdout, st, r, e.now())
 	w.recordPass(st, r, e.now())
 	w.sw.At, w.sw.Streak = e.now(), r.Streak
-	if err := st.SaveSwitch(w.sw); err != nil && first == nil {
+	if err := st.SaveSwitch(w.sw); err != nil {
 		first = err
 	}
+	release() // planning done: the next pass may start while these moves wait
+
+	var mu sync.Mutex
+	var told []laneNotice
+	var wg sync.WaitGroup
+	for _, p := range picks {
+		wg.Add(1)
+		go func(p pick) {
+			defer wg.Done()
+			defer p.unlock()
+			m, l := p.m, p.l
+			if m.MidTurn && !w.waitStep(e, st, &mu, l, &m) {
+				return // still inside its step: the next pass waits on
+			}
+			// The waits run side by side; the moves themselves one at a time, each as soon as
+			// its session is at a step (the move log, the ledger and the output are shared).
+			mu.Lock()
+			defer mu.Unlock()
+			st.ClearWait(m.Session)
+			note := mover.Note(w.accLabel(m.From), w.targets[m.To].Label, e.now(), m, w.chainLabels(st, m.Session, e.now())...)
+			n, err := w.carryOut(e, cfg, st, l, w.targets[m.To], note, m.Reason, true, m)
+			if err != nil {
+				if first == nil {
+					first = err
+				}
+				return
+			}
+			told = append(told, n)
+		}(p)
+	}
+	wg.Wait()
 	w.tell(e, told) // one notice per parent for the whole pass
 	return first
+}
+
+// waitStep waits, within this pass's share (Params.PassWait), for mid-turn session l to be
+// between two tool calls, and records on mv what the note says. Its wait counts from its
+// first pass (State.WaitStarted): after Params.StepWait in all (or a minute before the
+// projected hit) it is moved inside the step; before that, a session still inside its step
+// when this pass's share runs out is left for the next pass (false).
+func (w *moveWorld) waitStep(e moveEnv, st mover.State, mu *sync.Mutex, l mover.Launch, mv *mover.Move) bool {
+	p := w.input.Params
+	now := time.Now() // wall time, as the wait itself (WaitStep)
+	began := st.WaitStarted(l.SessionID, now)
+	deadline := began.Add(p.StepWait)
+	if !mv.HitAt.IsZero() {
+		if hit := now.Add(mv.HitAt.Sub(e.now()) - time.Minute); hit.Before(deadline) {
+			deadline = hit
+		}
+	}
+	left := deadline.Sub(now)
+	if left < 0 {
+		left = 0
+	}
+	share := min(left, p.PassWait)
+	host := moveHost(e, st)
+	start := time.Now()
+	s, between := st.WaitStep(l.SessionID, share, func() bool { return host.Alive(l) })
+	mu.Lock()
+	defer mu.Unlock()
+	switch {
+	case between:
+		mv.StepEnded = true
+		if d := time.Since(start); d > time.Second {
+			fmt.Fprintf(e.stdout, "%s %s: waited %s for its step to end\n", short(l.SessionID), l.Name, d.Round(time.Second))
+		}
+	case s.In && share < left:
+		fmt.Fprintf(e.stdout, "%s %s: still inside a step (%s) after %s: the next pass waits on (up to %s in all)\n",
+			short(l.SessionID), l.Name, s.Tool, time.Since(start).Round(time.Second), p.StepWait)
+		return false
+	case s.In:
+		mv.StepTool, mv.StepCmd = s.Tool, s.Cmd
+		fmt.Fprintf(e.stdout, "%s %s: still inside a step (%s) after %s: moved anyway\n", short(l.SessionID), l.Name, s.Tool, (now.Sub(began) + time.Since(start)).Round(time.Second))
+	}
+	return true
 }
 
 // betweenSteps waits until session l is between two tool calls (setup.md 8.6, Between

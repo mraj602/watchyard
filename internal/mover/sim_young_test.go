@@ -27,6 +27,9 @@ var youngStrategies = func() []simStrat {
 	// are compared with it, as in wy move.
 	shipped := func(s simStrat) simStrat { s.p.YoungGate = DefaultParams.YoungGate; return s }
 	floor := func(s simStrat) simStrat { s.p.MinBurn = DefaultParams.MinBurn; return s }
+	youngMin := func(m int) func(simStrat) simStrat {
+		return func(s simStrat) simStrat { s.p.YoungGate = time.Duration(m) * time.Minute; return s }
+	}
 	readFull := func(s simStrat) simStrat { s.readFull = true; return s }
 	ageW := func(l *simLane, full float64) float64 { return math.Min(1, float64(l.age)/full) }
 	gate := func(min int) func(l *simLane) float64 {
@@ -71,6 +74,9 @@ var youngStrategies = func() []simStrat {
 		mk("startup burst, as now", true, nil),
 		shipped(mk("shipped: YoungGate 15 min (Plan)", true, nil)),
 		floor(shipped(mk("shipped + burn floor 1 point/h, greedy stop", true, nil))),
+		floor(youngMin(5)(mk("floor + young left out 5 min only", true, nil))),
+		floor(youngMin(3)(mk("floor + young left out 3 min only", true, nil))),
+		floor(mk("floor + young < 15 min at max(size-class est, rate × age/10)", true, est)),
 		mk("(a) counts from 8 min", true, gate(8)),
 		mk("(a) counts from 10 min", true, gate(10)),
 		mk("(a) counts from 12 min", true, gate(12)),
@@ -88,7 +94,7 @@ var youngStrategies = func() []simStrat {
 	// WY_SIM_YOUNG=short: the main candidates only (for the 300-run table).
 	if os.Getenv("WY_SIM_YOUNG") == "short" {
 		var out []simStrat
-		for _, i := range []int{0, 1, 2, 3} {
+		for _, i := range []int{0, 1, 2, 3, 4, 5, 6} {
 			out = append(out, all[i])
 		}
 		return out

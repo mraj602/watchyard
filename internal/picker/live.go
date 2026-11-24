@@ -23,6 +23,11 @@ type LiveAccount struct {
 	// (passes.jsonl): the picker's `--json` lanes weekly_measured_pct is the same Weekly.
 	WeeklyRead, WeeklyMeter float64
 	ReadingAt               time.Time
+	// FiveRead is the 5-hour reading FiveHour starts from (the same reading, ReadingAt),
+	// FiveMeter what the meter, its margin and the unexplained use add (FiveHour = FiveRead +
+	// FiveMeter), and FiveLeases the lease charges the picker adds on top (its 5-hour level is
+	// FiveHour + FiveLeases: lanes too young for the meter to have seen their cost). Shown only.
+	FiveRead, FiveMeter, FiveLeases float64
 }
 
 // LiveLane is one running lane (a lease whose session runs): its burn over the last
@@ -50,8 +55,14 @@ func (in LaneInput) Live() ([]LiveAccount, []LiveLane) {
 			la.FiveReset, la.FiveHour = time.Time{}, 0
 		}
 		la.WeeklyReset = now.Add(time.Duration(v.hrs * float64(time.Hour)))
-		w0, _, _ := c.effective(now)
+		w0, h0, _ := c.effective(now)
 		la.WeeklyRead, la.WeeklyMeter = w0, v.wM-w0
+		if !a.Meter.KeepH {
+			h0 = 0 // as laneLive: the meter alone
+		}
+		if !la.FiveReset.IsZero() {
+			la.FiveRead, la.FiveMeter, la.FiveLeases = h0, v.hM-h0, math.Max(0, v.h-v.hM)
+		}
 		if !c.noTS {
 			la.ReadingAt = c.ts
 		}

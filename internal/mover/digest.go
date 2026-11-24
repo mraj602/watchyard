@@ -30,6 +30,13 @@ type PassAccount struct {
 	Read7     float64 `json:"l7_read,omitempty"`
 	Read7AgeS int64   `json:"l7_read_age_s,omitempty"`
 	Meter7    float64 `json:"l7_meter,omitempty"`
+	// Read5, Read5AgeS and Meter5: the same for the 5-hour level (Level5 = Read5 + Meter5, the
+	// same reading as Read7); Leases5: the lease charges the picker's 5-hour level adds on top
+	// (`wy account next --explain` shows Level5 + Leases5).
+	Read5     float64 `json:"l5_read,omitempty"`
+	Read5AgeS int64   `json:"l5_read_age_s,omitempty"`
+	Meter5    float64 `json:"l5_meter,omitempty"`
+	Leases5   float64 `json:"l5_leases,omitempty"`
 }
 
 // PassRecord is one line of <state>/move/passes.jsonl.

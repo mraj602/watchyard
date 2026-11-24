@@ -1912,7 +1912,7 @@ weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
 | No return | never back to the account it left within `move_no_return_min` 60 min, unless that account's 5-hour window reset since | no ping-pong |
 | Account rate limit | at most `move_account_moves` 3 moves into one account per `move_account_window_min` 15 min | a burst of moves must not overfill one account |
 | Once per window | none: a long session may move many times | owner: long sessions may need several moves |
-| Between steps | a mid-turn session is stopped once no step runs, waiting up to `move_step_wait_min` 3 min, never past one minute before the hit | a step stopped half-way is often run again after the resume |
+| Between steps | a mid-turn session is stopped once no step runs, waiting up to `move_step_wait_min` 3 min in all, never past one minute before the hit; a pass's waits run side by side, at most `move_pass_wait_s` 90 s, the rest wait on in the next pass | a step stopped half-way is often run again after the resume |
 | Owner grace | `move_owner_grace_min`, default 0 (off): an interactive session the owner typed into within it stays | the simulator shows no clear gain (below); off |
 
 **Pinned sessions.** A pinned session never moves. Pins come from Claude Code only (the owner's
@@ -1995,7 +1995,10 @@ lane counted as 4 points per hour while Opus lanes here burn 12-26). The switch 
 accounts from the same readings and effective state as the picker (8.5, Effective state; the
 picker's measured level, without lease charges, is `--json` `weekly_measured_pct`), and each
 pass logs the weekly reading and what the meter adds to it in `passes.jsonl` (`l7_read`,
-`l7_read_age_s`, `l7_meter`). Such an account is skipped like a hard limit ("the switch's projection is 97%, over
+`l7_read_age_s`, `l7_meter`), and the same for the 5-hour level from the same reading (`l5_read`,
+`l5_read_age_s`, `l5_meter`; `l5 = l5_read + l5_meter`) with `l5_leases`, the lease charges the
+picker adds on top: `--explain`'s 5-hour level is `l5 + l5_leases` (live: claude-4 at 35.3 for the
+switch and 47 in `--explain`, the difference its young lanes' charges). Such an account is skipped like a hard limit ("the switch's projection is 97%, over
 its cap 95% (it would move a session off)" in `--explain`). Off, the picker is as before.
 
 **Simulator, 1.3.3-pre3 against this release** (`internal/mover/sim_v3_test.go`; every pattern
@@ -2184,14 +2187,22 @@ The plugin's step hooks (`wy hook --step` on `PreToolUse`, `PostToolUse` and
 `<state>/move/steps/<session>/<tool_use_id>`; a call started with `run_in_background` is not a
 step (its shell keeps running after a move). Before it stops a mid-turn session, the pass waits
 until no step is running, up to `move_step_wait_min` (default 3 min) or until one minute before
-the projected hit, whichever is sooner, then stops it at once. The note then says "Your last step
+the projected hit, whichever is sooner, then stops it at once. The waits of one pass run side by
+side and the moves follow one at a time, each as soon as its session is between steps; a pass
+waits at most `move_pass_wait_s` (default 90 s) in all, and a session still inside its step then
+is left for the next pass, which waits on (the wait counts from its first pass,
+`<state>/move/waits/<session>`) until the 3 minutes in all are up (live: three moves waited in
+turn and no pass ran for 6 minutes while another account went from P5 76 to 155). The note then says "Your last step
 finished before the move."; a session still inside a step when the wait runs out is stopped
 anyway, and its note names the step, "It was stopped inside a step (Bash: npm test) that may
 still be running: check its result before redoing it." (the tool's command, path or pattern,
 at most 80 characters, left out when the secret filter of peers.md matches it). A session with
 no step hooks (an older plugin) is stopped as before, with "Your last step may not have finished:
-check its result before redoing it." The wait runs in the pass, which `wy tick` starts detached
-(one pass at a time: `<state>/move/pass.lock`), so the tick is never held up. The timer's
+check its result before redoing it." The wait runs in the pass, which `wy tick` starts detached, so
+the tick is never held up. `<state>/move/pass.lock` is held only while a pass plans (one plans at
+a time); each move holds its session's lock (`<state>/move/locks/<session>.lock`) while it waits
+and runs, so the next pass runs and leaves that session alone ("a move of it is under way"), and
+`wy move` by hand refuses it. The timer's
 systemd service has `KillMode=process`: with the default (`control-group`) systemd kills the
 detached pass when `wy tick` exits, and no timer pass ever finishes (live run, 1.3.3-pre3). A
 unit an older wy wrote is rewritten by the next `wy update`; `wy doctor` warns about one without
@@ -2371,7 +2382,7 @@ move_cap_7d = 98            #   move_cap_5h_protected 80, move_cap_7d_protected 
                             #   move_spike_near_min 30, move_cooldown_min 20, move_no_return_min 60,
                             #   move_account_moves 3, move_account_window_min 15,
                             #   move_stopped_wait_min 20, move_owner_grace_min 0,
-                            #   move_step_wait_min 3
+                            #   move_step_wait_min 3, move_pass_wait_s 90
 move_dest_horizon_min = 90  # an aggressive destination must fit the session this long (its expected time first); 0: until the resets
 move_young_min = 15         # a session's burn counts for the switch once it is this old (its first minutes burn hot); 0: at once
 move_min_burn = 1           # a session is moved only when its own burn is at least this many points/h (busy alone is not enough)

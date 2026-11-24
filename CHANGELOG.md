@@ -137,6 +137,13 @@ All notable changes to Watchyard are recorded here. The format follows
   moved by hand by the owner from claude-6 to claude-2 at 14:05" (path and organisation note as
   before), with no projection ("would hit 100% ... P5 181%").
 
+- **A pass blind for minutes behind its step waits** (live: three mid-turn moves waited in turn,
+  no pass for 6 minutes while claude-4 went from P5 76 to 155). The waits run side by side, at
+  most `account.move_pass_wait_s` (default 90) in a pass; a session still inside its step waits
+  on in the next pass, up to `move_step_wait_min` in all. The pass lock is held only while a pass
+  plans; each move holds its session's lock, so the next pass runs and leaves it alone.
+- **`passes.jsonl` shows the 5-hour level's parts** (`l5_read`, `l5_read_age_s`, `l5_meter`,
+  `l5_leases`): `--explain`'s 5-hour level is the switch's plus the lease charges of young lanes.
 - **The switch moved every unpinned session off an account already near its cap** (live:
   claude-3 at 84.1% of its week, cap 88 with 2 pins, mostly pinned burn). Its target was cap − 5
   = 83, under the level now, so no moves could meet it. When a window's level is already at or

@@ -149,7 +149,9 @@ one folder.
   move/notes/<session>.json    the one-line note the moved session's SessionStart hook prints once
   move/runs/<pid>.json, move/orders/<pid>.json  wy run wrappers and their relaunch orders
   move/steps/<session>/<id>    one tool call of a session: start and end (step hooks; ended ones kept a day)
-  move/pass.lock               held by the running Smart Account Switch pass (one at a time)
+  move/pass.lock               held while a Smart Account Switch pass plans (one at a time)
+  move/locks/<session>.lock    held while a move of the session waits for its step and runs
+  move/waits/<session>         when a mid-turn move of the session began waiting (across passes)
   move/pins.json               retired: pins of the old wy move --pin-account, left in place and
                                not read (pins come from Claude Code's <config dir>/jobs/pins.json)
   move/logs/<session>.log      output of a moved headless session

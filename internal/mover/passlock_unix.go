@@ -9,13 +9,40 @@ import (
 )
 
 // PassLock takes <state>/move/pass.lock without waiting, so only one Smart Account Switch
-// pass runs at a time (a pass may wait minutes for a step to end). ok is false when another
-// pass holds it; unlock releases it.
+// pass plans at a time. ok is false when another pass holds it; unlock releases it.
 func (s State) PassLock() (unlock func(), ok bool, err error) {
+	return s.flock(s.path("pass.lock"))
+}
+
+// SessionLock takes <state>/move/locks/<session>.lock without waiting: held while a move of
+// the session waits for its step and runs, so another pass (or wy move by hand) leaves it.
+func (s State) SessionLock(sessionID string) (unlock func(), ok bool, err error) {
+	if !sidRe.MatchString(sessionID) {
+		return nil, false, errors.New("bad session id")
+	}
+	if err := os.MkdirAll(s.path("locks"), 0o700); err != nil {
+		return nil, false, err
+	}
+	return s.flock(s.path("locks", sessionID+".lock"))
+}
+
+// Moving says whether a move of the session holds its lock now.
+func (s State) Moving(sessionID string) bool {
+	unlock, ok, err := s.SessionLock(sessionID)
+	if err != nil {
+		return false
+	}
+	if ok {
+		unlock()
+	}
+	return !ok
+}
+
+func (s State) flock(path string) (unlock func(), ok bool, err error) {
 	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
 		return nil, false, err
 	}
-	f, err := os.OpenFile(s.path("pass.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, false, err
 	}

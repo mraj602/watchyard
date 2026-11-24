@@ -51,6 +51,9 @@ type Params struct {
 	// StepWait: a mid-turn move waits at most this long for the step in flight to end (or
 	// less, when the hit comes sooner); then it kills inside the step.
 	StepWait time.Duration
+	// PassWait: one pass waits at most this long in all for its mid-turn moves (side by side);
+	// a session still inside its step then waits on in the next pass, until StepWait in all.
+	PassWait time.Duration
 	// OwnerGrace: an interactive session the owner typed into this recently is left alone (0:
 	// off, the default; the simulator compares 2 minutes).
 	OwnerGrace time.Duration
@@ -108,7 +111,7 @@ var DefaultParams = Params{
 	Hysteresis: 5, BurnWindow: 10 * time.Minute, Pass: time.Minute, WeekSpan: 5 * time.Hour,
 	SpikePasses: 2, ReadingPasses: 3, SpikeNear: 30 * time.Minute,
 	Cooldown: 20 * time.Minute, NoReturn: time.Hour, AccountMoves: 3, AccountWindow: 15 * time.Minute,
-	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, Orgs: OrgsAny,
+	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, PassWait: 90 * time.Second, Orgs: OrgsAny,
 	PinReserve5: 10, PinReserve7: 5, PinAlertWithin: 2 * time.Hour,
 	DestHorizon: 90 * time.Minute, CheapMoves: true, YoungGate: 15 * time.Minute, MinBurn: 1,
 }
@@ -191,6 +194,8 @@ type Session struct {
 	Movable bool
 	// Copies: other live processes of the session; never moved while there are any.
 	Copies int
+	// Moving: a move of it (another pass, or by hand) holds its lock now.
+	Moving bool
 	// Context is its context in tokens (a move re-reads it uncached).
 	Context float64
 	// Expected is how much longer it is expected to run (0: unknown).
@@ -621,6 +626,8 @@ func (p Params) excluded(s Session, st *moveState, now time.Time) string {
 		return "pinned, or outside the scope"
 	case !s.Movable:
 		return "its kind cannot be restarted from this machine (claude.ai)"
+	case s.Moving:
+		return "a move of it is under way (waiting for its step)"
 	case s.Copies > 0:
 		return fmt.Sprintf("%d copies of it are running: stop the extra one first", s.Copies+1)
 	}
