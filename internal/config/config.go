@@ -119,6 +119,14 @@ type Config struct {
 	} `toml:"peers"`
 	// Next is the [next] table of `wy account next` (docs/spec/setup.md 8.5).
 	Next Next `toml:"next"`
+	// Account is the [account] table: Smart Account Switch (setup.md 8.6). SmartSwitch on
+	// lets `wy tick` move sessions by itself (default off; `wy move` by hand works either way).
+	// MoveLaunch is the command a moved session is started with ({dir}, {n}, {label}; empty:
+	// env CLAUDE_CONFIG_DIR={dir} claude).
+	Account struct {
+		SmartSwitch bool   `toml:"smart_switch"`
+		MoveLaunch  string `toml:"move_launch"`
+	} `toml:"account"`
 }
 
 // Next is the [next] table: the global settings of `wy account next` and, under
@@ -245,6 +253,8 @@ var known = map[string]spec{
 	"peers.enabled":             {kind: kBool, def: false},
 	"peers.delivery":            {kind: kString, def: "honest"},
 	"peers.hub_may_widen":       {kind: kBool, def: true},
+	"account.smart_switch":      {kind: kBool, def: false},
+	"account.move_launch":       {kind: kString, def: ""},
 	"next.strategy":             {kind: kString, def: NextStrategyLanes},
 	"next.model":                {kind: kString, def: ""},
 	"next.session_5h":           {kind: kFloat, def: float64(15)},

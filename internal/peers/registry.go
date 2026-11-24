@@ -24,6 +24,14 @@ type RegistryEntry struct {
 	Status     string          `json:"status"`
 	Kind       string          `json:"kind"`
 	PeerProtoc json.RawMessage `json:"peerProtocol"`
+	// For Smart Account Switch (setup.md 8.6, Mechanics): how the session was started, whether
+	// Remote Control is on (a bridge session), its background job, its tmux pane when Claude
+	// Code records it, and when its status last changed (Unix milliseconds).
+	Entrypoint      string          `json:"entrypoint"`
+	Bridge          string          `json:"bridgeSessionId"`
+	JobID           string          `json:"jobId"`
+	Tmux            json.RawMessage `json:"tmux"`
+	StatusUpdatedAt int64           `json:"statusUpdatedAt"`
 
 	// Slot is the config folder the entry was read from (not in the file).
 	Slot identity.Slot `json:"-"`

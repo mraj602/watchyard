@@ -6,6 +6,37 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Smart Account Switch** (`wy move`, setup.md 8.6), off by default (`wy config set
+  account.smart_switch on`). It moves a running session to another account only when its account
+  would reach its 5-hour or weekly limit before that window resets at the current burn, not at a
+  fixed percentage. Cheapest levers first: the picker already holds new lanes off such an account;
+  moves come only when that is not enough. Moves follow token-saving rules: only at a turn boundary
+  (or once a limit has stopped the session), sessions with a cold prompt cache and small contexts
+  first, never one the owner is typing into or one expected to finish before the hit, at most once
+  per 5-hour window, only when the stall saved outweighs the context re-read, to an account with
+  room for the session's expected life (protected accounts last), with a cooldown and no
+  ping-pong. A session is stopped with SIGKILL (its background shells keep running) and resumed
+  with its own flags under the new account: in its tmux pane, in its terminal under the new
+  `wy run` wrapper (or the opt-in `claude` shim, `wy run --install-shim`), as a background
+  session (`--resume <id> --bg`), or headless (`-p --resume`); plain terminals get the steps. The
+  moved session gets one line on resume and nothing else changes for other sessions. `wy move
+  --plan` shows the forecast and the moves; `wy move <session> [<account>]` moves one by hand;
+  `--pin-account` or the peers tag `no-move` opts a session out. In the simulator (300 runs per
+  pattern) the default cuts lane-minutes stopped at a limit from 4,210 to 539 a day, as well as
+  a fixed 92% threshold does (536), with half its limit hits, half its moves and token cost, no
+  session killed mid-turn and no ping-pong.
+
+### Fixed
+
+- A session resumed under another account (`CLAUDE_CONFIG_DIR=<other> claude --resume <id>`)
+  now follows it: the hub, `wy status` and the board re-attribute it to the new account from its
+  first live record there (a hook event or a complete `claude agents` list) instead of keeping it
+  as "done" on the first account, and its old peers handle stays an alias so messages to it are
+  delivered instead of being refused with `account_mismatch`. Hub schema v22 records where it
+  moved from.
+
 ## [1.3.2] - 2026-11-24
 
 ### Changed

@@ -45,6 +45,9 @@ type Input struct {
 	// Expects are the agents' estimates per lane, in pick order (--expect, --expect-minutes,
 	// --expect-tokens; the last one holds for the rest); none: medium or the measured median.
 	Expects []LaneExpect
+	// OnLanes, when set, sees the lanes strategy's input before it ranks (Smart Account
+	// Switch reads the accounts and the running lanes from it: Live).
+	OnLanes func(LaneInput)
 }
 
 // Ranked is one account in the result.

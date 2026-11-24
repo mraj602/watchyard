@@ -1495,13 +1495,14 @@ single write and flushed to disk (`fsync`, and the folder when a day file is cre
 the next. Lines:
 
 - `{"v": 1, "op": "lease", "id", "at", "key", "account", "org", "folder", "label", "kind",
-  "session_id", "c5", "cf", "model", "strategy", "urgent", "batch", "drain", "finish_by"}`: `id` a ULID, `at` the
+  "session_id", "c5", "cf", "model", "strategy", "urgent", "batch", "drain", "finish_by", "moved_from"}`: `id` a ULID, `at` the
   pick time (RFC 3339 UTC), `key` the seat key, `kind` `aggressive` or `protected`,
   `session_id` from `--session-id` (absent without it), `c5` and `cf` the lane charge and full
   cost in 5-hour points, `model` from `--model` (absent without it), `strategy` the strategy
   that picked, `urgent` true when `--urgent` passed a burst cap, `batch` the id shared by the
   picks of one call, `drain` true and `finish_by` (RFC 3339 UTC) for a drain pick (both absent
-  otherwise).
+  otherwise). A move (8.6) writes a `lease` line with `strategy` `move` and `moved_from`, the
+  label of the account the session left.
 - `{"v": 1, "op": "launched", "at", "session_id"}`: written by `wy hook` on `SessionStart`.
 - `{"v": 1, "op": "ended", "at", "session_id"}`: written by `wy hook` on `SessionEnd`.
 
@@ -1783,6 +1784,139 @@ given twice; nothing was written (make new ids and ask again). 2: usage. 1: anot
 hub that cannot be read is not one: the command falls back to local data; a ledger that
 cannot be written is one, since the pick could not be recorded).
 
+### 8.6 Smart Account Switch (`wy move`)
+
+Smart Account Switch moves a running session to another account when its account would reach
+its 5-hour or weekly limit **before that window resets**, at the burn of the sessions running on
+it now. It is not a fixed percentage. It is off by default; `wy move` by hand works either way.
+
+**Setting.** `wy config set account.smart_switch on|off` (default `off`). Off: nothing moves by
+itself. On: `wy tick` runs one pass (`wy move --auto`) at most every 2 minutes. Per session
+opt-out: the peers tag `no-move` (`wy peers tag add no-move`) or `wy move --pin-account
+<session>` (`--unpin` undoes it; kept in `<state>/move/pins.json`). Planned, not in this version:
+the board's Settings toggle and the phone toggle, through an owner-scope hub field
+`account.smart_switch` (boolean) that machines copy into their `config.toml`.
+
+**Levers, cheapest first.** 1) New lanes: `wy account next` (lanes) already keeps a new lane off
+an account whose running lanes will burn its 5-hour window to the limit (8.5, the 5-hour check):
+free. 2) Moves: only when the forecast with the sessions already running hits before the reset,
+so holding new lanes cannot help. A session expected to finish before the predicted hit is never
+moved.
+
+**Inputs.** Per account, the lanes picker's own measured levels now (the reading, the token
+meter since it with its margins and the unexplained use; no lease charges), the resets, the
+calibrated ratio ρ (5-hour points per weekly point) and f (5-hour points per token unit), read
+the way `wy account next --no-reserve` reads them (hub when it can be read, else local). Per
+session, from Claude Code's session registry in every config folder (`<folder>/sessions/<pid>.json`:
+pid, session id, cwd, name, kind, status `idle`/`busy` and when it changed, a Remote Control
+bridge), the process table (its command line; its start time, so a reused pid is never
+touched) and `tmux list-panes`: its **burn** (the lease's tokens over the last 15 minutes ×
+f, else its token rows of the last 15 minutes × f, in 5-hour points per hour), its age (the
+lease, else its first token row), its `--expect` if it was leased with one, its context (the
+newest `context_pct` × 200k tokens), whether it is idle and for how long, and its last move
+(`<state>/move/moves.jsonl`). The environment of another process is never read (keys.md 8).
+
+**Forecast.** Per account and window (5h, 7d): the level now plus, for each running session that
+is not stopped at a limit, its rate (burn + 0.5 × its helper burst) for its expected remaining
+time, until the window resets; a session's expected remaining time is its `--expect` left, else
+its age again (the Lindy rule), at least 15 minutes; the weekly window counts 5-hour points / ρ.
+The hit time is where this piecewise-linear line reaches the limit (100); no hit before the reset
+means no move. An account whose 5-hour window has not started resets 5 hours from now.
+
+**Decision (the defaults, M4).** Each pass, for each account whose forecast hits before the
+reset (soonest hit first):
+
+| Rule | Default | Why |
+| --- | --- | --- |
+| Trigger | the hit is before the reset and within 90 min (H) | a far hit waits for later readings; 90 min beat 45 min and no horizon in the simulator |
+| Already stopped | a session a limit stopped moves at once | nothing is lost; it is the only exception to the turn rule |
+| Turn boundary | only an idle session (registry `idle`, no subagent or tool running) | a kill mid-turn loses the turn and its subagents |
+| Near hit, mid-turn | under 5 min to the hit: planned as a wait, moved as soon as it stops | it would stop at the limit anyway |
+| Owner at it | an interactive session whose status changed in the last 3 min is not moved | the owner is typing or reading |
+| Which sessions | stopped first, then idle with a cold prompt cache (idle over 5 min), then idle, then the most room freed per point of move cost | a cold cache costs nothing extra to re-read |
+| Move cost | 0.2 + 1.2 × context in millions of tokens (× 0.6 Sonnet, × 0.2 Haiku) 5-hour points; 0.2 when the cache is cold | the first turn on the new account re-reads the context uncached |
+| Benefit test | (stalled hours) × (its rate + 5) > move cost; stalled = from the hit to the reset or its end | 5 points per stalled lane-hour stand for the owner's time |
+| Enough | moves stop when the source no longer hits with 5 points of slack | fewest moves |
+| Destination | the picker's order (its first pick first), aggressive before protected, never stale, logged out or its own; its forecast with the session (its own burn and remaining time) and those already planned onto it must stay 5 points under its limits until its own resets | runway for the session's expected life; hysteresis 5 beat 10 in the simulator |
+| Once per window | a session moved in the last 5 hours is not moved again (unless stopped) | no churn |
+| Cooldown | 30 min per session, always | |
+| No ping-pong | never back to the account it left within 2 h | |
+| Account rate limit | at most 3 moves into one account per 30 min | |
+| No messages | nobody is messaged: the old peers handle stays an alias (identity.md 5.3); parents see the move in `wy status`, the board and the ledger | |
+
+**Strategies compared** (`internal/mover` simulator, 300 seeded 2-day runs per pattern, 7 accounts
+one of them protected, the 1.3.2 picker placing new lanes, readings lagging 1-10 minutes):
+M0 no moves; M1 a fixed 5-hour threshold of 92%; M2 predictive (hit before reset), the
+highest-burn sessions, mid-turn allowed; M3 M2 with cost-aware selection, slack, hysteresis 10,
+cooldown, no ping-pong, an account rate limit and turn boundaries; M4 M3 with the helper burst,
+the 90-minute horizon, hysteresis 5 and the token rules above. M4 is the default. Patterns:
+helper panels (bursts), long Opus lanes, pile-ups (4 lanes onto one fresh account), noisy and
+lagged readings, mixed. Invariants checked on every pass: no destination whose forecast with
+the moved sessions hits before its reset (M2-M4); no move mid-turn unless stopped, none twice
+within the cooldown (M3, M4); the same seed gives the same result.
+
+**Mechanics, by kind.** Every move first checks the pid is still the same process, then stops
+claude with SIGKILL only (a clean exit would stop its background shells; they keep running and
+the resumed session no longer tracks them), then starts `claude --resume <id>` with the
+session's own flags (cwd, `--model`, `--permission-mode`, `--settings`, `--mcp-config`,
+`--plugin-dir`, `--add-dir` ...; without `--resume`/`-c`/`--session-id`/`--fork-session` and
+its first prompt) under the new account. The command is `account.move_launch` with `{dir}`,
+`{n}` (the N of `~/.claude-N`) and `{label}` filled and the arguments appended (e.g.
+`~/bin/claude-launch {n}`), else `env CLAUDE_CONFIG_DIR=<dir> claude`; started processes get
+this environment without `CLAUDE_CONFIG_DIR`, `CLAUDECODE` and `CLAUDE_CODE_*`.
+
+| Kind | Detected by | Restart |
+| --- | --- | --- |
+| tmux | a tmux pane's process is the session's or above it | `remain-on-exit on`, SIGKILL, `respawn-pane -k -c <cwd> "bash -ic '<command>'"`, `remain-on-exit` unset |
+| `wy run` | a `wy run` wrapper within 4 levels above it (`<state>/move/runs/<pid>.json`) | an order in `<state>/move/orders/<wrapper pid>.json`, SIGKILL; the wrapper starts the command in the same terminal |
+| background | registry kind `bg` or `--bg` | SIGKILL, then `<command> --resume <id> --bg "<note>"`, detached (`--bg` needs a prompt: the note is it) |
+| headless | `-p`/`--print` | SIGKILL, then `<command> -p ... --resume <id> "<note>"`, detached, its output appended to `<state>/move/logs/<id>.log` (whoever read the old one's output does not get it) |
+| plain terminal | none of the above | advise only: `wy move --plan` and `wy move <session> --dry-run` print the steps (kill -9 from another terminal, then the command) |
+| claude.ai (`--sdk-url`) | its command line | not movable from the machine |
+
+`wy move <session> --bg` restarts a tmux, `wy run` or plain-terminal session as a background
+session instead (it then leaves its terminal). Remote Control: the session keeps its kind; the
+resumed process is a new Remote Control session only if Remote Control comes on by itself
+(settings) under the new account; otherwise the owner turns it on again with `/remote-control`,
+and the claude.ai list shows the old entry as ended. Windows: not supported (no SIGKILL, no tmux).
+
+**New and old sessions.** `wy run [--] claude ...` (and `wy account next --exec -- wy run claude
+...`) makes a plain-terminal session movable in place: it runs claude as its child, records
+itself in `<state>/move/runs/`, and when claude ends with a relaunch order waiting it starts the
+ordered command, else exits with claude's code; Ctrl-C reaches claude only. `wy run
+--install-shim <dir>` writes an opt-in `<dir>/claude` that runs the real claude through `wy run`
+(put `<dir>` first on PATH; `--remove-shim` removes only a file it wrote). Sessions started
+before the switch was turned on need nothing: they are movable as soon as their launch spec can
+be rebuilt from the registry, the command line and tmux.
+
+**The moved session.** It gets one line, once: `wy hook --peers-context SessionStart` prints it
+as `additionalContext` when `<state>/move/notes/<session>.json` exists (written before the kill,
+dropped after an hour), with peers on or off; a background or headless resume gets it as its
+prompt instead. Nothing about the feature is added to any other session's SessionStart text.
+The line:
+
+> Watchyard moved this session from claude-4 to claude-2 at 10:31 (5h would have hit at 10:48,
+> before its 13:59 reset). Background shells started before are still running but no longer
+> tracked here: check their output files.
+
+(A session a limit stopped: "(stopped at the 5h limit, which resets at 13:59)"; a move by hand
+without a forecast hit: no parenthesis.)
+
+**Records.** `<state>/move/moves.jsonl`: `{"at", "session_id", "from", "to", "from_dir", "to_dir",
+"kind", "auto", "reason", "argv", "error"}` per move (failed ones with `error`). The lease
+ledger (8.5): an `ended` line for the session's lease, then a `lease` line on the new account
+with `strategy` `move` and `moved_from` (the old account's label), and `launched`. The hub and
+`wy status` follow the session to the new account from its next hook event (identity.md 5.3).
+
+**Commands.** `wy move --plan [--json]`: each account's forecast and the moves a pass would make
+(with the steps for a session it cannot restart). `wy move <session> [<account>] [--dry-run]
+[--bg] [--now]`: one move by hand (the session by id, id prefix of at least 4 characters or
+name; the account by label, folder or number, else the decision's destination); a session in the
+middle of a turn is refused without `--now`. `wy move --auto`: one pass, only when
+`account.smart_switch` is on. `wy move --list [--json]`: the last day's moves. Exit codes: 0
+done, 4 no account can take it, 2 usage, 1 any other error (a kind it cannot restart, after
+printing the steps).
+
 ## 9. Status line, ledger, doctor, uninstall
 
 ### 9.1 Wrapping rule
@@ -1815,6 +1949,10 @@ mcp_exclude = []            # folders left out of MCP sync
 [slots]
 labels  = { "~/.claude-2" = "work" }
 colours = { "~/.claude-2" = "#f59e0b" }
+
+[account]                   # Smart Account Switch (8.6)
+smart_switch = false        # on: wy tick moves sessions predicted to hit a limit before its reset
+move_launch = ""            # command a moved session starts with ({dir}, {n}, {label}); "": env CLAUDE_CONFIG_DIR={dir} claude
 ```
 
 `config.toml` is backed up as `config.toml.bak` before `wy setup` first writes it (paths.md 2)

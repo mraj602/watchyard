@@ -63,6 +63,8 @@ type Line struct {
 	// Drain: picked by the lanes drain rules, to finish by FinishBy (setup.md 8.5, Drain).
 	Drain    bool       `json:"drain,omitempty"`
 	FinishBy *time.Time `json:"finish_by,omitempty"`
+	// MovedFrom: the session moved here from the account with this label (setup.md 8.6).
+	MovedFrom string `json:"moved_from,omitempty"`
 }
 
 // Lease is a lease line with the times of its `launched` and `ended` lines (zero when absent).

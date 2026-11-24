@@ -22,11 +22,11 @@ type PeerSession struct {
 	MachineID, MachineName string
 	SlotFolder             string // the slot's folder ("~/.claude-2"), "" when none
 	State                  string // session_state.state, "" when none yet
+	Live                   bool   // not ended or gone, on a machine that was not removed
 	// MovedFromAccount, MovedFromLabel: the seat the session had before it moved to another
 	// account (identity.md 5.3), "" when it never moved.
-	Live                   bool   // not ended or gone, on a machine that was not removed
-	MovedFromAccount       string
-	MovedFromLabel         string
+	MovedFromAccount string
+	MovedFromLabel   string
 }
 
 const peerSessionSelect = `SELECT s.id, coalesce(s.name, ''), coalesce(s.project, ''), coalesce(s.cwd, ''),
