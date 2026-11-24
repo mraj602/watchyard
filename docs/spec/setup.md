@@ -1886,6 +1886,13 @@ environment of another process is never read (keys.md 8).
   5) (the burn of the next few hours says little about later days).
 - Caps: aggressive `move_cap_5h` = 95 and `move_cap_7d` = 98; protected `move_cap_5h_protected` =
   80 and `move_cap_7d_protected` = 80.
+- **Expiring room.** Within `move_expiring_h` (3) hours of a protected account's weekly reset its
+  weekly cap is `move_cap_7d` (98): the room left would expire unused. Its 5-hour cap stays 80.
+  This holds for the switch (trigger, destinations) and the picker (its drain may use the room;
+  `--explain` prints "Expiring room claude-5: protected, its week resets in 1.1 h: it may be
+  drained to 98% of its week until then", `--json` `expiring_room_cap_7d`; `--plan` says
+  "expiring room"). After the reset the protected caps hold again (live: protected claude-5 at
+  85% an hour before its reset took nothing, its protected cap 80 bounding its drain).
 
 **Decision (the defaults).** An account **triggers** when P5 is over its 5-hour cap or P7 over its
 weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
@@ -1910,7 +1917,7 @@ weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
 | No account fits | no move; `--plan` says why ("no logged-in account on this machine has room for its burn", "no account of its organisation has room (account.move_orgs = same)", "account rate limit") | |
 | Cooldown | `move_cooldown_min` 20 min per session | |
 | No return | never back to the account it left within `move_no_return_min` 60 min, unless that account's 5-hour window reset since | no ping-pong |
-| Account rate limit | at most `move_account_moves` 3 moves into one account per `move_account_window_min` 15 min | a burst of moves must not overfill one account |
+| Account rate limit | at most `move_account_moves` 5 moves of sessions burning at least the burn floor, and at most `move_account_burn` 40 points/h of moved burn (one move always fits), into one account per `move_account_window_min` 15 min. Soft for aggressive accounts: an aggressive account with room that only these limits hold back takes the move before any protected account does (live: claude-2 at 13%/18% had taken 3 moves, two of them 0.2-0.5 points/h, and the next went to protected claude-7, projected 74% against its cap 60) | a burst of moves must not overfill one account; the destination's projection check is the real guard |
 | Once per window | none: a long session may move many times | owner: long sessions may need several moves |
 | Between steps | a mid-turn session is stopped once no step runs, waiting up to `move_step_wait_min` 3 min in all, never past one minute before the hit; a pass's waits run side by side, at most `move_pass_wait_s` 90 s, the rest wait on in the next pass | a step stopped half-way is often run again after the resume |
 | Owner grace | `move_owner_grace_min`, default 0 (off): an interactive session the owner typed into within it stays | the simulator shows no clear gain (below); off |
@@ -1991,7 +1998,12 @@ burn now (this machine's sessions and other machines' sessions the hub measured,
 the new lane's burn, against the switch's caps less the pin reserve. The new lane's burn is the
 larger of its estimate's (cost over wall time, or `r`) and the measured lane burn `R` (8.5 Lane
 statistics): a size class sets how long a lane runs, not how fast it burns (live: a "medium"
-lane counted as 4 points per hour while Opus lanes here burn 12-26). The switch reads the
+lane counted as 4 points per hour while Opus lanes here burn 12-26). The account's own burn is
+projected to the resets; the new lane only over its expected time (`--expect`; else
+`move_dest_horizon_min`, 90 min), at most to the 5-hour reset, at least an hour, as the switch
+judges a destination: a short lane cannot burn 5 hours (live: an idle account refused a 25-minute
+lane at 23 points/h, "projection 115%"). The switch projects a running session with an expected
+end (its lease's) the same way: only until then; unknown or overrun, to the resets. The switch reads the
 accounts from the same readings and effective state as the picker (8.5, Effective state; the
 picker's measured level, without lease charges, is `--json` `weekly_measured_pct`), and each
 pass logs the weekly reading and what the meter adds to it in `passes.jsonl` (`l7_read`,
@@ -2380,10 +2392,11 @@ move_cap_5h = 95            # every number of the decision (8.6, "Decision table
 move_cap_7d = 98            #   move_cap_5h_protected 80, move_cap_7d_protected 80, move_hysteresis 5,
                             #   move_burn_min 10, move_week_span_h 5, move_spike_passes 2,
                             #   move_spike_near_min 30, move_cooldown_min 20, move_no_return_min 60,
-                            #   move_account_moves 3, move_account_window_min 15,
+                            #   move_account_moves 5, move_account_burn 40, move_account_window_min 15,
                             #   move_stopped_wait_min 20, move_owner_grace_min 0,
                             #   move_step_wait_min 3, move_pass_wait_s 90
 move_dest_horizon_min = 90  # an aggressive destination must fit the session this long (its expected time first); 0: until the resets
+move_expiring_h = 3         # within this many hours of a protected account's weekly reset its weekly cap is move_cap_7d (expiring room); 0: never
 move_young_min = 15         # a session's burn counts for the switch once it is this old (its first minutes burn hot); 0: at once
 move_min_burn = 1           # a session is moved only when its own burn is at least this many points/h (busy alone is not enough)
 pin_reserve_5h = 10         # points of the 5-hour window kept free per live pinned session (8.6)

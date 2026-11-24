@@ -329,7 +329,8 @@ func TestPlanDestinationOrder(t *testing.T) {
 }
 
 // Cooldown 20 min per session; no return to the account it left within 60 min unless its
-// window reset since; at most 3 moves into one account per 15 min; no once-per-window limit.
+// window reset since; at most 5 moves into one account per 15 min (soft for an aggressive
+// account with room); no once-per-window limit.
 func TestPlanAntiChurn(t *testing.T) {
 	in := Input{
 		Accounts: []Account{acc("a", 80, 2*time.Hour, 30), acc("b", 0, 1*time.Hour, 10), acc("c", 0, 4*time.Hour, 10)},
@@ -351,19 +352,25 @@ func TestPlanAntiChurn(t *testing.T) {
 	if got := moved(plan(in)); got["s"] != "b" {
 		t.Fatalf("return after a reset: %v", got)
 	}
-	// Account rate limit: 3 moves into c within 15 min.
-	in.Accounts = []Account{acc("a", 80, 2*time.Hour, 30), acc("c", 0, 4*time.Hour, 10)}
+	// Account rate limit: 5 moves into c within 15 min send the next one to d, another
+	// aggressive account with room.
+	in.Accounts = []Account{acc("a", 80, 2*time.Hour, 30), acc("c", 0, 4*time.Hour, 10), acc("d", 0, 4*time.Hour, 10)}
 	in.Recent = nil
-	for i := range 3 {
+	for i := range 5 {
 		in.Recent = append(in.Recent, Record{Session: "o" + string(rune('0'+i)), From: "z", To: "c", At: t0.Add(-5 * time.Minute)})
 	}
-	r = plan(in)
-	if len(r.Moves) != 1 || r.Moves[0].To != "" || !strings.Contains(r.Moves[0].Reason, "rate limit") {
-		t.Fatalf("rate limit: %+v", r.Moves)
+	if got := moved(plan(in)); got["s"] != "d" {
+		t.Fatalf("rate limit: %v", got)
 	}
-	in.Recent = in.Recent[:2]
+	in.Recent = in.Recent[:4]
 	if got := moved(plan(in)); got["s"] != "c" {
 		t.Fatalf("under the rate limit: %v", got)
+	}
+	// A protected account is the only other: the limited aggressive one with room takes it.
+	in.Recent = append(in.Recent, Record{Session: "o9", From: "z", To: "c", At: t0.Add(-5 * time.Minute)})
+	in.Accounts[2].Protected = true
+	if got := moved(plan(in)); got["s"] != "c" {
+		t.Fatalf("aggressive over its limit before protected: %v", got)
 	}
 }
 
@@ -457,6 +464,7 @@ func TestPlanDestinationHorizon(t *testing.T) {
 	in.Params = DefaultParams
 	in.Accounts[1].W5.Level = 60 // 60 + 26.5 × 1 h = 86.5 fits under 90; 60 + 26.5 × 1.5 h would not
 	in.Sessions[0].Expected = 5 * time.Minute
+	in.Accounts[0].W5.Level = 94 // its 5 minutes left still take a over its cap (94 + 2.2)
 	if got := moved(plan(in)); got["s"] != "b" {
 		t.Fatalf("floor: %v", got)
 	}

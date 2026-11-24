@@ -137,6 +137,21 @@ All notable changes to Watchyard are recorded here. The format follows
   moved by hand by the owner from claude-6 to claude-2 at 14:05" (path and organisation note as
   before), with no projection ("would hit 100% ... P5 181%").
 
+- **Expiring protected room went unused** (live: protected claude-5 at 85% of its week, an hour
+  before its reset, 5 hours unused, took nothing: the switch's protected weekly cap 80 bounded its
+  drain). Within `account.move_expiring_h` (default 3) hours of a protected account's weekly reset
+  its weekly cap is the aggressive one (98) for the picker and the switch; its 5-hour cap stays
+  80. `--explain` and `--plan` say "expiring room".
+- **A short lane refused on an idle account** ("the switch's projection is 115%" for a 25-minute
+  lane at 23 points/h). The picker projects the new lane only over its expected time (else 90
+  minutes), at most to the 5-hour reset, at least an hour; the switch projects a running session
+  with an expected end only until then.
+- **Moves went to a protected account while an aggressive one had room** (live: claude-2 at
+  13%/18% had taken 3 moves in 15 minutes, two of them 0.2-0.5 points/h). The per-account limit
+  counts only moves at or over the burn floor, is 5 (`move_account_moves`), and a new
+  `move_account_burn` (40 points/h of moved burn per 15 minutes) limits burn; an aggressive
+  account with room takes a move over these limits before any protected account does. Moves
+  log the session's burn (`rate` in moves.jsonl).
 - **A pass blind for minutes behind its step waits** (live: three mid-turn moves waited in turn,
   no pass for 6 minutes while claude-4 went from P5 76 to 155). The waits run side by side, at
   most `account.move_pass_wait_s` (default 90) in a pass; a session still inside its step waits

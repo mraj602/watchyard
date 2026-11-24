@@ -1394,8 +1394,12 @@ func invariantRun(st simStrat, pat simPattern, i int) []string {
 					fail(in, "%s moved back to %s within %s", s.ID, mv.To, in.Now.Sub(l.At))
 				}
 			}
-			into[mv.To]++
-			if into[mv.To] > p.AccountMoves {
+			if p.countsAsMove(s.Rate) {
+				into[mv.To]++
+			}
+			// The move limit holds for protected accounts; an aggressive one with room takes a
+			// move over it rather than a protected one (the anti-churn limits are soft there).
+			if into[mv.To] > p.AccountMoves && (a.Protected || p.oldChurn) {
 				fail(in, "%d moves into %s within %s", into[mv.To], mv.To, p.AccountWindow)
 			}
 			if p.DestHorizon > 0 && !a.Protected {

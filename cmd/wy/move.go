@@ -263,7 +263,7 @@ func moveCmd(e moveEnv, args []string) error {
 	if *bg && (l.Kind == mover.KindTmux || l.Kind == mover.KindWrapped || l.Kind == mover.KindTerminal) {
 		l.Kind = mover.KindBackground
 	}
-	mv.ByHand = true
+	mv.ByHand, mv.Rate = true, w.byID[l.SessionID].Rate
 	if l.Status == "busy" && *now {
 		mv.MidTurn, l.MidTurn = true, true // it resumes with the note as its prompt
 		if !*dry {
@@ -738,6 +738,8 @@ func moveParams(cfg config.Config) mover.Params {
 	p.SpikePasses, p.SpikeNear = int(a.MoveSpikePasses), mins(a.MoveSpikeNearMin)
 	p.Cooldown, p.NoReturn = mins(a.MoveCooldownMin), mins(a.MoveNoReturnMin)
 	p.AccountMoves, p.AccountWindow = int(a.MoveAccountMoves), mins(a.MoveAccountWindowMin)
+	p.AccountBurn = math.Max(0, a.MoveAccountBurn)
+	p.ExpiringRoom = time.Duration(math.Max(0, a.MoveExpiringH) * float64(time.Hour))
 	p.StoppedWait, p.OwnerGrace, p.StepWait = mins(a.MoveStoppedWaitMin), mins(a.MoveOwnerGraceMin), mins(a.MoveStepWaitMin)
 	p.PassWait = time.Duration(math.Max(0, a.MovePassWaitS) * float64(time.Second))
 	p.PinReserve5, p.PinReserve7 = math.Max(0, a.PinReserve5h), math.Max(0, a.PinReserve7d)
@@ -896,6 +898,9 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		}
 		if pr.Left != "" {
 			state += "; " + pr.Left
+		}
+		if pr.Expiring {
+			state += fmt.Sprintf("; expiring room: weekly cap %.0f%% until its weekly reset in %s", pr.Cap7+pr.Reserve7, pr.Reset7.Round(time.Minute))
 		}
 		if !loggedIn[pr.Key] {
 			state += "; not logged in here (never a destination)"
@@ -1166,7 +1171,7 @@ func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mov
 	argv, err := mover.Execute(host, l, t, cfg.Account.MoveLaunch, note, log)
 	from := w.labelOfDir[l.Slot]
 	entry := mover.LogEntry{At: e.now(), SessionID: l.SessionID, Name: l.Name, From: w.keyOfDir[l.Slot], To: t.Key, FromDir: l.Slot, ToDir: t.Dir,
-		Kind: l.Kind, Auto: auto, Reason: reason, Argv: argv}
+		Kind: l.Kind, Auto: auto, Reason: reason, Argv: argv, Rate: mv.Rate, RateKnown: true}
 	if err != nil {
 		entry.Error = err.Error()
 		_ = st.Append(entry)

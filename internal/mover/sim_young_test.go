@@ -27,6 +27,7 @@ var youngStrategies = func() []simStrat {
 	// are compared with it, as in wy move.
 	shipped := func(s simStrat) simStrat { s.p.YoungGate = DefaultParams.YoungGate; return s }
 	floor := func(s simStrat) simStrat { s.p.MinBurn = DefaultParams.MinBurn; return s }
+	oldChurn := func(s simStrat) simStrat { s.p.oldChurn, s.p.AccountMoves, s.p.AccountBurn = true, 3, 0; return s }
 	youngMin := func(m int) func(simStrat) simStrat {
 		return func(s simStrat) simStrat { s.p.YoungGate = time.Duration(m) * time.Minute; return s }
 	}
@@ -74,6 +75,7 @@ var youngStrategies = func() []simStrat {
 		mk("startup burst, as now", true, nil),
 		shipped(mk("shipped: YoungGate 15 min (Plan)", true, nil)),
 		floor(shipped(mk("shipped + burn floor 1 point/h, greedy stop", true, nil))),
+		oldChurn(floor(shipped(mk("same, anti-churn as before (3 moves, any burn)", true, nil)))),
 		floor(youngMin(5)(mk("floor + young left out 5 min only", true, nil))),
 		floor(youngMin(3)(mk("floor + young left out 3 min only", true, nil))),
 		floor(mk("floor + young < 15 min at max(size-class est, rate × age/10)", true, est)),
@@ -94,7 +96,7 @@ var youngStrategies = func() []simStrat {
 	// WY_SIM_YOUNG=short: the main candidates only (for the 300-run table).
 	if os.Getenv("WY_SIM_YOUNG") == "short" {
 		var out []simStrat
-		for _, i := range []int{0, 1, 2, 3, 4, 5, 6} {
+		for _, i := range []int{0, 1, 2, 3, 4, 5, 6, 7} {
 			out = append(out, all[i])
 		}
 		return out

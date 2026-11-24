@@ -22,6 +22,10 @@ type Params struct {
 	// Cap5Protected and Cap7Protected the same for a protected account.
 	Cap5, Cap7                   float64
 	Cap5Protected, Cap7Protected float64
+	// ExpiringRoom: within this long of a protected account's weekly reset its weekly cap is
+	// Cap7 (its 5-hour cap stays Cap5Protected): its room left would expire unused (setup.md
+	// 8.6, Expiring room). 0: never.
+	ExpiringRoom time.Duration
 	// Hysteresis: moves go on until the source's projections are this far under its caps, and
 	// a destination must stay this far under its own with the moved burn.
 	Hysteresis float64
@@ -42,9 +46,17 @@ type Params struct {
 	// left within it, unless that account's 5-hour window reset since.
 	Cooldown time.Duration
 	NoReturn time.Duration
-	// AccountMoves: at most this many moves into one account per AccountWindow.
+	// AccountMoves: at most this many moves into one account per AccountWindow, counting only
+	// moves of sessions burning at least MinBurn; AccountBurn: at most this much moved burn
+	// (points/h) into one account per AccountWindow (0: no limit; one move always fits). Both
+	// are anti-churn limits: an aggressive account with room takes a move over them rather
+	// than a protected one taking it.
 	AccountMoves  int
+	AccountBurn   float64
 	AccountWindow time.Duration
+	// oldChurn: the limits as before (every move counts, no burn limit, no aggressive
+	// account over them before a protected one); the simulator's comparison row.
+	oldChurn bool
 	// StoppedWait: a session a limit stopped moves only when that window resets at least this
 	// far ahead (nearer, waiting costs less than a restart and a re-read).
 	StoppedWait time.Duration
@@ -107,10 +119,10 @@ const (
 // DefaultParams are the defaults of every rule (setup.md 8.6, Decision, the reason for each).
 var DefaultParams = Params{
 	Name: "V2 move the burners (default)",
-	Cap5: 95, Cap7: 98, Cap5Protected: 80, Cap7Protected: 80,
+	Cap5: 95, Cap7: 98, Cap5Protected: 80, Cap7Protected: 80, ExpiringRoom: 3 * time.Hour,
 	Hysteresis: 5, BurnWindow: 10 * time.Minute, Pass: time.Minute, WeekSpan: 5 * time.Hour,
 	SpikePasses: 2, ReadingPasses: 3, SpikeNear: 30 * time.Minute,
-	Cooldown: 20 * time.Minute, NoReturn: time.Hour, AccountMoves: 3, AccountWindow: 15 * time.Minute,
+	Cooldown: 20 * time.Minute, NoReturn: time.Hour, AccountMoves: 5, AccountBurn: 40, AccountWindow: 15 * time.Minute,
 	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, PassWait: 90 * time.Second, Orgs: OrgsAny,
 	PinReserve5: 10, PinReserve7: 5, PinAlertWithin: 2 * time.Hour,
 	DestHorizon: 90 * time.Minute, CheapMoves: true, YoungGate: 15 * time.Minute, MinBurn: 1,
@@ -218,6 +230,10 @@ type Record struct {
 	Session  string
 	From, To string
 	At       time.Time
+	// Rate: its burn when it moved; RateKnown false for an older log line (counted as a move
+	// at the floor and over).
+	Rate      float64
+	RateKnown bool
 }
 
 // Input is one planning pass.
@@ -260,6 +276,8 @@ type Projection struct {
 	Held      bool
 	// ReadingsOnly: over the caps only at the readings' rate (ReadingPasses passes needed).
 	ReadingsOnly bool `json:",omitempty"`
+	// Expiring: protected, within ExpiringRoom of its weekly reset: Cap7 is the aggressive cap.
+	Expiring bool `json:",omitempty"`
 	// Left: it stays over its target after this pass's moves because no move can lower it
 	// further ("only pinned burn left ...").
 	Left  string `json:",omitempty"`
@@ -646,7 +664,10 @@ func (p Params) place(in Input, res *Result, st *moveState, s Session, a Account
 	mv.To = to
 	if to != "" {
 		mv.OrgChanged = Org(to) != a.Org()
-		st.movedIn[to]++
+		if p.countsAsMove(s.Rate) {
+			st.movedIn[to]++
+		}
+		st.burnIn[to] += math.Max(0, s.Rate)
 		delta[to] += s.Rate
 		if !s.Stopped {
 			delta[a.Key] -= s.Rate
@@ -729,13 +750,18 @@ func (pr Projection) resetOf(w string) time.Duration {
 type moveState struct {
 	last    map[string]Record
 	movedIn map[string]int
+	// burnIn: the burn moved into each account within the account window (recent and planned).
+	burnIn map[string]float64
 }
 
 func (p Params) newMoveState(in Input) *moveState {
-	st := &moveState{last: map[string]Record{}, movedIn: map[string]int{}}
+	st := &moveState{last: map[string]Record{}, movedIn: map[string]int{}, burnIn: map[string]float64{}}
 	for _, r := range in.Recent {
 		if p.AccountWindow > 0 && in.Now.Sub(r.At) < p.AccountWindow {
-			st.movedIn[r.To]++
+			if !r.RateKnown || p.countsAsMove(r.Rate) {
+				st.movedIn[r.To]++
+			}
+			st.burnIn[r.To] += math.Max(0, r.Rate)
 		}
 		if l, ok := st.last[r.Session]; !ok || r.At.After(l.At) {
 			st.last[r.Session] = r
@@ -744,12 +770,21 @@ func (p Params) newMoveState(in Input) *moveState {
 	return st
 }
 
-// caps are the caps of account a.
-func (p Params) caps(a Account) (float64, float64) {
+// caps are the caps of account a at now: a protected account's weekly cap is Cap7 within
+// ExpiringRoom of its weekly reset (expiring).
+func (p Params) caps(a Account, now time.Time) (c5, c7 float64) {
 	if a.Protected {
+		if p.expiring(a, now) {
+			return p.Cap5Protected, math.Max(p.Cap7, p.Cap7Protected)
+		}
 		return p.Cap5Protected, p.Cap7Protected
 	}
 	return p.Cap5, p.Cap7
+}
+
+// expiring: a is protected and its weekly reset is within ExpiringRoom.
+func (p Params) expiring(a Account, now time.Time) bool {
+	return a.Protected && p.ExpiringRoom > 0 && a.W7.Reset.After(now) && a.W7.Reset.Sub(now) <= p.ExpiringRoom
 }
 
 func ratio(a Account) float64 {
@@ -779,10 +814,11 @@ func (p Params) Project(a Account, ss []Session, extra float64, now time.Time) P
 	}
 	r5 = math.Max(r5, sum)
 	r5 = math.Max(0, r5+extra)
-	c5, c7 := p.caps(a)
+	c5, c7 := p.caps(a, now)
 	c5, c7 = math.Max(0, c5-math.Max(0, a.Reserve5)), math.Max(0, c7-math.Max(0, a.Reserve7))
 	pr := Projection{Key: a.Key, Label: a.Label, Protected: a.Protected, Level5: a.W5.Level, Level7: a.W7.Level, R5: r5, RateNote: a.RateNote,
 		Cap5: c5, Cap7: c7, Hit: -1, ratio: ratio(a), Pins: a.Pins, Reserve5: math.Max(0, a.Reserve5), Reserve7: math.Max(0, a.Reserve7)}
+	pr.Expiring = p.expiring(a, now)
 	pr.Reset5 = resetIn(a.W5, now, 5*time.Hour)
 	pr.Reset7 = resetIn(a.W7, now, 7*24*time.Hour)
 	if a.W5.Reset.IsZero() || !a.W5.Reset.After(now) {
@@ -790,6 +826,19 @@ func (p Params) Project(a Account, ss []Session, extra float64, now time.Time) P
 	}
 	h7 := math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())
 	pr.P5, pr.P7 = projection.Levels(pr.Level5, pr.Level7, r5, pr.ratio, pr.Reset5.Hours(), pr.Reset7.Hours(), p.WeekSpan.Hours())
+	if p.MinBurn >= 0 && !p.IdleMoves {
+		// A session expected to end sooner burns only until then: a short lane cannot burn
+		// the rest of the window (live: an idle account, a 25-minute lane at 23 points/h,
+		// projected 115%). Unknown (0) or overrun: the whole window, as before.
+		for _, s := range ss {
+			if s.Stopped || s.Expected <= 0 || s.Rate <= 0 {
+				continue
+			}
+			e := s.Expected.Hours()
+			pr.P5 -= s.Rate * math.Max(0, pr.Reset5.Hours()-e)
+			pr.P7 -= s.Rate / pr.ratio * math.Max(0, math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())-e)
+		}
+	}
 	pr.Hard = pr.Level5 >= c5 || pr.Level7 >= c7
 	switch {
 	case pr.P5 > c5 || pr.Level5 >= c5:
@@ -901,19 +950,56 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 		return idx[x.Key] < idx[y.Key]
 	})
 	last, moved := st.last[s.ID]
-	for _, a := range accs {
-		if moved && p.NoReturn > 0 && last.From == a.Key && now.Sub(last.At) < p.NoReturn && !resetSince(a, last.At, now) {
+	limited := func(a Account) bool {
+		if p.AccountMoves > 0 && st.movedIn[a.Key] >= p.AccountMoves && p.countsAsMove(s.Rate) {
+			return true
+		}
+		return !p.oldChurn && p.AccountBurn > 0 && st.burnIn[a.Key] > 0 && st.burnIn[a.Key]+math.Max(0, s.Rate) > p.AccountBurn
+	}
+	noReturn := func(a Account) bool {
+		return moved && p.NoReturn > 0 && last.From == a.Key && now.Sub(last.At) < p.NoReturn && !resetSince(a, last.At, now)
+	}
+	for i, a := range accs {
+		if noReturn(a) {
 			continue
 		}
-		if p.AccountMoves > 0 && st.movedIn[a.Key] >= p.AccountMoves {
+		if limited(a) {
 			why = "the accounts with room took their moves for now (account rate limit)"
 			continue
+		}
+		if a.Protected && !p.oldChurn {
+			// Before a protected account: an aggressive one with room that only the anti-churn
+			// limits held back takes it (its projection check is the real guard).
+			for _, b := range accs[:i] {
+				if !b.Protected && !noReturn(b) && limited(b) {
+					if _, ok := room(b); ok {
+						return b.Key, ""
+					}
+				}
+			}
 		}
 		if _, ok := room(a); ok {
 			return a.Key, ""
 		}
 	}
+	// Only aggressive accounts were left, held back by the limits: the one with room takes it.
+	for _, b := range accs {
+		if p.oldChurn {
+			break
+		}
+		if !b.Protected && !noReturn(b) && limited(b) {
+			if _, ok := room(b); ok {
+				return b.Key, ""
+			}
+		}
+	}
 	return "", why
+}
+
+// countsAsMove: a move of a session burning rate counts against AccountMoves (one under the
+// burn floor frees nothing and is not churn worth limiting; with MinBurn negative all count).
+func (p Params) countsAsMove(rate float64) bool {
+	return p.oldChurn || p.MinBurn < 0 || rate >= p.MinBurn
 }
 
 // resetSince reports whether a's 5-hour window reset after t.
@@ -952,7 +1038,7 @@ func (p Params) reason(a Account, mv Move, why string, now time.Time) string {
 	case mv.Stopped:
 		fmt.Fprintf(&b, "stopped at the %s limit (resets %s)", mv.Window, Clock(mv.ResetAt, now))
 	default:
-		fmt.Fprintf(&b, "%s projected %.0f%% (cap %.0f%%) at %.1f points/h of burn", mv.Window, mv.P, p.capOf(a, mv.Window), mv.Rate)
+		fmt.Fprintf(&b, "%s projected %.0f%% (cap %.0f%%) at %.1f points/h of burn", mv.Window, mv.P, p.capOf(a, mv.Window, now), mv.Rate)
 		if !mv.HitAt.IsZero() {
 			fmt.Fprintf(&b, ", 100%% at %s", Clock(mv.HitAt, now))
 		}
@@ -969,8 +1055,8 @@ func (p Params) reason(a Account, mv Move, why string, now time.Time) string {
 	return b.String()
 }
 
-func (p Params) capOf(a Account, w string) float64 {
-	c5, c7 := p.caps(a)
+func (p Params) capOf(a Account, w string, now time.Time) float64 {
+	c5, c7 := p.caps(a, now)
 	if w == Win7d {
 		return math.Max(0, c7-math.Max(0, a.Reserve7))
 	}

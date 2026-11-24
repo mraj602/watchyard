@@ -273,6 +273,15 @@ func explainLanes(w io.Writer, res Result) error {
 		pinned[r.key] = true
 		fmt.Fprintln(w, pinLine(r.Label, *r.Lanes))
 	}
+	expiring := map[string]bool{}
+	for _, r := range res.Ranked {
+		if r.Lanes == nil || r.Lanes.ExpiringRoom <= 0 || expiring[r.key] {
+			continue
+		}
+		expiring[r.key] = true
+		fmt.Fprintf(w, "Expiring room %s: protected, its week resets in %.1f h: it may be drained to %s%% of its week until then (its 5-hour cap stays %s%%)\n",
+			r.Label, r.Lanes.HoursToReset, f0(r.Lanes.ExpiringRoom), f0(r.Lanes.FiveHourCap))
+	}
 	drained := map[string]bool{}
 	for _, r := range res.Ranked {
 		if r.Lanes == nil || r.Lanes.Drain == nil || !r.Lanes.Drain.On || drained[r.key] {

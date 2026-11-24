@@ -172,8 +172,12 @@ type LogEntry struct {
 	Kind      Kind      `json:"kind"`
 	Auto      bool      `json:"auto,omitempty"`
 	Reason    string    `json:"reason,omitempty"`
-	Argv      []string  `json:"argv,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	// Rate is the session's burn when it moved (5-hour points per hour; the destination's
+	// moved-burn limit counts it). RateKnown: recorded (a rate of 0 is known too).
+	Rate      float64  `json:"rate,omitempty"`
+	RateKnown bool     `json:"rate_known,omitempty"`
+	Argv      []string `json:"argv,omitempty"`
+	Error     string   `json:"error,omitempty"`
 }
 
 // Append adds a move to the log.
@@ -247,7 +251,7 @@ func (s State) PastSlots(sessionID string, since time.Time) []string {
 func Records(es []LogEntry) []Record {
 	out := make([]Record, 0, len(es))
 	for _, e := range es {
-		out = append(out, Record{Session: e.SessionID, From: e.From, To: e.To, At: e.At})
+		out = append(out, Record{Session: e.SessionID, From: e.From, To: e.To, At: e.At, Rate: e.Rate, RateKnown: e.Rate > 0 || e.RateKnown})
 	}
 	return out
 }

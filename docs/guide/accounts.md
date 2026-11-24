@@ -130,7 +130,9 @@ short, up to 2 hours medium, longer long. A long session is kept off accounts wh
 before it would finish, so short ones use up the room that is about to expire. Without it, a
 session counts as your typical one. A
 protected account drains too, but only when its room would expire even at full speed, and only
-after every aggressive draining account. Then come aggressive accounts whose room is at risk,
+after every aggressive draining account; with Smart Account Switch on, in the last 3 hours before
+its weekly reset (`account.move_expiring_h`) it may be drained up to 98% of its week, its 5 hours
+still kept under 80%. Then come aggressive accounts whose room is at risk,
 then the other aggressive accounts in turn (one whose running sessions will use up its 5 hours
 waits for them), then those with an unknown weekly level, and protected accounts last, only when
 no aggressive account has room. Nothing waits while an account can take a session safely: the

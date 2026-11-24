@@ -65,6 +65,11 @@ type MoverView struct {
 	Cap5, Cap7, Cap5Protected, Cap7Protected float64
 	WeekSpanH                                float64
 	Units                                    map[string]float64
+	// ExpiringH: within this many hours of a protected account's weekly reset its weekly cap is
+	// Cap7 (expiring room; 0: never). DestHorizonH and DestFloorH: a new lane is projected
+	// over min(its expected time (else DestHorizonH), the 5-hour reset), at least DestFloorH,
+	// as the switch judges a destination (0: to the reset).
+	ExpiringH, DestHorizonH, DestFloorH float64
 }
 
 // PinReserve is one account's pin reserve: Pins live pinned sessions keep R5 points of its

@@ -328,7 +328,7 @@ func TestPinInvariants(t *testing.T) {
 					}
 					for k, a := range in.Accounts {
 						pr := r.Accounts[k]
-						c5, c7 := p.caps(a)
+						c5, c7 := p.caps(a, in.Now)
 						if math.Abs(pr.Cap5-math.Max(0, c5-a.Reserve5)) > 1e-9 || math.Abs(pr.Cap7-math.Max(0, c7-a.Reserve7)) > 1e-9 {
 							t.Errorf("%s: caps %v/%v, want %v-%v / %v-%v", a.Key, pr.Cap5, pr.Cap7, c5, a.Reserve5, c7, a.Reserve7)
 						}

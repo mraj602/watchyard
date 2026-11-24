@@ -64,10 +64,13 @@ type LaneView struct {
 	FiveHourCap float64    `json:"five_hour_cap"` // the 5-hour level at which it takes no new session
 	// Pins are the account's live pinned sessions on this machine; PinReserve5hPct and
 	// PinReserve7dPct the points kept free for them, already off the caps (setup.md 8.6).
-	Pins            int        `json:"pins"`
-	PinReserve5hPct float64    `json:"pin_reserve_5h_pct"`
-	PinReserve7dPct float64    `json:"pin_reserve_7d_pct"`
-	Calibration     *CalibView `json:"calibration"`
+	Pins            int     `json:"pins"`
+	PinReserve5hPct float64 `json:"pin_reserve_5h_pct"`
+	PinReserve7dPct float64 `json:"pin_reserve_7d_pct"`
+	// ExpiringRoom: a protected account near its weekly reset whose weekly cap is the
+	// aggressive one until then (setup.md 8.6, Expiring room).
+	ExpiringRoom float64    `json:"expiring_room_cap_7d,omitempty"`
+	Calibration  *CalibView `json:"calibration"`
 	// LeaseCharges are the account's recent leases and what each adds (setup.md 8.5).
 	LeaseCharges []LeaseChargeView `json:"lease_charges"`
 }
@@ -785,7 +788,7 @@ func laneView(row LaneRow, extra float64, now time.Time) LaneView {
 		Leases: row.Leases, Burst: row.Burst, BurstCap: row.BurstCap, Capped: row.Capped, Expiring: row.Expiring,
 		Stale: row.Stale, Unknown: append([]string{}, row.Unknown...), SkipLevel: row.SkipLevel,
 		WeeklyCap: pyRound(row.WeeklyCap, 1), FiveHourCap: pyRound(row.FiveHourCap, 1),
-		Pins: row.Pins, PinReserve5hPct: pyRound(row.PinReserve5, 1), PinReserve7dPct: pyRound(row.PinReserve7, 1),
+		Pins: row.Pins, PinReserve5hPct: pyRound(row.PinReserve5, 1), PinReserve7dPct: pyRound(row.PinReserve7, 1), ExpiringRoom: pyRound(row.ExpiringRoom, 1),
 		LeaseCharges: []LeaseChargeView{}, Class: row.Class}
 	if row.Class != "" {
 		v.Drain = drainView(row.Drain)

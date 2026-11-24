@@ -143,3 +143,74 @@ func TestPlanUnreachableTarget(t *testing.T) {
 		t.Fatalf("moves %+v account %+v", r.Moves, r.Accounts[0])
 	}
 }
+
+// Live (2026-11-25 04:00-04:06): claude-2 (5h 13%, 7d 18%) had taken 3 moves in 15 minutes,
+// two of them 0.2-0.5 points/h, so the next mover went to protected claude-7 (then projected
+// 74% against its cap 60). Moves under the burn floor do not count against the move limit,
+// the limit is 5 and a burn limit of 40 points/h, and an aggressive account with room takes a
+// move over them before a protected one does.
+func TestPlanChurnLimitPrefersAggressive(t *testing.T) {
+	now := time.Date(2026, 11, 24, 22, 36, 0, 0, time.UTC)
+	src := Account{Key: "acct:c4/oA", Label: "claude-4", Rate: 30, Meter: 30, LoggedIn: true, Ratio: 8,
+		W5: Window{Level: 60, Reset: now.Add(2 * time.Hour)}, W7: Window{Level: 50, Reset: now.Add(80 * time.Hour)}}
+	c2 := Account{Key: "acct:c2/oA", Label: "claude-2", LoggedIn: true, Ratio: 8,
+		W5: Window{Level: 13, Reset: now.Add(4 * time.Hour)}, W7: Window{Level: 18, Reset: now.Add(100 * time.Hour)}}
+	c7 := Account{Key: "acct:c7/oA", Label: "claude-7", LoggedIn: true, Ratio: 8, Protected: true,
+		W5: Window{Level: 5, Reset: now.Add(4 * time.Hour)}, W7: Window{Level: 20, Reset: now.Add(100 * time.Hour)}}
+	old := now.Add(-time.Hour)
+	ss := []Session{
+		{ID: "lane-1", Account: src.Key, Rate: 15, Busy: true, Movable: true, Context: 60_000, Started: old},
+		{ID: "lane-2", Account: src.Key, Rate: 15, Busy: true, Movable: true, Context: 60_000, Started: old},
+	}
+	recent := []Record{
+		{Session: "x1", From: src.Key, To: c2.Key, At: now.Add(-6 * time.Minute), Rate: 0.2, RateKnown: true},
+		{Session: "x2", From: src.Key, To: c2.Key, At: now.Add(-5 * time.Minute), Rate: 0.5, RateKnown: true},
+		{Session: "x3", From: src.Key, To: c2.Key, At: now.Add(-4 * time.Minute), Rate: 6, RateKnown: true},
+	}
+	in := Input{Now: now, Params: DefaultParams, Accounts: []Account{src, c2, c7}, Sessions: ss, Recent: recent,
+		Streak: map[string]int{src.Key + " " + Win5h: 5}}
+	r := Plan(in)
+	if len(r.Moves) == 0 {
+		t.Fatalf("no moves: %+v", r.Skips)
+	}
+	for _, m := range r.Moves {
+		if m.To != c2.Key {
+			t.Errorf("%s went to %s, want claude-2", m.Session, m.To)
+		}
+	}
+	// As before (every move counts, 3 a window, no preference): the protected account took it.
+	in.Params.oldChurn, in.Params.AccountMoves, in.Params.AccountBurn = true, 3, 0
+	if r := Plan(in); len(r.Moves) == 0 || r.Moves[0].To != c7.Key {
+		t.Errorf("old limits: %+v", r.Moves)
+	}
+}
+
+// Expiring room (live 2026-11-25 04:25): protected claude-5 at 85% of its week, resetting in
+// about an hour, its 5 hours unused, took nothing. Within ExpiringRoom of its weekly reset a
+// protected account's weekly cap is Cap7; its 5-hour cap stays Cap5Protected. A session expected
+// to end soon is projected only until then (a short lane cannot burn 5 hours).
+func TestPlanExpiringRoomAndShortSessions(t *testing.T) {
+	now := time.Date(2026, 11, 24, 22, 55, 0, 0, time.UTC)
+	src := Account{Key: "acct:c4/oA", Label: "claude-4", Rate: 12, Meter: 12, LoggedIn: true, Ratio: 8,
+		W5: Window{Level: 80, Reset: now.Add(2 * time.Hour)}, W7: Window{Level: 50, Reset: now.Add(80 * time.Hour)}}
+	c5 := Account{Key: "acct:c5/oA", Label: "claude-5", LoggedIn: true, Ratio: 8, Protected: true,
+		W7: Window{Level: 85, Reset: now.Add(64 * time.Minute)}}
+	lane := Session{ID: "lane", Account: src.Key, Rate: 12, Busy: true, Movable: true, Context: 50_000, Started: now.Add(-time.Hour)}
+	in := Input{Now: now, Params: DefaultParams, Accounts: []Account{src, c5}, Sessions: []Session{lane},
+		Streak: map[string]int{src.Key + " " + Win5h: 5}}
+	r := Plan(in)
+	if len(r.Moves) != 1 || r.Moves[0].To != c5.Key || !r.Accounts[1].Expiring || r.Accounts[1].Cap7 != 98 || r.Accounts[1].Cap5 != 80 {
+		t.Fatalf("moves %+v accounts %+v", r.Moves, r.Accounts)
+	}
+	in.Params.ExpiringRoom = 0
+	if r := Plan(in); len(r.Moves) != 1 || r.Moves[0].To != "" {
+		t.Fatalf("without expiring room: %+v", r.Moves)
+	}
+	// The same lane expected to end in 20 minutes: 80 + 12 × 1/3 = 84, under the cap (to the
+	// reset it is 104). claude-5 keeps its 5-hour cap: 12 points/h for its 5 hours fits 80.
+	in.Params = DefaultParams
+	in.Sessions[0].Expected = 20 * time.Minute
+	if r := Plan(in); len(r.Moves) != 0 || r.Accounts[0].P5 > 84.1 {
+		t.Fatalf("short session: %+v %+v", r.Moves, r.Accounts[0])
+	}
+}
