@@ -103,7 +103,7 @@ request failed (network error, 5xx, 429).
 | --- | --- | --- | --- |
 | `v` | integer | yes | Record format version. `1`. A hub that sees a higher `v` stores the record raw and does not type it. The hub says which `v` it reads (`record_v_max`) and clients never send a higher one (machines.md 7.2). |
 | `id` | string | yes | Idempotency key. See 3.1. |
-| `kind` | string | yes | One of the kinds in section 4 (seven original kinds, plus `machine_info`, `direct_push`, `account_lease`, `account_verdicts` and `switch_notice`), or any future kind (`^[a-z][a-z0-9_]{0,39}$`). |
+| `kind` | string | yes | One of the kinds in section 4 (seven original kinds, plus `machine_info`, `direct_push`, `account_lease`, `account_verdicts`, `switch_notice` and `switch_move`), or any future kind (`^[a-z][a-z0-9_]{0,39}$`). |
 | `ts` | string | yes | When the client observed the fact (RFC 3339 UTC, ms). |
 | `machine` | string | yes | The machine id from [identity.md](identity.md) (`m_` + ULID). |
 | `slot` | string | depends | The config folder the fact came from, written with `~` for the home folder and `/` as separator (`~/.claude`, `~/.claude-2`, `~/work/.claude-x`). Required for `hook_event`, `limit_sample`, `session_list`, `slot_info`; optional for `token_rows` and `history_import` (omitted when the transcripts folder is shared by several slots); absent for `web_usage`. |
@@ -622,6 +622,37 @@ untyped. A payload the hub cannot type is stored with `typed = 0` and a `type_er
 | `moves` | integer | yes | The moves in the batch (at least 1), or in the digest's 24 hours (0 or more). |
 | `text` | string | yes | What the owner reads, at most 2000 bytes: one move "<session> <from> -> <to>: <reason>", several "3 moves: a x->y; b ...", or the digest's summary line. |
 | `direct` | boolean | no | True when the machine already pushed it through direct push because the hub was not reachable (machines.md 5.4, condition 4); the hub keeps the alert `skipped` / `direct` and sends nothing. |
+
+### 4.13 `switch_move`
+
+Written by `wy move` on a machine with a hub (`hub.url` set) for every move of a session to
+another account (setup.md 8.6, Switch log): the Smart Account Switch's automatic moves and moves
+by hand, interactive sessions included, and a move that failed (with its error). One record per
+move, written when the move ends and uploaded by the usual flush (no extra flush: the next tick
+sends it). No `seat` and no `slot`: it is the machine's. `ts` is when it was written. The hub
+keeps it in `switch_move` (one row per record id, so a replay makes no second row) for the
+board's Switches page (`GET /v1/switches`, api.yaml); it makes no alert. The hub works out the
+move's number in its session's path (the moves that worked, oldest first) when it reads. A
+machine that does not send the kind has no rows; a hub that does not know the kind stores it
+untyped. A move of a session that another machine runs is stored with `typed = 0` and a
+`type_error` (section 5.1).
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `at` | string | yes | RFC 3339 UTC: when the move was made. |
+| `session_id` | string | yes | 1 to 100 characters: the Claude session's id. |
+| `session_name` | string | no | The session's name, at most 100 bytes. |
+| `kind` | string | yes | How the session ran: `tmux`, `wy-run`, `terminal`, `background` or `headless`. |
+| `interactive` | boolean | no | True for `tmux`, `wy-run` and `terminal`: a human-facing session that got a message where its owner sees it (setup.md 8.6, Interactive). |
+| `from`, `to` | string | yes | 1 to 100 characters each: the labels of the account it left and the one it went to (the folder's name when it has no label). |
+| `auto` | boolean | no | True when the Smart Account Switch moved it; absent or false for a move by hand. |
+| `reason` | string | no | At most 500 bytes: "5h 97% >= 95", "stopped at the 5h limit", "by hand". |
+| `window` | string | no | The window that triggered an automatic move: `5h` or `7d`. |
+| `p5`, `p7` | number | no | The account's projected 5-hour and weekly levels (percent) at its burn when the move was made; absent when the machine had no projection. |
+| `cap5`, `cap7` | number | no | The caps those projections were held to (less the pin reserve). |
+| `burn5` | number | no | The account's 5-hour points per hour. |
+| `cross_org` | boolean | no | True when the destination is another organisation. |
+| `error` | string | no | At most 1000 bytes: why the move failed. Absent when the session was resumed on the new account. |
 
 ## 5. Validation on the hub
 

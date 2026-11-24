@@ -37,7 +37,8 @@ There are two kinds of sign-in:
 
 Screens: **Now** (what needs you, account limits), **Sessions** (search, filter by state,
 group by machine), **Accounts** (limits, resets, pace, most room right now), **Machines** (last seen,
-backlog, version, reach), **Alerts** (rules, quiet hours, recent notifications), **Analytics**
+backlog, version, reach), **Switches** (every move of a session to another account, on every
+machine), **Alerts** (rules, quiet hours, recent notifications), **Analytics**
 ([usage.md](usage.md)), **Peers** ([peers.md](peers.md)), **Keys** ([peers.md](peers.md)),
 **Devices** (owner: paired phones, browsers and machines; rename, revoke, add), **Settings**.
 
@@ -47,7 +48,28 @@ list already on the screen (the last 2 days) on your device; nothing is sent to 
 there is message text to search only while machines send last messages (`privacy.last_message`,
 on by default). The desktop app's Hub view and the Android app have the same box.
 
-"Most room right now" is a suggestion. Watchyard never switches accounts for you.
+"Most room right now" is a suggestion. Watchyard moves sessions between accounts only when you
+turn on the Smart Account Switch or run `wy move`; every such move is logged on **Switches**.
+
+### Switches
+
+The **Switches** page (in the sidebar, under More on a phone, and linked from each machine's card
+and from a moved session's page) is the log of every time a session moved to another account,
+on all your machines, newest first. A strip at the top sums up the chosen dates: moves, sessions
+moved, sessions moved 2 or more times (one that keeps moving may point at too little room), failed
+moves, and how many moves left and entered each account. Each row says, in words, when it
+happened, from which account to which, whether the switch did it by itself or you did it with
+`wy move`, which session (click it to open its page) on which machine and how it ran
+(interactive sessions get a message where you work), why, what the machine had projected for the
+account it left (5-hour and weekly level against the cap, and the burn), whether the new account is
+in another organisation, which move that is in the session's path, and the result: resumed, or
+the error when it failed and the session stayed where it was. Filter by machine, account (the
+one it left or the one it went to), automatic or by hand, failed only, and dates; the filters
+are in the address, so a filtered view can be bookmarked. A session's own page shows its path,
+for example `claude-3 → claude-2 (14:02) → claude-6 (16:40)`.
+
+Only moves made after a machine runs this version appear; before that, `wy move --list --since 7d`
+shows the machine's own file.
 
 ## On a phone
 

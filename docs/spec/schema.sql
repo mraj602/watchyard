@@ -33,6 +33,7 @@
 --   v21 peer_trust; peer_message.from_kind/via_tag (peers.md 4.1a, 10).
 --   v22 session.moved_from_seat/moved_at, session_move (identity.md 5.3: a session moved to another account).
 --   v23 the switch-notice base rules session_moved and switch_digest (push.md 3.9; record.md 4.12).
+--   v24 switch_move: the Smart Account Switch log, one row per move (record.md 4.13; setup.md 8.6 Switch log).
 --
 -- Conventions
 --   * Times are INTEGER milliseconds since the Unix epoch, UTC (`*_at`, `ts`).
@@ -57,7 +58,7 @@ CREATE TABLE schema_version (
 ) STRICT;
 
 INSERT INTO schema_version (version, applied_at, wy_version)
-VALUES (23, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
+VALUES (24, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
 
 -- Hub-wide settings that are not secrets (retention days, last-message policy, …).
 CREATE TABLE setting (
@@ -331,6 +332,33 @@ CREATE TABLE session_move (
   to_slot       INTEGER REFERENCES slot(id)
 ) STRICT;
 CREATE INDEX session_move_session ON session_move(session_id, at);
+
+-- Every move of a session to another account with what made it and its result (v24, record.md
+-- 4.13): the board's Switches page. record_id: a replayed record makes no second row.
+CREATE TABLE switch_move (
+  record_id     TEXT    NOT NULL PRIMARY KEY,
+  machine_id    TEXT    NOT NULL REFERENCES machine(id) ON DELETE CASCADE,
+  at            INTEGER NOT NULL,
+  session_id    TEXT    NOT NULL,
+  session_name  TEXT,
+  kind          TEXT    NOT NULL,
+  interactive   INTEGER NOT NULL CHECK (interactive IN (0, 1)),
+  from_label    TEXT    NOT NULL,
+  to_label      TEXT    NOT NULL,
+  auto          INTEGER NOT NULL CHECK (auto IN (0, 1)),
+  reason        TEXT,
+  window        TEXT,
+  p5            REAL,
+  p7            REAL,
+  cap5          REAL,
+  cap7          REAL,
+  burn5         REAL,
+  cross_org     INTEGER NOT NULL CHECK (cross_org IN (0, 1)),
+  error         TEXT
+) STRICT;
+CREATE INDEX switch_move_at ON switch_move(at DESC);
+CREATE INDEX switch_move_session ON switch_move(session_id, at);
+CREATE INDEX switch_move_machine ON switch_move(machine_id, at DESC);
 
 -- Current state only (states.md). History is in hook_event.
 CREATE TABLE session_state (

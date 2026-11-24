@@ -86,6 +86,26 @@ func moveOutFor(d paths.Dirs, cfg config.Config, now time.Time) moveOut {
 	return o
 }
 
+// queueSwitchMove writes one switch_move record (record.md 4.13) to the outbox for the hub's
+// Switches log; the tick flushes it. Nothing happens without a hub. A failure is not the
+// move's: the log on this machine (moves.jsonl) has it either way.
+func queueSwitchMove(d paths.Dirs, cfg config.Config, now time.Time, p record.SwitchMovePayload) {
+	if cfg.Hub.URL == "" {
+		return
+	}
+	opts, err := directEnv{dirs: d, cfg: cfg}.options()
+	if err != nil {
+		return
+	}
+	r, err := record.NewSwitchMove(record.Meta{Machine: opts.MachineID, Client: "wy/" + version.Version, Now: now}, p)
+	if err != nil {
+		return
+	}
+	ob := outbox.New(opts.OutboxDir)
+	ob.NoFsync = !cfg.Outbox.Fsync
+	_, _ = ob.Append(r)
+}
+
 // directMovePush is the machine's direct push path (push.md 7, machines.md 5): the ntfy topic
 // of `wy direct-push on`. nil when direct push is off or has no topic.
 func directMovePush(o directpush.Options) *movePush {

@@ -463,3 +463,32 @@ mark { background: var(--warn-bg); color: inherit; border-radius: 2px; box-shado
 /* Settings → Keys */
 .key-fp { overflow-wrap: anywhere; }
 .key-fp-big .key-fp { font-size: 1.25rem; font-weight: 600; letter-spacing: 0.02em; }
+
+/* Switches: the Smart Account Switch log, and a session's path through accounts. */
+.sw-filters { align-items: flex-end; }
+.sw-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sw-dates { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; }
+.sw-strip { display: flex; flex-direction: column; gap: 10px; }
+.sw-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+.sw-n { font-size: 26px; font-weight: 600; line-height: 1.1; }
+.sw-accounts { margin: 0; overflow-wrap: anywhere; }
+.sw-list { list-style: none; margin: 0; padding: 0; }
+.sw-row { display: flex; flex-direction: column; gap: 3px; padding: 12px 16px; border-top: 1px solid var(--hair-soft); min-width: 0; }
+.sw-row:first-child { border-top: 0; }
+.sw-failed { border-left: 3px solid var(--failed); }
+.sw-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.sw-move { overflow-wrap: anywhere; }
+.sw-tag { font-size: 12px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--hair); white-space: nowrap; }
+.sw-auto { color: var(--muted); }
+.sw-org { color: var(--warn-ink); background: var(--warn-bg); border-color: transparent; }
+.sw-who, .sw-reason, .sw-proj, .sw-result { overflow-wrap: anywhere; }
+.sw-error { color: var(--failed); }
+.sw-pager { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 6px 0; }
+.sw-steps { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; }
+.sw-steps li { display: inline-flex; align-items: baseline; gap: 6px; }
+.sw-arrow { color: var(--muted); }
+@media (max-width: 640px) {
+  .sw-filters { width: 100%; }
+  .sw-field select, .sw-field input { max-width: 100%; }
+  .sw-row { padding: 12px; }
+}

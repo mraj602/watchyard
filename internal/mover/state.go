@@ -196,6 +196,17 @@ func (s State) Append(e LogEntry) error {
 
 // Log returns the moves since since, oldest first (failed ones left out).
 func (s State) Log(since time.Time) []LogEntry {
+	var out []LogEntry
+	for _, e := range s.LogAll(since) {
+		if e.Error == "" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// LogAll returns every line since since, oldest first, the failed moves (Error set) too.
+func (s State) LogAll(since time.Time) []LogEntry {
 	f, err := os.Open(s.path("moves.jsonl"))
 	if err != nil {
 		return nil
@@ -206,7 +217,7 @@ func (s State) Log(since time.Time) []LogEntry {
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
 	for sc.Scan() {
 		var e LogEntry
-		if json.Unmarshal(sc.Bytes(), &e) == nil && e.Error == "" && !e.At.Before(since) {
+		if json.Unmarshal(sc.Bytes(), &e) == nil && !e.At.Before(since) {
 			out = append(out, e)
 		}
 	}

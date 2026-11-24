@@ -188,6 +188,18 @@ func TestMoveAuto(t *testing.T) {
 	if !strings.Contains(h.calls[0], "(stopped at the 5h limit, which resets at") {
 		t.Errorf("note: %q", h.calls[0])
 	}
+	// The automatic move reaches the hub's log with the projections that made it.
+	files, _ := filepath.Glob(filepath.Join(f.dirs.State.Path, "outbox", "*.jsonl"))
+	var ob []byte
+	for _, name := range files {
+		x, _ := os.ReadFile(name)
+		ob = append(ob, x...)
+	}
+	for _, want := range []string{`"kind":"switch_move"`, `"auto":true`, `"window":"5h"`, `"p5":`, `"cap5":`, `"from":"claude"`} {
+		if !strings.Contains(string(ob), want) {
+			t.Errorf("switch_move lacks %s: %s", want, ob)
+		}
+	}
 	// Pinned: never moved.
 	f2, h2, run2 := moveFixture(t, 100, "idle")
 	f2.hookEvents("5e55a0a0-0000-4000-8000-000000000001", "StopFailure:rate_limit")
@@ -399,5 +411,56 @@ func TestMoveWaitsForStep(t *testing.T) {
 	}
 	if s := mover.NewState(f2.dirs.State.Path).StepNow(sid, time.Now()); s.In {
 		t.Error("the killed process's step is still in flight")
+	}
+}
+
+// wy move --list reads the local file: a day by default, --since for longer, failed moves
+// marked; each move, failed or not, also reaches the hub as a switch_move record.
+func TestMoveListSinceAndHubRecord(t *testing.T) {
+	f, _, run := moveFixture(t, 40, "idle")
+	if _, errOut, code := run("lane-a", "2"); code != 0 {
+		t.Fatalf("move: %d %q", code, errOut)
+	}
+	st := mover.NewState(f.dirs.State.Path)
+	old := mover.LogEntry{At: nextNow.Add(-3 * 24 * time.Hour), SessionID: "5e55a0a0-0000-4000-8000-000000000001", From: "k1", To: "k2",
+		Kind: mover.KindBackground, Auto: true, Reason: "5h 97% >= 95"}
+	if err := st.Append(old); err != nil {
+		t.Fatal(err)
+	}
+	bad := old
+	bad.At, bad.Error = nextNow.Add(-2*time.Hour), "claude not found"
+	if err := st.Append(bad); err != nil {
+		t.Fatal(err)
+	}
+	out, _, _ := run("--list")
+	if strings.Count(out, "\n") != 2 || strings.Contains(out, "5h 97%") && !strings.Contains(out, "FAILED: claude not found") {
+		t.Fatalf("default list %q", out)
+	}
+	if !strings.Contains(out, "FAILED: claude not found") || !strings.Contains(out, "by hand") {
+		t.Fatalf("default list %q", out)
+	}
+	out, _, _ = run("--list", "--since", "7d")
+	if strings.Count(out, "\n") != 3 {
+		t.Fatalf("7d list %q", out)
+	}
+	if out, _, _ = run("--list", "--since", "1h", "--json"); !strings.HasPrefix(out, "[") || strings.Contains(out, "claude not found") {
+		t.Fatalf("1h json %q", out)
+	}
+	if _, errOut, code := run("--list", "--since", "soon"); code == 0 || !strings.Contains(errOut, "--since") {
+		t.Fatalf("bad since: %d %q", code, errOut)
+	}
+	files, _ := filepath.Glob(filepath.Join(f.dirs.State.Path, "outbox", "*.jsonl"))
+	var b []byte
+	for _, name := range files {
+		x, _ := os.ReadFile(name)
+		b = append(b, x...)
+	}
+	if strings.Count(string(b), `"kind":"switch_move"`) != 1 {
+		t.Fatalf("outbox %s", b)
+	}
+	for _, want := range []string{`"from":"claude"`, `"to":"claude-2"`, `"kind":"tmux"`, `"interactive":true`, `"reason":"by hand"`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("record lacks %s: %s", want, b)
+		}
 	}
 }

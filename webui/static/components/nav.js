@@ -31,12 +31,13 @@ export function liveBadge(store) {
 
 // `where`: phone = bottom tabs only, desk = sidebar only, both = everywhere (CSS hides the
 // other, nav-phone / nav-desk). Tabs on a phone: Now, Sessions, Accounts, More; the sidebar
-// on a computer: Now, Sessions, Accounts, Machines, Alerts, Settings, Analytics, Peers (+ Devices for the owner).
+// on a computer: Now, Sessions, Accounts, Machines, Switches, Alerts, Settings, Analytics, Peers (+ Devices for the owner).
 const ITEMS = [
   { id: 'now', href: '#/', label: 'Now', icon: 'M3 12h4l3-8 4 16 3-8h4', where: 'both' },
   { id: 'sessions', href: '#/sessions', label: 'Sessions', icon: 'M4 6h16M4 12h16M4 18h16', where: 'both' },
   { id: 'accounts', href: '#/accounts', label: 'Accounts', icon: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 20c0-4 4-6 8-6s8 2 8 6', where: 'both' },
   { id: 'machines', href: '#/machines', label: 'Machines', icon: 'M3 5h18v10H3zM8 19h8M12 15v4', where: 'desk' },
+  { id: 'switches', href: '#/switches', label: 'Switches', icon: 'M7 4v13M4 14l3 3 3-3M17 20V7M14 10l3-3 3 3', where: 'desk' },
   { id: 'alerts', href: '#/more/alerts', label: 'Alerts', icon: 'M6 9a6 6 0 0112 0c0 6 2 7 2 7H4s2-1 2-7zM10 20a2 2 0 004 0', where: 'desk' },
   { id: 'settings', href: '#/more/settings', label: 'Settings', icon: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19 12l2-1-1-3-2 .5-1.5-1.5.5-2-3-1-1 2h-2l-1-2-3 1 .5 2L6.5 8.5 4.5 8l-1 3 2 1v2l-2 1 1 3 2-.5L8 19.5l-.5 2 3 1 1-2h2l1 2 3-1-.5-2 1.5-1.5 2 .5 1-3-2-1z', where: 'desk' },
   { id: 'analytics', href: '#/more/analytics', label: 'Analytics', icon: 'M5 20V10M12 20V4M19 20v-7', where: 'desk' },

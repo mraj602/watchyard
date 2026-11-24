@@ -96,6 +96,8 @@ var handlerRoutes = []Route{
 	{Method: "POST", Path: "/v1/alerts/{id}/seen", Scopes: []string{"push", "owner"}},
 	{Method: "POST", Path: "/v1/sessions/{id}/seen", Scopes: []string{"push", "owner"}},
 	{Method: "POST", Path: "/v1/actions/{token}"},
+	// The Smart Account Switch log (setup.md 8.6 Switch log).
+	{Method: "GET", Path: "/v1/switches", Scopes: []string{"read", "push", "owner"}},
 	// An owner session makes an owner link for another device (pairing.md 4.1).
 	{Method: "POST", Path: "/v1/owner-links", Scopes: []string{"owner"}},
 

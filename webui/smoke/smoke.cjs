@@ -9,6 +9,7 @@
 //   board login, every screen, live updates, keyboard, the sessions search
 //   a phone claim by QR secret, the phone screens, Seen from the row menu, swipe Snooze
 //   an owner sign-in, Alerts/Settings/Devices and the Add phone dialog
+//   Switches: the log with its strip, the filters (machine, account, by hand, failed, dates), a row's session and its move path
 //   Settings → Peers as the owner (grid, pause/resume, widen, audit) and as a paired phone (narrow only)
 //   Settings → Keys: a paired phone reads it; the owner compares and confirms a pending owner key, then sees Certify
 //   Resume thread: absent for a paired phone on the unresumed stop; the owner clicks it, sees the toast and the button go
@@ -240,6 +241,7 @@ async function boardFlow(sizeName, w, hgt) {
     await visit(page, sizeName, name, hash, sel);
   }
   await analyticsChecks(page, sizeName, 'board');
+  await switchesChecks(page, sizeName);
   // A plain board login has no Rename / Remove / Pull now, but sees reach, version and pull state.
   await visit(page, sizeName, 'machines-readonly', '#/machines', '.machine');
   if (await page.$('.machine-actions')) fail(page.tag('read-only session shows the machine actions'));
@@ -784,6 +786,46 @@ async function analyticsChecks(page, sizeName, who) {
   await sleep(400);
   await shot(page, `${sizeName}-${who}-analytics-7d`);
   await page.evaluate(() => { location.hash = '#/more'; });
+}
+
+// ---- Switches: the Smart Account Switch log and a session's path ------------------------------
+async function switchesChecks(page, sizeName) {
+  const t = (m) => page.tag(`switches: ${m}`);
+  const txt = async (sel) => page.$eval(sel, (e) => e.textContent).catch(() => null);
+  await visit(page, sizeName, 'switches', '#/switches', '[data-key=sw-list]');
+  if ((await page.$$('.sw-row')).length !== 6) fail(t('the default range does not list the 6 moves'));
+  if (!/5\s*Moves/.test((await txt('[data-key=sw-strip]')) || '') || !/1\s*Failed moves/.test((await txt('[data-key=sw-strip]')) || '')) fail(t('the strip does not say 5 moves, 1 failed'));
+  if (!/client: \d+ out/.test((await txt('[data-key=sw-accounts]')) || '')) fail(t('the strip has no per-account line'));
+  if (!/Failed: claude --resume failed/.test((await txt('.sw-failed')) || '')) fail(t('a failed move does not show its error'));
+  if (!(await page.$('.sw-row .sw-org'))) fail(t('the cross-organisation move is not marked'));
+  // Filter by hand: one row. The address keeps the filter.
+  await page.select('[data-key=sw-mode]', 'manual');
+  try { await page.waitForFunction(() => document.querySelectorAll('.sw-row').length === 1, { timeout: 4000 }); } catch (e) { fail(t('the by-hand filter did not leave one move')); }
+  if (!/mode=manual/.test(await page.evaluate(() => location.hash))) fail(t('the filter is not in the address'));
+  await shot(page, `${sizeName}-switches-filtered`);
+  await page.select('[data-key=sw-mode]', '');
+  await page.select('[data-key=sw-machine]', 'm_gpu');
+  try { await page.waitForFunction(() => document.querySelectorAll('.sw-row').length === 2, { timeout: 4000 }); } catch (e) { fail(t('the machine filter did not leave gpu-box\'s 2 moves')); }
+  await page.evaluate(() => { location.hash = '#/switches?account=work&range=all'; });
+  try { await page.waitForFunction(() => document.querySelectorAll('.sw-row').length === 3, { timeout: 4000 }); } catch (e) { fail(t('the account filter (from or to) did not leave 3 moves')); }
+  await page.evaluate(() => { location.hash = '#/switches?mode=auto&result=failed'; });
+  try { await page.waitForFunction(() => document.querySelectorAll('.sw-row').length === 1, { timeout: 4000 }); } catch (e) { fail(t('failed only did not leave 1 move')); }
+  await page.evaluate(() => { location.hash = '#/switches?range=custom&from=2020-01-01&to=2020-01-02'; });
+  try { await page.waitForSelector('[data-key=sw-empty]', { timeout: 4000 }); } catch (e) { fail(t('an empty date range has no explanation')); }
+  // A row's session opens its page, which shows the path.
+  await visit(page, sizeName, 'switches-again', '#/switches?range=all', '[data-key=sw-list]');
+  await page.click(`.sw-row a[href="#/sessions/${PERM}"]`);
+  try { await page.waitForSelector('[data-key=session-moves]', { timeout: 6000 }); } catch (e) { fail(t('the session page has no move path')); return; }
+  const path1 = (await txt('[data-key=session-moves] .sw-steps')) || '';
+  if (!/client.*personal.*work/.test(path1) || /gpu/.test(path1)) fail(t(`the session path reads "${path1}"`));
+  await shot(page, `${sizeName}-session-moves`);
+  await page.click('[data-key=session-moves-all]');
+  try { await page.waitForFunction(() => document.querySelectorAll('.sw-row').length === 3 && /session=/.test(location.hash), { timeout: 4000 }); } catch (e) { fail(t('"Every move and why" did not list the session\'s 3 moves')); }
+  await visit(page, sizeName, 'machines-switches', '#/machines', '.machine');
+  if (!(await page.$('[data-key=machine-switches-m_laptop]'))) fail(t('the machine card has no link to its switches'));
+  if (sizeName === 'desk' && !(await page.$('#nav [data-key=nav-switches]'))) fail(t('the sidebar has no Switches link'));
+  await visit(page, sizeName, 'more-switches', '#/more', '.more-list');
+  if (!(await page.$('.more-list a[href="#/switches"]'))) fail(t('More has no Switches link'));
 }
 
 async function peersChecks(page, sizeName, who, owner) {

@@ -22,6 +22,7 @@ import * as machines from './views/machines.js';
 import * as login from './views/login.js';
 import * as more from './views/more.js';
 import * as alerts from './views/alerts.js';
+import * as switches from './views/switches.js';
 import * as settings from './views/settings.js';
 import * as devices from './views/devices.js';
 import * as peers from './views/peers.js';
@@ -34,7 +35,7 @@ import * as notfound from './views/not-found.js';
 import { toast } from './components/ui.js';
 import { clock } from './format.js';
 
-const VIEWS = { now, sessions, session, accounts, machines, login, more, alerts, settings, devices, peers, keys, analytics, pair, owner, alertRedirect, notfound };
+const VIEWS = { now, sessions, session, accounts, machines, login, more, alerts, switches, settings, devices, peers, keys, analytics, pair, owner, alertRedirect, notfound };
 const navEl = document.getElementById('nav');
 const mainEl = document.getElementById('main');
 const announceEl = document.getElementById('announce');
