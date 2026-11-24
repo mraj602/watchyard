@@ -139,6 +139,12 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **Pace follows the recent burn.** The board's pace line projected the whole window's average
+  rate, so a late burst was missed (weekly 89% with 35 minutes left, burning 9 points an hour,
+  showed "~89% at reset" instead of ~94%). The projection and the time it fills now use the slope
+  of the last hour's readings when there are at least 3 over 20 minutes, else the window's
+  average, and the line says which ("at the last hour's pace", "at this week's average pace").
+  `pace` gains `basis` and `rate_per_hour`.
 - **The switch moved a session pinned in Claude Code** (live: 2abbe6d1 was pinned in Claude
   Code at 03:14 and moved at 03:20). Pins now come from Claude Code only: a session listed in its
   config folder's `jobs/pins.json` (short ids, prefix match; read only, mtime-cached; missing or

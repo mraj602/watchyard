@@ -272,20 +272,84 @@ func PlanOf(capabilities []string, rateTier, ravenType, subscription string) str
 	return "unknown"
 }
 
-// Pace is the projection of a window at its current rate (api.yaml Window.pace).
+// Pace is the projection of a window (api.yaml Window.pace).
 type Pace struct {
 	ProjectedPct float64    `json:"projected_pct"`
 	FullAt       *time.Time `json:"-"`
 	Band         string     `json:"band"`
+	// Basis says which rate the projection used: BasisRecent (the slope of the last hour's
+	// readings, RatePerHour points an hour) or BasisAverage (the whole window so far).
+	Basis       string  `json:"basis"`
+	RatePerHour float64 `json:"rate_per_hour"`
 }
 
-// PaceOf projects used% at reset from the share of the window that has passed. It returns
-// nil when the window is too young (under 5 % elapsed) to say anything, already reset, or
-// its start is unknown.
+// Pace bases.
+const (
+	BasisRecent  = "recent"
+	BasisAverage = "average"
+)
+
+// Reading is one used-percent reading of a window.
+type Reading struct {
+	At   time.Time
+	Used float64
+}
+
+// The recent rate needs RecentMin readings of the last RecentSpan that stretch over at least
+// RecentMinSpan; with fewer the window's average rate is used.
+const (
+	RecentSpan    = time.Hour
+	RecentMin     = 3
+	RecentMinSpan = 20 * time.Minute
+)
+
+// RecentRate is the slope, in percent points an hour, of a straight line through the readings
+// of the last RecentSpan (never below 0: a window's use only grows). ok is false when there
+// are too few readings, or they cover too little time, to say.
+func RecentRate(rs []Reading, now time.Time) (perHour float64, ok bool) {
+	var pts []Reading
+	for _, r := range rs {
+		if !r.At.After(now) && now.Sub(r.At) <= RecentSpan {
+			pts = append(pts, r)
+		}
+	}
+	if len(pts) < RecentMin {
+		return 0, false
+	}
+	first, last := pts[0].At, pts[0].At
+	for _, r := range pts {
+		if r.At.Before(first) {
+			first = r.At
+		}
+		if r.At.After(last) {
+			last = r.At
+		}
+	}
+	if last.Sub(first) < RecentMinSpan {
+		return 0, false
+	}
+	var sx, sy, sxx, sxy float64
+	n := float64(len(pts))
+	for _, r := range pts {
+		x := r.At.Sub(first).Hours()
+		sx, sy, sxx, sxy = sx+x, sy+r.Used, sxx+x*x, sxy+x*r.Used
+	}
+	den := n*sxx - sx*sx
+	if den <= 0 {
+		return 0, false
+	}
+	return math.Max(0, (n*sxy-sx*sy)/den), true
+}
+
+// PaceOf projects used% at reset. With enough recent readings (RecentRate) it adds the recent
+// rate over the time left to the use now, so a week that was quiet and is burning now, or the
+// other way round, reads true; otherwise it takes the whole window's average rate (used x
+// total / elapsed). It returns nil when the window is too young (under 5 % elapsed) to say
+// anything, already reset, or its start is unknown.
 //
 // Bands: comfortable (projected <= 70 %), on_track (<= 100 %), fast (<= 130 %),
 // runaway (> 130 %).
-func PaceOf(used float64, started, resets, now time.Time) *Pace {
+func PaceOf(used float64, started, resets, now time.Time, recent []Reading) *Pace {
 	if started.IsZero() || resets.IsZero() || !resets.After(started) || !now.Before(resets) {
 		return nil
 	}
@@ -295,7 +359,14 @@ func PaceOf(used float64, started, resets, now time.Time) *Pace {
 		return nil
 	}
 	proj := used * total / elapsed
-	p := &Pace{ProjectedPct: math.Round(proj*10) / 10}
+	rate := used / (elapsed / 3600) // average points an hour
+	p := &Pace{Basis: BasisAverage}
+	if r, ok := RecentRate(recent, now); ok {
+		rate, p.Basis = r, BasisRecent
+		proj = used + r*resets.Sub(now).Hours()
+	}
+	p.ProjectedPct = math.Round(proj*10) / 10
+	p.RatePerHour = math.Round(rate*10) / 10
 	switch {
 	case proj <= 70:
 		p.Band = "comfortable"
@@ -306,8 +377,11 @@ func PaceOf(used float64, started, resets, now time.Time) *Pace {
 	default:
 		p.Band = "runaway"
 	}
-	if used > 0 && proj > 100 {
-		full := started.Add(time.Duration(elapsed * 100 / used * float64(time.Second)))
+	if used > 0 && proj > 100 && rate > 0 {
+		full := now.Add(time.Duration((100 - used) / rate * float64(time.Hour)))
+		if p.Basis == BasisAverage {
+			full = started.Add(time.Duration(elapsed * 100 / used * float64(time.Second)))
+		}
 		if full.Before(resets) {
 			p.FullAt = &full
 		}

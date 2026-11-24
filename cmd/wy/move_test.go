@@ -441,7 +441,7 @@ func TestMoveListSinceAndHubRecord(t *testing.T) {
 	if strings.Count(out, "\n") != 3 {
 		t.Fatalf("7d list %q", out)
 	}
-	if out, _, _ = run("--list", "--since", "1h", "--json"); !strings.HasPrefix(out, "[") || strings.Contains(out, "claude not found") {
+	if out, _, _ = run("--list", "--since", "1h", "--json"); !strings.HasPrefix(out, "{") || strings.Contains(out, "claude not found") {
 		t.Fatalf("1h json %q", out)
 	}
 	if _, errOut, code := run("--list", "--since", "soon"); code == 0 || !strings.Contains(errOut, "--since") {

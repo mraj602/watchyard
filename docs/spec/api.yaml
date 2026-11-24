@@ -2462,9 +2462,11 @@ components:
         updated_at: {type: [string, "null"], format: date-time}
         pace:
           type: [object, "null"]
-          description: Projection at the current rate.
+          description: "Projection of where the window will be at its reset, from the last hour's rate when there are enough recent readings, else the window's average rate."
           properties:
             projected_pct: {type: number}
+            basis: {type: string, enum: [recent, average], description: "recent: the slope of the last hour's readings; average: use so far over the time elapsed (too few recent readings). Absent from an older hub."}
+            rate_per_hour: {type: number, description: "The rate the projection used, in points of the window per hour."}
             full_at: {type: [string, "null"], format: date-time}
             band: {type: string, enum: [comfortable, on_track, fast, runaway]}
 

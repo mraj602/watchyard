@@ -48,6 +48,10 @@ type PaceJSON struct {
 	ProjectedPct float64    `json:"projected_pct"`
 	FullAt       store.Time `json:"full_at"`
 	Band         string     `json:"band"`
+	// Basis is the rate it used: "recent" (the last hour's readings) or "average" (the whole
+	// window so far); RatePerHour that rate in percent points an hour.
+	Basis       string  `json:"basis"`
+	RatePerHour float64 `json:"rate_per_hour"`
 }
 
 // windowOf renders a window. current is true for the overview and stream, where a window
@@ -84,8 +88,12 @@ func windowOf(w store.WindowRow, now time.Time, current bool) Window {
 		return out
 	}
 	if w.Final != nil && w.StartedAt != 0 {
-		if p := usage.PaceOf(*w.Final, time.UnixMilli(w.StartedAt), resets, now); p != nil {
-			out.Pace = &PaceJSON{ProjectedPct: p.ProjectedPct, Band: p.Band}
+		recent := make([]usage.Reading, len(w.Recent))
+		for i, r := range w.Recent {
+			recent[i] = usage.Reading{At: time.UnixMilli(r.TS), Used: r.Used}
+		}
+		if p := usage.PaceOf(*w.Final, time.UnixMilli(w.StartedAt), resets, now, recent); p != nil {
+			out.Pace = &PaceJSON{ProjectedPct: p.ProjectedPct, Band: p.Band, Basis: p.Basis, RatePerHour: p.RatePerHour}
 			if p.FullAt != nil {
 				out.Pace.FullAt = store.Time(p.FullAt.UnixMilli())
 			}

@@ -158,7 +158,7 @@ export interface Window {
   unused_pct?: number | null;
   source?: 'statusline' | 'web' | 'both';
   updated_at?: Iso | null;
-  pace?: { projected_pct: number; full_at?: Iso | null; band: 'comfortable' | 'on_track' | 'fast' | 'runaway' } | null;
+  pace?: { projected_pct: number; full_at?: Iso | null; basis?: 'recent' | 'average'; rate_per_hour?: number; band: 'comfortable' | 'on_track' | 'fast' | 'runaway' } | null;
   /** current: resets ahead; reset: resets_at passed (used 0 since); idle: not started (hubs before it omit it). */
   state?: 'current' | 'reset' | 'idle';
 }

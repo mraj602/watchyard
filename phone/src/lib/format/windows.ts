@@ -38,15 +38,23 @@ export interface PaceInfo {
   band: string;
 }
 
+/** Which rate a projection used; '' from a hub that does not say. */
+export function paceBasis(basis: string | undefined, key: string | undefined): string {
+  if (basis === 'recent') return "at the last hour's pace";
+  if (basis === 'average') return key === 'seven_day' ? "at this week's average pace" : "at this window's average pace";
+  return '';
+}
+
 /** null when the window has no projection. */
 export function paceInfo(w: Window, now: number, tz?: string): PaceInfo | null {
   const p = w.pace;
   if (!p || !p.band) return null;
   const b = BAND[p.band] ?? { cls: 'ok' as const, text: humanKey(p.band) };
   const proj = p.projected_pct != null ? Math.round(p.projected_pct) : null;
+  const basis = paceBasis(p.basis, w.key);
   let text: string;
-  if (p.band === 'runaway' && p.full_at) text = `At this pace: 100% ${clock(p.full_at, now, tz)}`;
-  else if (proj != null) text = `${b.text}: ~${proj}% at reset`;
+  if (p.band === 'runaway' && p.full_at) text = `At ${basis ? basis.replace(/^at /, '') : 'this pace'}: 100% ${clock(p.full_at, now, tz)}`;
+  else if (proj != null) text = `${b.text}: ~${proj}% at reset${basis ? ` ${basis}` : ''}`;
   else text = b.text;
   return { cls: b.cls, text, band: p.band };
 }
