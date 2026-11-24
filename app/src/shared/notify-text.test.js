@@ -82,6 +82,18 @@ test('golden: usage notices (push.md 3.9): the hub title, else the trigger in wo
   assert.equal(routeFor({ id: 'u7', trigger: 'seat_change', seat: 's/1' }, null), '#/accounts?seat=s%2F1');
 });
 
+test('golden: switch notices (push.md 3.9): the machine, the hub title without it, the machine route', () => {
+  assert.deepEqual(
+    notifyText({ alert: { id: 'w1', trigger: 'session_moved', machine: 'mc1', title: 'gpu-box · Moved 2 sessions' }, machine_name: 'gpu-box' }),
+    { title: 'gpu-box', body: 'Moved 2 sessions', route: '#/machines?machine=mc1' },
+  );
+  assert.deepEqual(
+    notifyText({ alert: { id: 'w2', trigger: 'switch_digest', machine: 'mc1' } }),
+    { title: 'mc1', body: 'switch digest', route: '#/machines?machine=mc1' },
+  );
+  assert.equal(notifyText({ alert: { id: 'w3', trigger: 'session_moved' } }).title, 'Smart Account Switch');
+});
+
 test('title falls back from label to the email local part to Unattributed', () => {
   const t = (s, seat) => notifyText({ alert: { id: 'a', trigger: 'asked' }, session: s, seat }).title;
   assert.equal(t(session({ seat_label: null }), { email: 'alex@example.com' }), 'alex · api');

@@ -115,7 +115,8 @@ screen; controls that need `push` or `owner` are hidden or show "Sign in as owne
 (`wy hub owner-link`)".
 
 Rules on the phone (`PhoneAlerts`): one row per base trigger group (the two limit triggers share
-one row, and the four usage notices, push.md 3.9, share one: "Usage and limit changes") with its global delay as text
+one row, the four usage notices, push.md 3.9, share one: "Usage and limit changes", and the two switch
+notices one: "Smart Account Switch moves and digest") with its global delay as text
 ("· 30 s") and a switch. For a push-scoped device the switch edits `prefs.mute`
 (`PATCH /v1/devices/self`); for an owner session it edits the global rule (`PUT
 /v1/rules/{id}`), and the delay is editable. Overrides are listed (owner: add/remove with a

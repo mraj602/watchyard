@@ -19,6 +19,15 @@ const USAGE_NOTICES = {
 /** Whether the trigger is one of the usage notices (push.md 3.9). */
 export const isUsageNotice = (trigger) => Object.hasOwn(USAGE_NOTICES, String(trigger ?? ''));
 
+// push.md 3.9's switch notices: a machine's automatic moves and its daily digest.
+const SWITCH_NOTICES = {
+  session_moved: 'moved a session',
+  switch_digest: 'switch digest',
+};
+
+/** Whether the trigger is one of the Smart Account Switch notices (push.md 3.9). */
+export const isSwitchNotice = (trigger) => Object.hasOwn(SWITCH_NOTICES, String(trigger ?? ''));
+
 const WINDOW_NAMES = { five_hour: '5-hour', seven_day: '7-day', seven_day_opus: '7-day Opus', seven_day_sonnet: '7-day Sonnet' };
 
 /** Collapse whitespace, then cut to `max` characters with an ellipsis. */
@@ -88,6 +97,11 @@ export function triggerText(alert, session) {
       const title = String(alert?.title ?? '').trim();
       return title || USAGE_NOTICES[trigger];
     }
+    case 'session_moved':
+    case 'switch_digest': {
+      const title = String(alert?.title ?? '').trim();
+      return title || SWITCH_NOTICES[trigger];
+    }
     default:
       return 'needs you';
   }
@@ -99,7 +113,7 @@ export function routeFor(alert, session) {
   if (trigger === 'limit_80' || trigger === 'limit_95' || trigger === 'reset' || isUsageNotice(trigger)) {
     return alert.seat ? `#/accounts?seat=${encodeURIComponent(alert.seat)}` : '#/accounts';
   }
-  if (trigger === 'machine_silent') {
+  if (trigger === 'machine_silent' || isSwitchNotice(trigger)) {
     return alert.machine ? `#/machines?machine=${encodeURIComponent(alert.machine)}` : '#/machines';
   }
   const sid = session?.id ?? alert?.session;
@@ -118,6 +132,8 @@ export function notifyText({ alert, session = null, seat = null, machine_name = 
   if (alert?.trigger === 'machine_silent') {
     const name = machine_name ?? session?.machine_name ?? alert?.machine ?? 'A machine';
     title = `${name}${SEP}silent`;
+  } else if (isSwitchNotice(alert?.trigger)) {
+    title = machine_name ?? session?.machine_name ?? alert?.machine ?? 'Smart Account Switch';
   } else if (isUsageNotice(alert?.trigger)) {
     // limit_change has no seat: it is about a model across the accounts.
     title = seat ? seatName(seat) : 'Usage and limit changes';
@@ -129,7 +145,7 @@ export function notifyText({ alert, session = null, seat = null, machine_name = 
   }
   let body = what;
   // The hub's title of a seat's notice starts with the seat ("work · usage reset"): said once.
-  if (isUsageNotice(alert?.trigger) && body.startsWith(`${title}${SEP}`)) body = body.slice(title.length + SEP.length);
+  if ((isUsageNotice(alert?.trigger) || isSwitchNotice(alert?.trigger)) && body.startsWith(`${title}${SEP}`)) body = body.slice(title.length + SEP.length);
   const question = session?.question ? cut(session.question, NOTIFY_QUESTION_MAX) : '';
   if (question) body = `${what}\n${question}`;
   return { title: cut(title, TITLE_MAX), body: body.length > BODY_MAX ? `${body.slice(0, BODY_MAX - 1)}…` : body, route };

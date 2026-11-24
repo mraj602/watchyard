@@ -72,16 +72,25 @@ const (
 	TriggerUsageReset  Trigger = "usage_reset"
 	TriggerSeatChange  Trigger = "seat_change"
 	TriggerWeeklyDrop  Trigger = "weekly_drop"
+	// Smart Account Switch notices (push.md 3.9): a machine moved sessions to other accounts,
+	// and its daily digest. Their subject is the machine.
+	TriggerSessionMoved Trigger = "session_moved"
+	TriggerSwitchDigest Trigger = "switch_digest"
 )
 
 // Triggers lists every trigger in display order.
 var Triggers = []Trigger{TriggerNeedsPermission, TriggerAsked, TriggerFailed, TriggerLimit80, TriggerLimit95, TriggerReset,
-	TriggerMachineSilent, TriggerLimitChange, TriggerUsageReset, TriggerSeatChange, TriggerWeeklyDrop}
+	TriggerMachineSilent, TriggerLimitChange, TriggerUsageReset, TriggerSeatChange, TriggerWeeklyDrop,
+	TriggerSessionMoved, TriggerSwitchDigest}
 
-// IsNotice reports whether t is a usage notice (push.md 3.9).
+// IsNotice reports whether t is a notice (push.md 3.9): a usage notice or a switch notice.
 func (t Trigger) IsNotice() bool {
-	return t == TriggerLimitChange || t == TriggerUsageReset || t == TriggerSeatChange || t == TriggerWeeklyDrop
+	return t == TriggerLimitChange || t == TriggerUsageReset || t == TriggerSeatChange || t == TriggerWeeklyDrop ||
+		t.IsSwitch()
 }
+
+// IsSwitch reports whether t is a Smart Account Switch notice (push.md 3.9), sent by a machine.
+func (t Trigger) IsSwitch() bool { return t == TriggerSessionMoved || t == TriggerSwitchDigest }
 
 // Valid reports whether t is a trigger this build knows.
 func (t Trigger) Valid() bool {
@@ -193,6 +202,9 @@ type Facts struct {
 	Was     string  `json:"was,omitempty"`      // seat_change: the previous seat's name
 	OrgOnly bool    `json:"org_only,omitempty"` // seat_change: same account, another org
 	Org     string  `json:"org,omitempty"`      // seat_change: the new org's name
+	// Switch notices: Moves the moves in the push (session_moved) or of the day
+	// (switch_digest), Message the machine's text of them.
+	Moves int `json:"moves,omitempty"`
 }
 
 // Notice is one usage notice the calibration job hands to the engine (push.md 3.9): its
@@ -204,6 +216,9 @@ type Notice struct {
 	Machine string
 	SinceMS int64
 	Facts   Facts
+	// Direct: the machine already pushed it through direct push (a switch notice sent while
+	// it could not reach the hub): the alert is kept, skipped with reason direct.
+	Direct bool
 }
 
 // Delivery is one attempt to bring one alert to one target (api.yaml Delivery).

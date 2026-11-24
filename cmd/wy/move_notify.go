@@ -5,44 +5,102 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mraj602/watchyard/internal/config"
 	"github.com/mraj602/watchyard/internal/directpush"
 	"github.com/mraj602/watchyard/internal/mover"
+	"github.com/mraj602/watchyard/internal/outbox"
 	"github.com/mraj602/watchyard/internal/paths"
 	"github.com/mraj602/watchyard/internal/record"
 	"github.com/mraj602/watchyard/internal/status"
+	"github.com/mraj602/watchyard/internal/version"
 )
 
-// movePush sends one push to the owner's phone. Title and text are what the owner reads; in
-// private mode the caller sends only a generic line.
+// movePush sends one push to the owner's phone through direct push. Title and text are what
+// the owner reads; in private mode the caller sends only a generic line.
 type movePush struct {
 	Send    func(ctx context.Context, title, text string) error
 	Private bool
 }
 
-// directMovePush is the machine's existing push path (push.md 7, machines.md 5): the ntfy
-// topic of `wy direct-push on`. The hub only makes alerts from session records, so a move
-// notice has no other way out. nil when direct push is off or has no topic.
-func directMovePush(d paths.Dirs, cfg config.Config) *movePush {
-	o, err := directEnv{dirs: d, cfg: cfg}.options()
-	if err != nil {
-		return nil
+// moveOut is where the move notices and the digest go (setup.md 8.6, Notices and digest):
+// to the hub as a switch_notice record, which the hub turns into a session_moved or
+// switch_digest alert for every enabled target (push.md 3.9); and through direct push only
+// when the hub is not reachable, as for session alerts (machines.md 5.4, condition 4).
+type moveOut struct {
+	// Hub appends a switch_notice record to the outbox; nil when no hub is set.
+	Hub func(p record.SwitchNoticePayload) error
+	// Reachable: the hub answered within direct push's after (default 2 min).
+	Reachable bool
+	// Direct is direct push; nil when it is off or has no topic.
+	Direct *movePush
+}
+
+func (o moveOut) ready() bool { return o.Hub != nil || o.Direct != nil }
+
+// deliver sends one notice: direct push first when the hub is unset or unreachable, then the
+// record to the hub (direct set when the push went out, so the hub does not push it again).
+// A record queued in the outbox counts as delivered: the flusher sends it when the hub is back.
+func (o moveOut) deliver(ctx context.Context, p record.SwitchNoticePayload, title, private string) error {
+	if o.Direct != nil && (o.Hub == nil || !o.Reachable) {
+		text := p.Text
+		if o.Direct.Private {
+			text = private
+		}
+		err := o.Direct.Send(ctx, title, text)
+		if o.Hub == nil {
+			return err
+		}
+		p.Direct = err == nil
 	}
+	if o.Hub == nil {
+		return fmt.Errorf("no hub and no direct push")
+	}
+	return o.Hub(p)
+}
+
+// moveOutFor builds the machine's notice paths from the config.
+func moveOutFor(d paths.Dirs, cfg config.Config, now time.Time) moveOut {
+	var o moveOut
+	opts, err := directEnv{dirs: d, cfg: cfg}.options()
+	if err != nil {
+		return o
+	}
+	o.Direct = directMovePush(opts)
+	if cfg.Hub.URL != "" {
+		o.Reachable = now.Sub(directpush.LastContact(opts.OutboxDir)) <= opts.After()
+		o.Hub = func(p record.SwitchNoticePayload) error {
+			r, err := record.NewSwitchNotice(record.Meta{Machine: opts.MachineID, Client: "wy/" + version.Version, Now: now}, p)
+			if err != nil {
+				return err
+			}
+			ob := outbox.New(opts.OutboxDir)
+			ob.NoFsync = !cfg.Outbox.Fsync
+			_, err = ob.Append(r)
+			return err
+		}
+	}
+	return o
+}
+
+// directMovePush is the machine's direct push path (push.md 7, machines.md 5): the ntfy topic
+// of `wy direct-push on`. nil when direct push is off or has no topic.
+func directMovePush(o directpush.Options) *movePush {
 	sec, ok := directpush.Ready(o)
 	if !ok {
 		return nil
 	}
-	server := cfg.Push.Direct.Server
+	server := o.Config.Push.Direct.Server
 	if server == "" {
 		server = config.DefaultDirectServer
 	}
 	if directpush.CheckServer(server) != nil {
 		return nil
 	}
-	return &movePush{Private: cfg.Push.Direct.Private, Send: func(ctx context.Context, title, text string) error {
+	return &movePush{Private: o.Config.Push.Direct.Private, Send: func(ctx context.Context, title, text string) error {
 		r := directpush.Send(ctx, directpush.HTTPClient(), server, sec.Token,
 			directpush.Message{Topic: sec.Topic, Title: title, Message: text, Priority: 3, Tags: []string{"twisted_rightwards_arrows"}})
 		if !r.OK {
@@ -50,6 +108,14 @@ func directMovePush(d paths.Dirs, cfg config.Config) *movePush {
 		}
 		return nil
 	}}
+}
+
+// cutText keeps a notice text inside record.SwitchNoticeMaxText bytes, on a rune boundary.
+func cutText(s string) string {
+	if len(s) <= record.SwitchNoticeMaxText {
+		return s
+	}
+	return strings.ToValidUTF8(s[:record.SwitchNoticeMaxText-3], "") + "…"
 }
 
 // slotName is the label of a slot folder (slots.labels), else ~/<folder>; key when the move
@@ -64,30 +130,40 @@ func slotName(cfg config.Config, dir, key string) string {
 	return "~/" + filepath.Base(dir)
 }
 
-// moveNotices is `wy tick`'s part of the move notices and the daily digest: push the automatic
-// moves that wait (setup.md 8.6, Notices and digest), then the digest when it is due.
-func moveNotices(ctx context.Context, d paths.Dirs, cfg config.Config, now time.Time) error {
-	return runMoveNotices(ctx, d, cfg, now, directMovePush(d, cfg))
+// moveNotices is `wy tick`'s part of the move notices and the daily digest: send the automatic
+// moves that wait (setup.md 8.6, Notices and digest), then the digest when it is due. queued
+// reports a record written to the outbox (the tick flushes again so it reaches the hub now).
+func moveNotices(ctx context.Context, d paths.Dirs, cfg config.Config, now time.Time) (queued bool, err error) {
+	o := moveOutFor(d, cfg, now)
+	if h := o.Hub; h != nil {
+		o.Hub = func(p record.SwitchNoticePayload) error {
+			err := h(p)
+			queued = queued || err == nil
+			return err
+		}
+	}
+	err = runMoveNotices(ctx, d, cfg, now, o)
+	return queued, err
 }
 
-func runMoveNotices(ctx context.Context, d paths.Dirs, cfg config.Config, now time.Time, p *movePush) error {
+func runMoveNotices(ctx context.Context, d paths.Dirs, cfg config.Config, now time.Time, o moveOut) error {
 	st := mover.NewState(d.State.Path)
 	name := func(dir, key string) string { return slotName(cfg, dir, key) }
-	var send func(string, int) error
-	if p != nil {
-		send = func(text string, n int) error {
+	var send func(string, []mover.Notice) error
+	if o.ready() {
+		send = func(text string, ns []mover.Notice) error {
 			title := "Watchyard moved a session"
-			if n > 1 {
+			if len(ns) > 1 {
 				title = "Watchyard moved sessions"
 			}
-			if p.Private {
-				text = fmt.Sprintf("%d session(s) moved to another account", n)
-			}
-			return p.Send(ctx, title, text)
+			first := ns[0].At
+			p := record.SwitchNoticePayload{Trigger: record.SwitchNoticeMoved, Episode: "m:" + strconv.FormatInt(first.UnixMilli(), 10),
+				SinceAt: first.UTC().Format(time.RFC3339), Moves: len(ns), Text: cutText(text)}
+			return o.deliver(ctx, p, title, fmt.Sprintf("%d session(s) moved to another account", len(ns)))
 		}
 	}
 	_, err := st.Notify(now, cfg.Account.MoveNotify, name, send)
-	if derr := moveDigestPush(ctx, d, cfg, st, now, p); err == nil {
+	if derr := moveDigestPush(ctx, d, cfg, st, now, o); err == nil {
 		err = derr
 	}
 	return err
@@ -95,19 +171,17 @@ func runMoveNotices(ctx context.Context, d paths.Dirs, cfg config.Config, now ti
 
 // moveDigestPush sends the daily digest once, from 09:00, when account.move_digest is on and
 // the switch is on or moved something in the last 24 hours.
-func moveDigestPush(ctx context.Context, d paths.Dirs, cfg config.Config, st mover.State, now time.Time, p *movePush) error {
-	if !cfg.Account.MoveDigest || p == nil || !st.DigestDue(now) {
+func moveDigestPush(ctx context.Context, d paths.Dirs, cfg config.Config, st mover.State, now time.Time, o moveOut) error {
+	if !cfg.Account.MoveDigest || !o.ready() || !st.DigestDue(now) {
 		return nil
 	}
 	if !cfg.Account.SmartSwitch && len(st.Log(now.Add(-24*time.Hour))) == 0 {
 		return nil
 	}
 	dg := st.BuildDigest(now.Add(-24*time.Hour), now, func(dir, key string) string { return slotName(cfg, dir, key) }, limitHits(d, now.Add(-24*time.Hour)))
-	text := dg.Summary()
-	if p.Private {
-		text = "The daily switch digest is ready: wy move --digest"
-	}
-	if err := p.Send(ctx, "Watchyard daily digest", text); err != nil {
+	p := record.SwitchNoticePayload{Trigger: record.SwitchNoticeDigest, Episode: "d:" + now.Local().Format("2006-01-02"),
+		SinceAt: now.UTC().Format(time.RFC3339), Moves: len(dg.Moves), Text: cutText(dg.Summary())}
+	if err := o.deliver(ctx, p, "Watchyard daily digest", "The daily switch digest is ready: wy move --digest"); err != nil {
 		return err
 	}
 	return st.MarkDigest(now)

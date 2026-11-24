@@ -16,6 +16,7 @@ import (
 
 	"github.com/mraj602/watchyard/internal/brand"
 	"github.com/mraj602/watchyard/internal/hub/auth"
+	"github.com/mraj602/watchyard/internal/hub/push/model"
 	"github.com/mraj602/watchyard/internal/hub/store"
 	"github.com/mraj602/watchyard/internal/record"
 	"github.com/mraj602/watchyard/internal/version"
@@ -100,11 +101,14 @@ type Changes struct {
 	// behind it (true) or not (false); the alert engine's catch-up hold (push.md 3.3) reads
 	// it. Absent for a machine that only appears through a record's envelope or a contact.
 	More map[string]bool
+	// Notices are the switch notices of the batch (record.md 4.12), for the alert engine
+	// to turn into session_moved and switch_digest alerts (push.md 3.9).
+	Notices []model.Notice
 }
 
 // Empty reports whether nothing changed.
 func (c *Changes) Empty() bool {
-	return len(c.Sessions) == 0 && len(c.Seats) == 0 && len(c.Machines) == 0
+	return len(c.Sessions) == 0 && len(c.Seats) == 0 && len(c.Machines) == 0 && len(c.Notices) == 0
 }
 
 // Ingester stores and types record batches.

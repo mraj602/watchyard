@@ -175,7 +175,7 @@ func URL(a model.Alert) string {
 		return "/#/sessions/" + *a.Session + "?alert=" + a.ID
 	case IsWindowTrigger(a.Trigger) && a.Seat != nil:
 		return "/#/accounts?seat=" + *a.Seat
-	case a.Trigger == model.TriggerMachineSilent && a.Machine != nil:
+	case (a.Trigger == model.TriggerMachineSilent || a.Trigger.IsSwitch()) && a.Machine != nil:
 		return "/#/machines?machine=" + *a.Machine
 	case a.Trigger.IsNotice() && a.Seat != nil:
 		return "/#/accounts?seat=" + *a.Seat
@@ -204,6 +204,8 @@ func Tag(a model.Alert) string {
 		return "wy-m-" + deref(a.Machine)
 	case a.Trigger == model.TriggerLimitChange:
 		return "wy-u-" + string(a.Trigger) + "-" + a.Facts.Model
+	case a.Trigger.IsSwitch():
+		return "wy-u-" + string(a.Trigger) + "-" + deref(a.Machine)
 	case a.Trigger.IsNotice():
 		return "wy-u-" + string(a.Trigger) + "-" + deref(a.Seat)
 	}
@@ -221,6 +223,10 @@ func privateText(t model.Trigger) string {
 		return "An account is near its limit"
 	case t == model.TriggerMachineSilent:
 		return "A machine went quiet"
+	case t == model.TriggerSessionMoved:
+		return "A session moved to another account"
+	case t == model.TriggerSwitchDigest:
+		return "The switch digest is ready"
 	case t.IsNotice():
 		return "Account usage changed"
 	}
@@ -283,7 +289,8 @@ func Render(a model.Alert, o TextOptions) Text {
 			last = "last record " + Clock(f.LastSeen.Std(), o.Now, o.Loc)
 		}
 		out.Body = join(live, last)
-	case model.TriggerLimitChange, model.TriggerUsageReset, model.TriggerSeatChange, model.TriggerWeeklyDrop:
+	case model.TriggerLimitChange, model.TriggerUsageReset, model.TriggerSeatChange, model.TriggerWeeklyDrop,
+		model.TriggerSessionMoved, model.TriggerSwitchDigest:
 		out.Title, out.Body = noticeText(a, o)
 	default:
 		out.Title = string(a.Trigger)
@@ -357,6 +364,19 @@ func noticeText(a model.Alert, o TextOptions) (string, string) {
 			reset = "no reset (resets " + r + ")"
 		}
 		return join(seatOf(f), "7-day dropped "+pct(f.Peak)+" → "+pct(f.Pct)), join("Something changed, check", reset)
+	case model.TriggerSessionMoved, model.TriggerSwitchDigest:
+		name := f.Machine
+		if name == "" && a.Machine != nil {
+			name = *a.Machine
+		}
+		title := "Switch digest"
+		if a.Trigger == model.TriggerSessionMoved {
+			title = "Moved a session"
+			if f.Moves > 1 {
+				title = fmt.Sprintf("Moved %d sessions", f.Moves)
+			}
+		}
+		return join(name, title), f.Message
 	}
 	return string(a.Trigger), ""
 }

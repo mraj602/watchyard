@@ -93,6 +93,11 @@ func (e *Engine) pass() {
 		if err := w.reconcileChanges(ch); err != nil {
 			return err
 		}
+		// Switch notices from machines (push.md 3.9): created pending even while frozen, fired
+		// once unfrozen (the 6-hour stale rule still applies).
+		if err := w.notices(ch.Notices); err != nil {
+			return err
+		}
 		if frozen {
 			// push.md 3.6: while frozen nothing is created by the sweep and nothing is fired or
 			// sent (deliveries stay pending), so an old and a new hub never both push.

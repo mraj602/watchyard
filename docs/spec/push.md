@@ -13,7 +13,7 @@ do anything: snooze and seen change only the hub's own alert rows.
 
 | Word | Meaning |
 | --- | --- |
-| **Trigger** | A kind of condition: `needs_permission`, `asked`, `failed`, `limit_80`, `limit_95`, `reset`, `machine_silent`, and the usage notices `limit_change`, `usage_reset`, `seat_change`, `weekly_drop` (3.9). |
+| **Trigger** | A kind of condition: `needs_permission`, `asked`, `failed`, `limit_80`, `limit_95`, `reset`, `machine_silent`, the usage notices `limit_change`, `usage_reset`, `seat_change`, `weekly_drop`, and the switch notices `session_moved`, `switch_digest` (3.9). |
 | **Rule** | Whether, and after how long, a trigger notifies, for which seats/projects/machines/windows. Global, owned by the owner (section 3). |
 | **Episode** | One continuous occurrence of a condition: one session sitting in one needs-you state, one window instance crossing 80%, one silence of one machine. Identified by its **episode key** (3.2). |
 | **Alert** | The hub's row for one episode (`alert` table): due time, status, snooze, seen. At most one per episode (unique key): this is the dedupe. |
@@ -72,6 +72,8 @@ it.
 | `usage_reset` | seat | the seat's 5-hour and weekly use dropped to about 0 % with the weekly reset time unchanged, confirmed by several fresh sources (3.9) | on, delay 0 | as above |
 | `seat_change` | seat × machine | a folder signed in to another account, or to the same account in another org (3.9) | on, delay 0 | as above |
 | `weekly_drop` | seat | the weekly use dropped more than 10 points without a reset, and it is not a `usage_reset` (3.9) | on, delay 0 | as above |
+| `session_moved` | machine | the machine's Smart Account Switch moved sessions on its own and sent a `switch_notice` record (3.9; at most one per 5 minutes per machine) | on, delay 0 | as above |
+| `switch_digest` | machine | the machine sent its daily switch digest as a `switch_notice` record (3.9) | on, delay 0 | as above |
 
 Not triggers (by design): "turn finished" (board only) and "context 90%"
 (reserved).
@@ -93,6 +95,8 @@ sends exactly one push" also holds for a window that jumps straight past 95%.
 | `usage_reset` | `z:<seat id>:<ms of the first low reading>` |
 | `seat_change` | `c:<slot id>:<since_at ms of the new login>` |
 | `weekly_drop` | `w:<seat id>:<weekly resets_at ms>:<ms of the first low reading>` |
+| `session_moved` | `sw:<machine id>:m:<ms of the batch's first move>` (the record's `episode` behind the machine id) |
+| `switch_digest` | `sw:<machine id>:d:<the machine's local day YYYY-MM-DD>` |
 
 - `since_at` moves only when the *state* changes (states.md 3), so a second
   `permission_prompt`, a `PermissionRequest` for the same prompt, or a second StopFailure
@@ -297,10 +301,11 @@ waiting, windows over 80%, silent machines) is recorded as `skipped` with reason
 `baseline`, then `push.baseline_done = true`. Later starts reconcile normally. The Alerts log
 hides `baseline` rows.
 
-### 3.9 Usage notices
+### 3.9 Usage and switch notices
 
 Four triggers are not about a session, a limit crossing or a machine, but about the limits
-themselves changing under the owner's feet. They are found by the hub's calibration job (every
+themselves changing under the owner's feet (two more, the switch notices, are at the end of this
+section). They are found by the hub's calibration job (every
 15 minutes, setup.md 8.5, "On the hub"), which hands each one to the engine as a **notice**: its
 trigger, episode key, subject (seat, machine), `since_at` and facts. They are low-urgency
 (6.4, 7.2) and never batched with session alerts. The board shows the numbers behind them in
@@ -373,6 +378,21 @@ alert per episode). It is `pending` with `due = now`, or `skipped` with reason `
 run after an upgrade: the engine never floods). A fired, snoozed or seen notice closes 24 hours
 after it fired, reason `expired` (the scheduler's silence sweep, 3.6 step 2, closes them). There
 is no other end: nothing about the episode changes later.
+
+**Switch notices** (`session_moved`, `switch_digest`). The other two notices come from a
+machine, not from the calibration job: its Smart Account Switch (setup.md 8.6, Notices and
+digest) sends a `switch_notice` record (record.md 4.12) after its automatic moves, batched at most
+once per 5 minutes, and once a day with the digest. Ingest hands each one to the engine as a
+notice in the batch's changes; the next pass creates the alert (also while the hub is frozen:
+it stays `pending` until the hub is unfrozen). Subject: the record's machine (no seat), so a rule
+scoped to machines and a device's `mute` apply as to any trigger. Episode: the record's `episode`
+behind `sw:<machine id>:`, so a machine cannot repeat or shadow another's notice and a record sent
+twice is one alert. Facts: `machine` (the machine's name), `moves`, and `message` (the machine's
+text of the moves, or the digest's summary line). They follow the timing and life above (low
+urgency, stale after 6 hours, closed 24 hours after they fired). A record with `direct: true`
+was already pushed by the machine's direct push because it could not reach the hub (machines.md
+5): its alert is kept for the board and the phone's list but created `skipped` with reason
+`direct`, and nothing is sent. A hub older than this ignores the kind (stored untyped).
 
 ## 4. Alert lifecycle
 
@@ -532,6 +552,8 @@ to fit (title 80, body 180 characters, with `…`).
 | `usage_reset` | `work · usage reset` | "5-hour and 7-day back to 0% · 7-day still resets Thu 09:00 · 3 sessions agree" (claude.ai counts as one) |
 | `seat_change` | `work · ~/.claude-2 on gpu-box changed account` (`changed org`) | "Was personal; now this account" (org: "Same account, now in Acme") |
 | `weekly_drop` | `work · 7-day dropped 64% → 31%` | "Something changed, check · no reset (resets Thu 09:00)" |
+| `session_moved` | `gpu-box · Moved a session` (`Moved 3 sessions`) | The machine's text: "api ~/.claude -> ~/.claude-2: 5h 96% >= 95", or "3 moves: a x->y; b ..." |
+| `switch_digest` | `gpu-box · Switch digest` | The digest's summary: "Last 24h: 4 moves, 1 limit hits ..." |
 | snooze re-push | as the trigger, title prefixed `Still waiting · 19 min · ` | as the trigger |
 | summary | `3 sessions need you` | up to four `work · api — asked` lines, then `+2 more` |
 
@@ -703,7 +725,7 @@ Topic: <first 22 chars of base64url(SHA-256(tag))>
 | `limit_95` | until the window resets, at most 86 400 | high |
 | `limit_80`, `machine_silent` | 21 600 | normal |
 | `reset` | 3 600 | low |
-| usage notices (3.9) | 86 400 | low |
+| usage and switch notices (3.9) | 86 400 | low |
 | test | 60 | high |
 
 `Topic` (RFC 8030 5.4) makes the push service replace an undelivered message with the same
@@ -1177,6 +1199,9 @@ moves; "expect" lists sends and final alert status.
 | 49 | Notice rule off | `weekly_drop` rule disabled | `skipped` / `rule_off` |
 | 50 | Seen on a skipped row | a session asked for 7 days (`skipped` / `stale`); another asked in a peer turn (`skipped` / `peers`) | Both overviews carry the skipped brief; Seen on each → `seen`, both leave `needs_you` and `counts.needs_you`; Snooze → 409 |
 | 51 | Seen with no alert | hub without the engine; a session asks | `POST /v1/sessions/{id}/seen` makes a `seen` alert for the episode; the session leaves Needs you; a later engine pass makes no second alert; a session that does not need you → 409 |
+| 52 | Switch notice | a machine sends a `switch_notice` (`session_moved`, 2 moves); a device mutes `session_moved` | One low-urgency push to the other targets, linked to `/#/machines?machine=<id>`, tag `wy-u-session_moved-<machine>`; the muted device's delivery `skipped` / `muted`; the same record again is one alert; a `switch_digest` is its own alert |
+| 53 | Switch notice sent direct | `switch_notice` with `direct: true` | `skipped` / `direct`, nothing sent |
+| 54 | Switch notice rule off | `session_moved` rule disabled | `skipped` / `rule_off` |
 
 The detectors of 3.9 are pure (`internal/calib`, `watch.go`) and get table tests on synthetic
 series: a server or owner reset (5-hour and weekly to 0 with the same weekly `resets_at`, three

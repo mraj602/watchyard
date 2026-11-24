@@ -2195,10 +2195,16 @@ candidate), and the rule settings `cooldown_min`, `no_return_min`, `account_wind
 `wy move --plan` warns while it is set.
 
 **Notices and digest.** Each automatic move is pushed to the owner's phone: one line, "<session
-name or short id> <from> -> <to>: <reason>". The push goes out through direct push (push.md 7,
-machines.md 5; the hub only makes alerts from session records, so a move has no other way out):
-it needs `wy direct-push on` and a topic, and in private mode it says only how many sessions
-moved. A machine pushes at most once per 5 minutes; moves inside that window wait in
+name or short id> <from> -> <to>: <reason>". With a hub (`hub.url` set) it goes through the hub's
+alert pipeline: the machine writes a `switch_notice` record (record.md 4.12) and flushes it, and
+the hub makes a `session_moved` alert sent to every enabled target (the Android app, Web Push,
+ntfy, desktop) and shown on the board and the phone like other alerts, with its own rule and a
+per-device mute (push.md 3.9). Direct push (push.md 7, machines.md 5) is the fallback: when the
+hub has not answered for direct push's `after` (default 2 minutes, condition 4) or there is no
+hub, and `wy direct-push on` has a topic, the machine pushes it itself (in private mode only how
+many sessions moved), and the record it still writes says `direct` so the hub does not push it
+again. With neither a hub nor direct push, moves wait (see below). A machine pushes at most once
+per 5 minutes; moves inside that window wait in
 `<state>/move/notify.json` and go out as one push ("3 moves: a x->y; b ..."). A move that could
 not be pushed for an hour is dropped. `wy tick` does this, so a move is pushed within a minute of
 its pass. `account.move_notify` (default `on`) turns it off; moves made while it is off are never
@@ -2210,7 +2216,8 @@ the source was back under its cap within 15 minutes with its burn not lower). Th
 from `<state>/move/passes.jsonl`, one line per auto pass (trimmed to 3 days); without it the
 digest says so. `wy tick` pushes the digest once a day from 09:00 local (missed: until 12:00),
 when `account.move_digest` (default `on`) is on and the switch is on or moved something in the
-last 24 hours.
+last 24 hours, the same way as the moves: a `switch_notice` record for a `switch_digest` alert,
+direct push only as the fallback.
 
 **Records.** `<state>/move/alerts.json`: the pin alerts (`at`, `session`, `name`, `account`,
 `window`, `hit_at`, `reset_at`, `rate`, `command`), each kept until its window resets.

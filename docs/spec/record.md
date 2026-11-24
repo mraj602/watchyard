@@ -103,7 +103,7 @@ request failed (network error, 5xx, 429).
 | --- | --- | --- | --- |
 | `v` | integer | yes | Record format version. `1`. A hub that sees a higher `v` stores the record raw and does not type it. The hub says which `v` it reads (`record_v_max`) and clients never send a higher one (machines.md 7.2). |
 | `id` | string | yes | Idempotency key. See 3.1. |
-| `kind` | string | yes | One of the kinds in section 4 (seven original kinds, plus `machine_info`, `direct_push`, `account_lease` and `account_verdicts`), or any future kind (`^[a-z][a-z0-9_]{0,39}$`). |
+| `kind` | string | yes | One of the kinds in section 4 (seven original kinds, plus `machine_info`, `direct_push`, `account_lease`, `account_verdicts` and `switch_notice`), or any future kind (`^[a-z][a-z0-9_]{0,39}$`). |
 | `ts` | string | yes | When the client observed the fact (RFC 3339 UTC, ms). |
 | `machine` | string | yes | The machine id from [identity.md](identity.md) (`m_` + ULID). |
 | `slot` | string | depends | The config folder the fact came from, written with `~` for the home folder and `/` as separator (`~/.claude`, `~/.claude-2`, `~/work/.claude-x`). Required for `hook_event`, `limit_sample`, `session_list`, `slot_info`; optional for `token_rows` and `history_import` (omitted when the transcripts folder is shared by several slots); absent for `web_usage`. |
@@ -603,6 +603,25 @@ the hub is skipped. A payload the hub cannot type is stored with `typed = 0` and
 | `accounts[].mode_from` | string | no | Where its kind came from (setup.md 8.5 *Kind*): `local` (this machine's `next.accounts.<key>.mode`), `hub` (the seat's hub setting), `proposed` (this machine's `slots.modes`, not on the hub yet) or `none` (not chosen: aggressive). |
 | `accounts[].weekly_cap`, `accounts[].five_hour_cap` | number | no | `lanes`: the weekly and 5-hour levels at which it takes no new session now (protected: the pace line `min(T, T × (1 − hours_to_reset / 168) + 10)` and the 5-hour floor; aggressive: the aggressive limits), after `reserve_pct` and the pin reserve. |
 | `accounts[].pins`, `accounts[].pin_reserve_5h_pct`, `accounts[].pin_reserve_7d_pct` | integer, number | no | `lanes`: its live pinned sessions on this machine and the 5-hour and weekly points they keep free (setup.md 8.6 *Pinned sessions*); absent when none. |
+
+### 4.12 `switch_notice`
+
+Written by `wy tick` on a machine with a hub (`hub.url` set) for the Smart Account Switch's
+notices (setup.md 8.6, Notices and digest): after its automatic moves, batched at most once per
+5 minutes, and once a day for the digest. Uploaded by the usual flush (the tick flushes again
+right after writing one). No `seat` and no `slot`: it is the machine's. `ts` is when it was
+written. The hub hands it to the alert engine, which makes a `session_moved` or `switch_digest`
+alert for every enabled target (push.md 3.9); a hub that does not know the kind stores it
+untyped. A payload the hub cannot type is stored with `typed = 0` and a `type_error` (section 5).
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `trigger` | string | yes | `session_moved` or `switch_digest`. |
+| `episode` | string | yes | 1 to 100 characters naming the notice on this machine: `m:<ms of the batch's first move>` or `d:<local day YYYY-MM-DD>`. The hub prefixes `sw:<machine id>:`; the same episode twice is one alert. |
+| `since_at` | string | yes | RFC 3339 UTC: the batch's first move, or when the digest was made. |
+| `moves` | integer | yes | The moves in the batch (at least 1), or in the digest's 24 hours (0 or more). |
+| `text` | string | yes | What the owner reads, at most 2000 bytes: one move "<session> <from> -> <to>: <reason>", several "3 moves: a x->y; b ...", or the digest's summary line. |
+| `direct` | boolean | no | True when the machine already pushed it through direct push because the hub was not reachable (machines.md 5.4, condition 4); the hub keeps the alert `skipped` / `direct` and sends nothing. |
 
 ## 5. Validation on the hub
 

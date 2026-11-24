@@ -51,7 +51,8 @@ func known(kind string) bool {
 	switch kind {
 	case record.KindHookEvent, record.KindLimitSample, record.KindWebUsage, record.KindTokenRows,
 		record.KindSessionList, record.KindHistoryImport, record.KindSlotInfo,
-		record.KindMachineInfo, record.KindDirectPush, record.KindAccountLease, record.KindAccountVerdicts:
+		record.KindMachineInfo, record.KindDirectPush, record.KindAccountLease, record.KindAccountVerdicts,
+		record.KindSwitchNotice:
 		return true
 	}
 	return false
@@ -68,10 +69,12 @@ type chSnap struct {
 	sessions map[string]SessionChange
 	seats    map[string]bool
 	prev     map[string]string
+	notices  int
 }
 
 func (t *typer) snapshot() chSnap {
-	s := chSnap{sessions: map[string]SessionChange{}, seats: map[string]bool{}, prev: map[string]string{}}
+	s := chSnap{sessions: map[string]SessionChange{}, seats: map[string]bool{}, prev: map[string]string{},
+		notices: len(t.ch.Notices)}
 	for k, v := range t.ch.Sessions {
 		s.sessions[k] = v
 	}
@@ -84,7 +87,10 @@ func (t *typer) snapshot() chSnap {
 	return s
 }
 
-func (t *typer) restore(s chSnap) { t.ch.Sessions, t.ch.Seats, t.prev = s.sessions, s.seats, s.prev }
+func (t *typer) restore(s chSnap) {
+	t.ch.Sessions, t.ch.Seats, t.prev = s.sessions, s.seats, s.prev
+	t.ch.Notices = t.ch.Notices[:s.notices]
+}
 
 func (t *typer) dispatch(r *record.Record, ts time.Time) error {
 	at := ts.UnixMilli()
@@ -124,6 +130,8 @@ func (t *typer) dispatch(r *record.Record, ts time.Time) error {
 		return t.accountLease(c)
 	case record.KindAccountVerdicts:
 		return t.accountVerdicts(c)
+	case record.KindSwitchNotice:
+		return t.switchNotice(c)
 	}
 	return nil
 }

@@ -3415,7 +3415,7 @@ components:
     RuleInput:
       type: object
       properties:
-        trigger: {type: string, enum: [needs_permission, asked, failed, limit_80, limit_95, reset, machine_silent, limit_change, usage_reset, seat_change, weekly_drop]}
+        trigger: {type: string, enum: [needs_permission, asked, failed, limit_80, limit_95, reset, machine_silent, limit_change, usage_reset, seat_change, weekly_drop, session_moved, switch_digest]}
         enabled: {type: boolean}
         delay_s: {type: integer, minimum: 0, maximum: 86400}
         bypass_quiet: {type: boolean}

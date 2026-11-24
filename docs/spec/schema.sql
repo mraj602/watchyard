@@ -32,6 +32,7 @@
 --   v20 seat.pick_mode, seat.pick_mode_src (setup.md 8.5, Kind).
 --   v21 peer_trust; peer_message.from_kind/via_tag (peers.md 4.1a, 10).
 --   v22 session.moved_from_seat/moved_at, session_move (identity.md 5.3: a session moved to another account).
+--   v23 the switch-notice base rules session_moved and switch_digest (push.md 3.9; record.md 4.12).
 --
 -- Conventions
 --   * Times are INTEGER milliseconds since the Unix epoch, UTC (`*_at`, `ts`).
@@ -56,7 +57,7 @@ CREATE TABLE schema_version (
 ) STRICT;
 
 INSERT INTO schema_version (version, applied_at, wy_version)
-VALUES (22, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
+VALUES (23, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
 
 -- Hub-wide settings that are not secrets (retention days, last-message policy, …).
 CREATE TABLE setting (
@@ -572,6 +573,10 @@ INSERT INTO rule (id, trigger, base, enabled, delay_s, bypass_quiet, scope, upda
   ('rule_usage_reset',      'usage_reset',      1, 1,    0, 0, '{}', 0),
   ('rule_seat_change',      'seat_change',      1, 1,    0, 0, '{}', 0),
   ('rule_weekly_drop',      'weekly_drop',      1, 1,    0, 0, '{}', 0);
+-- v23: the Smart Account Switch notices (push.md 3.9).
+INSERT INTO rule (id, trigger, base, enabled, delay_s, bypass_quiet, scope, updated_at) VALUES
+  ('rule_session_moved',    'session_moved',    1, 1,    0, 0, '{}', 0),
+  ('rule_switch_digest',    'switch_digest',    1, 1,    0, 0, '{}', 0);
 
 -- One row per episode (push.md 3.2 and 4).
 CREATE TABLE alert (

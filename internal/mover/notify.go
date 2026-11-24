@@ -92,9 +92,9 @@ func NoticeText(ns []Notice) string {
 // through send when the last try was NotifyEvery ago or more. enabled is account.move_notify;
 // off, it only moves the cursor (turning it on never pushes old moves). send nil means no
 // push path is ready: moves keep waiting (for NotifyKeep). name gives the label of a slot
-// folder or account key. It reports how many moves went out. The first run only sets the
+// folder or account key. send gets the text and the moves it covers (oldest first). It reports how many moves went out. The first run only sets the
 // cursor.
-func (s State) Notify(now time.Time, enabled bool, name func(dir, key string) string, send func(text string, moves int) error) (int, error) {
+func (s State) Notify(now time.Time, enabled bool, name func(dir, key string) string, send func(text string, moves []Notice) error) (int, error) {
 	f := s.LoadNotify()
 	if f.Cursor.IsZero() {
 		f.Cursor = now
@@ -124,7 +124,7 @@ func (s State) Notify(now time.Time, enabled bool, name func(dir, key string) st
 	var err error
 	if len(f.Pending) > 0 && send != nil && now.Sub(f.LastTry) >= NotifyEvery {
 		f.LastTry = now
-		if err = send(NoticeText(f.Pending), len(f.Pending)); err == nil {
+		if err = send(NoticeText(f.Pending), f.Pending); err == nil {
 			sent = len(f.Pending)
 			f.Pending = nil
 		}

@@ -20,9 +20,16 @@ All notable changes to Watchyard are recorded here. The format follows
 - **Cheaper moves.** When several sessions would each bring an account under its caps, the one
   with the most points freed per re-read (burn ÷ context × model factor) goes first, then the
   youngest.
-- **Move notices and digest** (setup.md 8.6). Each automatic move is pushed to the phone through
-  direct push ("<session> <from> -> <to>: <reason>"), at most once per 5 minutes per machine,
-  with moves inside the window batched into one push (`account.move_notify`, default on). `wy
+- **Move notices and digest** (setup.md 8.6). Each automatic move is pushed to the phone
+  ("<session> <from> -> <to>: <reason>"), at most once per 5 minutes per machine, with moves
+  inside the window batched into one push (`account.move_notify`, default on). With a hub they go
+  through the hub's alert pipeline: the machine sends a new `switch_notice` record (record.md
+  4.12) and the hub makes a `session_moved` or `switch_digest` alert (push.md 3.9) for every
+  enabled target (Android app, Web Push, ntfy, desktop), shown on the board and the phone, with
+  its own rule (on by default) and a per-device mute ("Smart Account Switch moves and digest").
+  Direct push is the fallback when the hub is unreachable or not set; a notice it sent reaches
+  the hub marked `direct` and is not pushed twice. Hub schema v23 (migration 0023) adds the two
+  base rules. `wy
   move --digest [--since 24h] [--json]` prints the moves, limit hits, weekly room at each reset,
   protected minutes over cap and moves that may not have been needed, and `wy tick` pushes it
   once a day at 09:00 local (`account.move_digest`, default on). Each auto pass now also leaves

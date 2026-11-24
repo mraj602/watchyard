@@ -38,13 +38,13 @@ func TestNotifyRateLimitAndBatch(t *testing.T) {
 	st := State{Dir: t.TempDir()}
 	t0 := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
 	var sent []string
-	send := func(text string, n int) error { sent = append(sent, text); return nil }
+	send := func(text string, _ []Notice) error { sent = append(sent, text); return nil }
 	add := func(at time.Time, sid string, auto bool) {
 		if err := st.Append(LogEntry{At: at, SessionID: sid, Name: sid, FromDir: "A", ToDir: "B", Auto: auto, Reason: "why"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	step := func(at time.Time, enabled bool, send func(string, int) error) int {
+	step := func(at time.Time, enabled bool, send func(string, []Notice) error) int {
 		n, err := st.Notify(at, enabled, tname, send)
 		if err != nil {
 			t.Fatal(err)
@@ -80,7 +80,7 @@ func TestNotifyRateLimitAndBatch(t *testing.T) {
 	}
 	// A failed push keeps the move and is retried only after the window.
 	add(t0.Add(20*time.Minute), "s5", true)
-	fail := func(string, int) error { return errors.New("down") }
+	fail := func(string, []Notice) error { return errors.New("down") }
 	if _, err := st.Notify(t0.Add(21*time.Minute), true, tname, fail); err == nil {
 		t.Fatal("no error from a failed push")
 	}
@@ -99,7 +99,7 @@ func TestNotifyOffAndNoPath(t *testing.T) {
 	st := State{Dir: t.TempDir()}
 	t0 := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
 	calls := 0
-	send := func(string, int) error { calls++; return nil }
+	send := func(string, []Notice) error { calls++; return nil }
 	_, _ = st.Notify(t0, true, tname, send)
 	_ = st.Append(LogEntry{At: t0.Add(time.Minute), SessionID: "a", FromDir: "A", ToDir: "B", Auto: true})
 	// Off: nothing pushed, and turning it on later does not push the move made while off.

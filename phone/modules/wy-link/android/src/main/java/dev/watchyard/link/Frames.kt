@@ -137,13 +137,16 @@ object Payloads {
   private fun isUsageNotice(trigger: String?): Boolean =
     trigger == "limit_change" || trigger == "usage_reset" || trigger == "seat_change" || trigger == "weekly_drop"
 
+  /** push.md 3.9's switch notices: a machine's automatic moves and its daily digest. */
+  private fun isSwitchNotice(trigger: String?): Boolean = trigger == "session_moved" || trigger == "switch_digest"
+
   /** P6.1's channel for the trigger; `wy_test` for tests. */
   fun channelFor(type: String, trigger: String?): String = when {
     type == "test" -> Channels.TEST
     type == "summary" -> Channels.NEEDS_YOU
     trigger == "limit_80" || trigger == "limit_95" || trigger == "reset" -> Channels.LIMITS
     trigger == "machine_silent" -> Channels.MACHINES
-    isUsageNotice(trigger) -> Channels.USAGE
+    isUsageNotice(trigger) || isSwitchNotice(trigger) -> Channels.USAGE
     else -> Channels.NEEDS_YOU
   }
 
@@ -155,7 +158,7 @@ object Payloads {
     trigger == "failed" -> IconKind.FAILED
     trigger == "limit_80" || trigger == "limit_95" || isUsageNotice(trigger) -> IconKind.LIMIT
     trigger == "reset" -> IconKind.RESET
-    trigger == "machine_silent" -> IconKind.MACHINE
+    trigger == "machine_silent" || isSwitchNotice(trigger) -> IconKind.MACHINE
     else -> IconKind.GENERIC
   }
 

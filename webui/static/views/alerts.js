@@ -28,11 +28,13 @@ const GROUPS = [
   { id: 'reset', label: 'Limit window reset', triggers: ['reset'] },
   { id: 'machine_silent', label: 'Machine silent with live sessions', triggers: ['machine_silent'], delay: true },
   { id: 'usage', label: 'Usage and limit changes', triggers: ['limit_change', 'usage_reset', 'seat_change', 'weekly_drop'] },
+  { id: 'switch', label: 'Smart Account Switch moves and digest', triggers: ['session_moved', 'switch_digest'] },
 ];
 const TRIGGER_LABEL = {
   needs_permission: 'Needs permission', asked: 'Asked a question', failed: 'Failed or rate limited',
   limit_80: 'Limit at 80%', limit_95: 'Limit at 95%', reset: 'Limit window reset', machine_silent: 'Machine silent',
   limit_change: 'Limits changed', usage_reset: 'Usage reset', seat_change: 'Changed account', weekly_drop: 'Weekly use dropped',
+  session_moved: 'Moved a session', switch_digest: 'Switch digest',
 };
 const DELAYS = [0, 30, 60, 120, 300, 600, 1800, 3600];
 

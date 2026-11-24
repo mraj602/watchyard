@@ -48,7 +48,9 @@ export type Trigger =
   | 'limit_change'
   | 'usage_reset'
   | 'seat_change'
-  | 'weekly_drop';
+  | 'weekly_drop'
+  | 'session_moved'
+  | 'switch_digest';
 
 /** api.yaml AlertBrief. */
 export interface AlertBrief {

@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mraj602/watchyard/internal/config"
 	"github.com/mraj602/watchyard/internal/mover"
+	"github.com/mraj602/watchyard/internal/record"
 )
 
 type fakePush struct {
@@ -17,7 +21,7 @@ type fakePush struct {
 	fail bool
 }
 
-func (f *fakePush) push(private bool) *movePush {
+func (f *fakePush) direct(private bool) *movePush {
 	return &movePush{Private: private, Send: func(_ context.Context, title, text string) error {
 		if f.fail {
 			return errors.New("down")
@@ -26,6 +30,9 @@ func (f *fakePush) push(private bool) *movePush {
 		return nil
 	}}
 }
+
+// push is a machine without a hub and with direct push.
+func (f *fakePush) push(private bool) moveOut { return moveOut{Direct: f.direct(private)} }
 
 func TestMoveNotifySettings(t *testing.T) {
 	c := config.Defaults()
@@ -55,7 +62,7 @@ func TestMoveNoticesPush(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Slots.Labels = map[string]string{"~/.claude-a": "work", "~/.claude-b": "home"}
 	fp := &fakePush{}
-	tick := func(at time.Time, c config.Config, p *movePush) {
+	tick := func(at time.Time, c config.Config, p moveOut) {
 		t.Helper()
 		if err := runMoveNotices(context.Background(), f.dirs, c, at, p); err != nil && !fp.fail {
 			t.Fatal(err)
@@ -96,7 +103,7 @@ func TestMoveNoticesPush(t *testing.T) {
 		before := len(fp.sent)
 		p := fp.push(c.private)
 		if c.nilPush {
-			p = nil
+			p = moveOut{}
 		}
 		tick(at, c0, p)
 		var got []string
@@ -139,7 +146,7 @@ func TestMoveDigestPush(t *testing.T) {
 			fp := &fakePush{}
 			p := fp.push(false)
 			if c.nilp {
-				p = nil
+				p = moveOut{}
 			}
 			if err := runMoveNotices(context.Background(), f.dirs, cfg, at, p); err != nil {
 				t.Fatal(err)
@@ -198,5 +205,122 @@ func TestMoveDigestCommand(t *testing.T) {
 	}
 	if _, _, code := run("--digest", "--plan"); code != 2 {
 		t.Errorf("--digest with --plan: exit %d", code)
+	}
+}
+
+// With a hub the notices go to the hub as switch_notice records (push.md 3.9); direct push
+// is the fallback only while the hub is unreachable, and then the record says direct so the
+// hub keeps the alert without pushing it again.
+func TestMoveNoticesHub(t *testing.T) {
+	f := newNextFixture(t)
+	st := mover.NewState(f.dirs.State.Path)
+	t0 := time.Date(2026, 11, 24, 14, 0, 0, 0, time.UTC)
+	cfg := config.Defaults()
+	cfg.Account.MoveDigest = false
+	fp := &fakePush{}
+	var recs []record.SwitchNoticePayload
+	hubFail := false
+	out := func(reachable, direct bool) moveOut {
+		o := moveOut{Reachable: reachable, Hub: func(p record.SwitchNoticePayload) error {
+			if hubFail {
+				return errors.New("disk full")
+			}
+			if err := p.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			recs = append(recs, p)
+			return nil
+		}}
+		if direct {
+			o.Direct = fp.direct(false)
+		}
+		return o
+	}
+	move := func(at time.Time, sid string) {
+		t.Helper()
+		if err := st.Append(mover.LogEntry{At: at, SessionID: sid, Name: sid, FromDir: "/h/.claude-a", ToDir: "/h/.claude-b", Auto: true, Reason: "5h over"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tick := func(at time.Time, o moveOut) error { return runMoveNotices(context.Background(), f.dirs, cfg, at, o) }
+	_ = tick(t0, out(true, true))
+	// Reachable hub: a record, no direct push.
+	move(t0.Add(time.Minute), "s1")
+	if err := tick(t0.Add(2*time.Minute), out(true, true)); err != nil || len(recs) != 1 || len(fp.sent) != 0 {
+		t.Fatalf("reachable: %v %+v %v", err, recs, fp.sent)
+	}
+	if r := recs[0]; r.Trigger != record.SwitchNoticeMoved || r.Moves != 1 || r.Direct ||
+		r.Episode != "m:"+strconv.FormatInt(t0.Add(time.Minute).UnixMilli(), 10) || r.Text != "s1 ~/.claude-a -> ~/.claude-b: 5h over" {
+		t.Fatalf("record %+v", r)
+	}
+	// Unreachable hub: direct push, and the record marked direct.
+	move(t0.Add(10*time.Minute), "s2")
+	if err := tick(t0.Add(11*time.Minute), out(false, true)); err != nil || len(recs) != 2 || len(fp.sent) != 1 || !recs[1].Direct {
+		t.Fatalf("unreachable: %v %+v %v", err, recs, fp.sent)
+	}
+	// Unreachable and direct push failing: the record still goes (not direct), for the hub to
+	// push when the machine reaches it again.
+	fp.fail = true
+	move(t0.Add(20*time.Minute), "s3")
+	if err := tick(t0.Add(21*time.Minute), out(false, true)); err != nil || len(recs) != 3 || recs[2].Direct {
+		t.Fatalf("direct failed: %v %+v", err, recs)
+	}
+	// Hub only (direct push off), unreachable: the record waits in the outbox.
+	move(t0.Add(30*time.Minute), "s4")
+	if err := tick(t0.Add(31*time.Minute), out(false, false)); err != nil || len(recs) != 4 || recs[3].Direct {
+		t.Fatalf("hub only: %v %+v", err, recs)
+	}
+	// The record cannot be written: the move stays pending and is retried.
+	hubFail = true
+	move(t0.Add(40*time.Minute), "s5")
+	if err := tick(t0.Add(41*time.Minute), out(true, false)); err == nil || len(st.LoadNotify().Pending) != 1 {
+		t.Fatalf("hub failure: %v %+v", err, st.LoadNotify())
+	}
+	hubFail = false
+	if err := tick(t0.Add(47*time.Minute), out(true, false)); err != nil || len(recs) != 5 || len(st.LoadNotify().Pending) != 0 {
+		t.Fatalf("retry: %v %+v", err, recs)
+	}
+	// The digest goes to the hub too, once a day.
+	cfg.Account.MoveDigest, cfg.Account.SmartSwitch = true, true
+	day := time.Date(2026, 11, 25, 9, 30, 0, 0, time.Local)
+	for i := 0; i < 2; i++ {
+		if err := tick(day.Add(time.Duration(i)*time.Minute), out(true, true)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var digests int
+	for _, r := range recs {
+		if r.Trigger == record.SwitchNoticeDigest {
+			digests++
+			if r.Episode != "d:2026-11-25" || !strings.HasPrefix(r.Text, "Last 24h: ") {
+				t.Fatalf("digest %+v", r)
+			}
+		}
+	}
+	if digests != 1 {
+		t.Fatalf("digests %d: %+v", digests, recs)
+	}
+}
+
+// moveOutFor writes a real switch_notice record into the outbox when a hub is set.
+func TestMoveOutForHubRecord(t *testing.T) {
+	f := newNextFixture(t)
+	cfg := config.Defaults()
+	cfg.Hub.URL = "https://hub.example"
+	now := time.Date(2026, 11, 24, 14, 0, 0, 0, time.UTC)
+	o := moveOutFor(f.dirs, cfg, now)
+	if o.Hub == nil || o.Reachable || o.Direct != nil {
+		t.Fatalf("out %+v", o)
+	}
+	p := record.SwitchNoticePayload{Trigger: record.SwitchNoticeMoved, Episode: "m:1", SinceAt: now.Format(time.RFC3339), Moves: 1, Text: "x"}
+	if err := o.deliver(context.Background(), p, "t", "p"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(f.dirs.State.Path, "outbox", "2026-11-24.jsonl"))
+	if err != nil || strings.Count(string(b), `"kind":"switch_notice"`) != 1 {
+		t.Fatalf("outbox: %v %s", err, b)
+	}
+	if moveOutFor(f.dirs, config.Defaults(), now).ready() {
+		t.Fatal("ready without a hub or direct push")
 	}
 }

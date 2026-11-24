@@ -312,7 +312,7 @@ the permission prompt only once a channel exists):
 | `wy_needs_you` | Needs you | HIGH | `needs_permission`, `asked`, `failed`, summaries |
 | `wy_limits` | Limits | DEFAULT | `limit_80`, `limit_95`, `reset` |
 | `wy_machines` | Machines | LOW | `machine_silent` |
-| `wy_usage` | Usage changes | LOW | `limit_change`, `usage_reset`, `seat_change`, `weekly_drop` (push.md 3.9) |
+| `wy_usage` | Usage changes | LOW | `limit_change`, `usage_reset`, `seat_change`, `weekly_drop`, and the switch notices `session_moved`, `switch_digest` (push.md 3.9) |
 | `wy_test` | Test | DEFAULT | test pushes |
 | `wy_connection` | Connection (always on) | MIN | The link service's persistent notification (push.md 14.4) |
 

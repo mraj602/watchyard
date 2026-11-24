@@ -53,6 +53,8 @@ Each episode alerts at most once, so restarts and replays never send duplicates.
 | `usage_reset` | Anthropic or the org owner reset an account's usage: both windows back to about 0 % in several sessions | On, low urgency |
 | `seat_change` | A config folder logged in to another account or org | On, low urgency |
 | `weekly_drop` | An account's 7-day use fell more than 10 points without a reset: something changed, check | On, low urgency |
+| `session_moved` | The Smart Account Switch on a machine moved sessions to another account (at most one push per 5 minutes per machine) | On, low urgency |
+| `switch_digest` | A machine's daily Smart Account Switch digest (moves, limit hits, weekly room) | On, low urgency |
 
 "Turn finished" is not an alert: the board shows it. Limit alerts use the highest value a
 window reached, so a window that dips back under 80 % does not alert again. See

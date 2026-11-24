@@ -20,6 +20,10 @@ describe('RULE_GROUPS usage notices', () => {
     expect(g?.triggers).toEqual(['limit_change', 'usage_reset', 'seat_change', 'weekly_drop']);
     expect(RULE_GROUPS.filter((x) => x.triggers.includes('limit_change'))).toHaveLength(1);
   });
+  it('the switch notices share their own row', () => {
+    const g = RULE_GROUPS.find((x) => x.id === 'switch');
+    expect(g?.triggers).toEqual(['session_moved', 'switch_digest']);
+  });
 });
 
 describe('recentAlerts', () => {
