@@ -978,8 +978,7 @@ live leases), never from a forecast of past use.
 from a label. In plain words (the one wording every surface uses: `internal/picker`
 `ModeWords`, the board's `components/pick-mode.js`, the phone's `lib/format/pickMode.ts`):
 
-- **Protected**: "Kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and
-  the 5-hour window is under 45%, or near its reset for room that would expire unused anyway." For the account you use yourself (in Chrome, the app, or
+- **Protected**: "Kept for you. Used last: new sessions go here only when no aggressive account can take them, or for room that would expire unused anyway." For the account you use yourself (in Chrome, the app, or
   interactively in a terminal).
 - **Aggressive**: "Use it up. Sessions go here until 98% of the week or 5 hours." For
   accounts that only run agents.

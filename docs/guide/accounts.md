@@ -14,8 +14,8 @@ switches or rotates accounts for you, and it never shares a login between folder
 `wy account next` (below) decides where new Claude Code sessions go. Tell it, once per
 account, how to treat that account:
 
-- **Protected**: kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and
-  the 5-hour window is under 45%, or near its reset for room that would expire unused anyway. Choose it for the account you use yourself: in Chrome, the
+- **Protected**: kept for you. Used last: new sessions go here only when no aggressive account can take them, or for room
+  that would expire unused anyway. Choose it for the account you use yourself: in Chrome, the
   Claude app, or interactively in a terminal. Agents then only borrow what you would not use
   anyway, and nothing ever falls back onto it when the other accounts are full.
 - **Aggressive**: use it up. Sessions go here until 98% of the week or 5 hours. Choose it for
@@ -114,9 +114,9 @@ down, the leases from the last hub read are used until a new reading of that acc
 them. `--explain` lists each lease with where its use was measured.
 
 The default strategy, `lanes`, treats each account as **aggressive** (use its room up to 98 %)
-or **protected** (kept for you: new sessions only while its week is behind an even pace plus
-10 points, under 85 %, and its 5 hours under 45 %; past that only when no aggressive account
-can take a session at all).
+or **protected** (kept for you and used last: it is preferred while its week is behind an even pace
+plus 10 points, under 85 %, and its 5 hours under 45 %; past that it still takes a session when no
+aggressive account can, so work never waits while any account can safely take it).
 
 An aggressive account **drains** when its week resets soon with room left: within a day, or
 within twice the time it would need to use that room running flat out. A draining account goes

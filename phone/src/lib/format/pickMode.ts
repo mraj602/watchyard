@@ -3,7 +3,7 @@
 import type { PickMode, Verdict } from '../../contract/api';
 
 export const MODE_WORDS = {
-  protected: 'Kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and the 5-hour window is under 45%, or near its reset for room that would expire unused anyway.',
+  protected: 'Kept for you. Used last: new sessions go here only when no aggressive account can take them, or for room that would expire unused anyway.',
   aggressive: 'Use it up. Sessions go here until 98% of the week or 5 hours.',
   notChosen: 'Not chosen yet; treated as aggressive.',
   question: 'How should the picker use this account?',

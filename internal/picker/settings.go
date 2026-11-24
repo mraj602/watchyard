@@ -38,7 +38,7 @@ const (
 var ModeWords = struct {
 	Protected, Aggressive, NotChosen string
 }{
-	Protected:  "Kept for you. New sessions only when no aggressive account has room, this week is behind an even pace and the 5-hour window is under 45%, or near its reset for room that would expire unused anyway.",
+	Protected:  "Kept for you. Used last: new sessions go here only when no aggressive account can take them, or for room that would expire unused anyway.",
 	Aggressive: "Use it up. Sessions go here until 98% of the week or 5 hours.",
 	NotChosen:  "Not chosen yet; treated as aggressive.",
 }

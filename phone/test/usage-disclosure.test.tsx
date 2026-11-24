@@ -158,7 +158,7 @@ describe('How should the picker use this account?', () => {
     await openWith(fakeClient(), false, 'protected');
     const mode = screen.getByTestId('mode-seat_work');
     expect(within(mode).getByText('How should the picker use this account?')).toBeTruthy();
-    expect(screen.getByTestId('mode-current-seat_work')).toHaveTextContent(/^Protected\. Kept for you\. New sessions only while/);
+    expect(screen.getByTestId('mode-current-seat_work')).toHaveTextContent(/^Protected\. Kept for you\. Used last/);
     expect(screen.queryByTestId('mode-seat_work-aggressive')).toBeNull();
     expect(screen.queryByTestId('mode-none-seat_work')).toBeNull();
   });
