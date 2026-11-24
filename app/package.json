@@ -2,7 +2,7 @@
   "name": "watchyard-desktop",
   "productName": "Watchyard",
   "desktopName": "watchyard-desktop.desktop",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "Watchyard desktop app: claude.ai account tabs, web usage and the hub board. Unofficial; not affiliated with Anthropic.",
   "license": "AGPL-3.0-only",
   "author": "Watchyard contributors",
