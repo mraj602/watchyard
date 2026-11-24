@@ -1078,8 +1078,13 @@ dropped; a time after now counts as now. The reading used is the newest of those
 session that sat idle through a reset keeps sending its old window's value with the old
 `resets_at`, and must not undo the reset. An idle reading (0 % with no `resets_at`) newer than
 it replaces it: the window has not started. When no reading has a `resets_at`, the newest
-reading is used. The account's reading time `ts` is that of its `five_hour` reading, else of
-its `seven_day` reading; an account with neither has no reading time.
+reading is used. Within one window the level never falls: a reading more than 1 point under
+the reading used before it (same window, oldest first) is held, and skipped unless the next
+reading of that window is also more than 1 point under it (a usage reset, confirmed: that next
+reading is used), as in Calibration, Used readings. A session can send an old level with the
+current `resets_at` (live: claude-7's week read 12 % between readings of 26 %). The account's
+reading time `ts` is that of its `five_hour` reading, else of its `seven_day` reading; an
+account with neither has no reading time.
 
 *Effective state*, per account, at `now`:
 
@@ -1261,22 +1266,33 @@ unexplained use, never the fixed lease charges (so lanes already started cannot 
 account out of the drain; they only limit how many more it takes).
 
 - *Quantities.* `ρ` the account's ratio; `M` the drain margin (1 weekly point, 2 when stale or the
-  hub could not be read); `R5 = (98 − M − w) × ρ`, the room this week in 5-hour points; `A0 =
-  max(0, 98 − h)` the room in the current 5-hour window; `t5` the hours to the 5-hour reset (5
-  when no window is open); `H` the hours to the weekly reset; `need` the hours to use `R5` at full
-  5-hour speed (`5 × R5 / 98` when `R5 ≤ A0`, else `t5 + 5 × (R5 − A0) / 98`), for every account.
+  hub could not be read); `W` and `S` the account's hard weekly and 5-hour limits: 98, no higher
+  than Smart Account Switch's caps while it is on (8.6: aggressive 98 and 95, protected 80 and
+  80 by default), less the pin reserve (8.6, Pinned sessions); `R5 = (W − M − w) × ρ`, the room
+  this week in 5-hour points; `A0 = max(0, S − h)` the room in the current 5-hour window; `t5`
+  the hours to the 5-hour reset (5 when no window is open); `H` the hours to the weekly reset;
+  `need` the hours to use `R5` at full 5-hour speed (`5 × R5 / S` when `R5 ≤ A0`, else `t5 + 5
+  × (R5 − A0) / S`), for every account. An aggressive account's weekly and 5-hour limits are no
+  higher than `W` and `S` either, so the drain, the at-risk test (its `need` is the room to `W`
+  at `S` per window) and the rank aim at the level the switch keeps (live on pre4.1: claude-3
+  at 82 % with 2 pins had 6 points of room to its cap 88, not 16 to 98).
   For a protected account's capacity `A0` is `max(0, 45 − h)`: its 5-hour floor stays.
 - *Entry* (all of): the weekly level and its `resets_at` are known from a reading; `98 − w > 0.5`;
   `H > guard` (10 minutes); and `H ≤ max(24, 2 × need)` for an aggressive account, `H ≤ 1 × need`
   for a protected one that is not stale (owner: only room that would be wasted even at full
   speed). It leaves the drain as soon as one fails (no state is kept between calls). A protected
-  account in drain may use its room up to 98 − M (not its target or pace line), with its 5-hour
+  account in drain may use its room up to `W − M` (not its target or pace line), with its 5-hour
   floor kept.
 - *Lane statistics.* From the leases read (this machine's ledger, 8 days; other machines' leases
   with a hub burn): `E` the p75, `Ē` the mean and `E95` the p95 of the 5-hour points (`f ×` units) of lanes that
   ended or are 5 hours old, and `L` the median length of this machine's ended lanes (launched to
   ended); with `--model`, that model's own lanes when there are at least 10. Fewer than 10:
   the fallbacks 8 points (all three) and 15 minutes. A new lane burns `r = Ē / L` points per hour.
+  The **lane burn** `R` is the p75 of the lanes' 5-hour points per hour of wall time: lanes that
+  ended (this machine's, launched to ended, 5 minutes or more) and lanes running for 30 minutes
+  or more (their burn so far over their age; a younger lane's first minutes burn far above its
+  steady rate), with `--model` that model's own when there are at least 10; fewer than 10: not
+  measured.
 - *Forward burn* of the running lanes before a time `T`: `F(T) = Σ rate × min(rem, T)` over the
   account's leases that are not ended and younger than 5 hours (settled and not yet launched ones
   included), where `rate` = the units the session used in the last 15 minutes `× f` per hour when
@@ -1727,7 +1743,7 @@ Unknown fields are reported by `wy doctor` as unknown keys.
   `at_session_end_pct`, `at_reset_pct`, `resets_at`, `hours_to_reset`, `rate_pct_per_hour`,
   `rate_from` (`history`, `window`, `global`, `live_sessions`, `none`),
   `unused_at_reset_pct`, `over_cap`, `source`; empty for `lanes`). For `lanes` each account
-  also has `kind` and `lanes`: `{"weekly_pct", "five_hour_pct", "weekly_reserve_pct",
+  also has `kind` and `lanes`: `{"weekly_pct", "weekly_measured_pct", "five_hour_pct", "weekly_reserve_pct",
   "hours_to_reset", "reading_at", "reading_age_min", "five_hour_resets_at", "meter_5h_pct",
   "meter_7d_pct", "unexplained_5h_pct", "leases", "burst", "burst_cap", "capped",
   "last_lease", "expiring", "stale", "unknown": [...], "skip_level", "weekly_cap",
@@ -1955,8 +1971,14 @@ normally, so these numbers are on the heavy side.
 places no new lane on an account where the switch would move a session off: the switch's
 projection (`internal/projection`, the same function on both sides) of the account's measured
 burn now (this machine's sessions and other machines' sessions the hub measured, as above) plus
-the new lane's burn (r, 8.5 Lane statistics), against the switch's caps less the pin
-reserve. Such an account is skipped like a hard limit ("the switch's projection is 97%, over
+the new lane's burn, against the switch's caps less the pin reserve. The new lane's burn is the
+larger of its estimate's (cost over wall time, or `r`) and the measured lane burn `R` (8.5 Lane
+statistics): a size class sets how long a lane runs, not how fast it burns (live: a "medium"
+lane counted as 4 points per hour while Opus lanes here burn 12-26). The switch reads the
+accounts from the same readings and effective state as the picker (8.5, Effective state; the
+picker's measured level, without lease charges, is `--json` `weekly_measured_pct`), and each
+pass logs the weekly reading and what the meter adds to it in `passes.jsonl` (`l7_read`,
+`l7_read_age_s`, `l7_meter`). Such an account is skipped like a hard limit ("the switch's projection is 97%, over
 its cap 95% (it would move a session off)" in `--explain`). Off, the picker is as before.
 
 **Simulator, 1.3.3-pre3 against this release** (`internal/mover/sim_v3_test.go`; every pattern

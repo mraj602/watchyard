@@ -212,7 +212,13 @@ func Explain(w io.Writer, res Result, data, hubErr string) error {
 func explainLanes(w io.Writer, res Result) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "#\tACCOUNT\tFOLDER\tKIND\tOK\t7D (RESERVE) RESET\t5H\tLEASES BURST\tDATA\tWHY")
+	rows := map[string]bool{} // each folder once (live on pre4.1: blocked accounts showed twice)
 	for i, r := range res.Ranked {
+		if id := r.Label + "\x00" + r.Folder; rows[id] {
+			continue
+		} else {
+			rows[id] = true
+		}
 		n, ok := "-", "no"
 		if r.Eligible {
 			n, ok = fmt.Sprint(i+1), "yes"

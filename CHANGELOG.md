@@ -119,6 +119,18 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **New lanes placed where the switch moves them off** (live on pre4.1: four lanes leased to
+  claude-3 at 81-83% of its week, each moved off 4-20 minutes later). The lanes picker's drain,
+  at-risk test and rank now aim at the switch's caps less the pin reserve (claude-3 with 2 pins
+  had 6 weekly points of room to its cap 88, not 16 to 98), and the switch-projection check
+  takes a new lane at the measured lane burn (the p75 of this setup's lanes' points per hour,
+  per model) instead of its size class's cost over its wall time (about 4 points per hour).
+- **Stale readings.** A reading more than 1 point under the one before it in the same window is
+  skipped unless the next confirms the drop (a session sent claude-7's week at 12% between
+  readings of 26%, and the switch judged it on 12 for 5 minutes). The switch logs the weekly
+  reading and what the meter adds to it in `passes.jsonl`; `--json` shows
+  `weekly_measured_pct`, the level the switch reads.
+- `wy account next --explain` lists each account once.
 - **Smart Account Switch: no false moves from integer readings** (setup.md 8.6, Projections).
   An account whose sessions ran on another machine was moved off on its readings alone: one
   point of rise over 10 minutes read as 6 points per hour. The burn now adds the other machines'

@@ -530,6 +530,39 @@ func TestChooseReading(t *testing.T) {
 	if got := chooseReading(nil, lnow); got.ok {
 		t.Errorf("no window: %+v", got)
 	}
+	// A stale reading (live 2026-11-25: one session sent claude-7's week at 12% with the
+	// current resets_at between readings of 26%) is under an earlier one of its window: left out.
+	wr := lnow.Add(60 * time.Hour)
+	w = &Window{Key: "seven_day", Samples: []Sample{
+		{At: lnow.Add(-40 * time.Minute), Pct: 26, ResetsAt: wr, Source: "statusline"},
+		{At: lnow.Add(-10 * time.Minute), Pct: 26, ResetsAt: wr.Add(-time.Second), Source: "web"},
+		{At: lnow.Add(-time.Minute), Pct: 12, ResetsAt: wr, Source: "statusline"},
+	}}
+	if got := chooseReading(w, lnow); got.pct != 26 || !got.at.Equal(lnow.Add(-10*time.Minute)) {
+		t.Errorf("stale low reading chosen: %+v, want 26 from 10 min ago", got)
+	}
+	// Rounding: a reading a point under an earlier one (a float then a floored percent) counts.
+	w.Samples[2].Pct = 25.5
+	if got := chooseReading(w, lnow); got.pct != 25.5 {
+		t.Errorf("a rounded reading left out: %+v", got)
+	}
+	// Two readings in a row under it confirm the drop (a usage reset): the newer is used.
+	w.Samples = append(w.Samples, Sample{At: lnow.Add(-30 * time.Second), Pct: 13, ResetsAt: wr, Source: "web"})
+	w.Samples[2].Pct = 12
+	if got := chooseReading(w, lnow); got.pct != 13 {
+		t.Errorf("confirmed drop: %+v, want 13", got)
+	}
+	w.Samples = w.Samples[:3]
+	// A new window (a later resets_at) starts low: not stale.
+	w.Samples[2] = Sample{At: lnow.Add(-time.Minute), Pct: 1, ResetsAt: wr.Add(week), Source: "statusline"}
+	if got := chooseReading(w, lnow); got.pct != 1 {
+		t.Errorf("new window's reading left out: %+v", got)
+	}
+	// Without resets_at a later lower reading may be a reset: it is used.
+	w = &Window{Key: "seven_day", Samples: []Sample{{At: lnow.Add(-time.Hour), Pct: 80}, {At: lnow.Add(-time.Minute), Pct: 3}}}
+	if got := chooseReading(w, lnow); got.pct != 3 {
+		t.Errorf("no resets_at: %+v, want the newest (3)", got)
+	}
 }
 
 func units(at ...float64) []unitAt {

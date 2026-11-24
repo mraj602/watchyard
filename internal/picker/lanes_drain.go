@@ -40,6 +40,12 @@ type LaneStats struct {
 	N     int    // lanes the cost was measured on (0: fallback)
 	NLen  int    // lanes the length was measured on
 	Model string // the model the stats are for ("" pooled)
+	// Rate is the measured burn of a lane over its wall time, 5-hour points per hour (the
+	// laneRateQ quantile of the ended lanes and those running for 30 minutes or more; 0:
+	// not measured), NRate the lanes it was measured on: the switch-projection check takes a
+	// new lane at this rate (its size class sets only how long it runs).
+	Rate  float64
+	NRate int
 	// Classes: each size class's measured median wall time and mean cost, from lanes leased
 	// with that --expect class (at least laneStatsMin of them).
 	Classes map[string]LaneClass
@@ -67,6 +73,7 @@ type DrainInfo struct {
 	FreeAt      *time.Time
 	Why         string  // the reason when Capacity <= 0
 	WM, HM      float64 // the measured weekly and 5-hour levels it was judged on
+	Target      float64 // the weekly level it is drained to (its limit, the switch's cap less the pin reserve)
 	waitShort   bool    // blocked by its 5-hour window (counts for the short wait)
 	over        bool    // no capacity, but one more lane stays under the hard limits (NoStall)
 }
@@ -281,14 +288,14 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	var d DrainInfo
 	pa := p.account(acc)
 	rho := pa.ratio()
-	full := p.AggrSkip
-	if full <= 0 {
-		full = 98
-	}
+	// The hard limits (98, no higher than the switch's caps, less the pin reserve): full7 is
+	// what the week may be drained to, full the 5-hour speed (setup.md 8.5, Drain).
+	full7, full := p.hard(acc)
 	lim7, lim5 := p.limits(acc)
 	if acc.Protected {
-		lim7 = pinLess(full, acc.PinReserve7) // a protected account in drain may use the room that would expire (owner Q3)
+		lim7 = full7 // a protected account in drain may use the room that would expire (owner Q3)
 	}
+	d.Target = lim7
 	H := v.hrs
 	guard := p.Guard.Hours()
 	known := len(v.unknown) == 0 && c.weekly != nil && !c.weeklyRst.IsZero()
@@ -461,8 +468,8 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	}
 	d.Capacity, d.LimitedBy = C, by
 	// Overflow (NoStall): full by its drain capacity, but one more lane stays under the hard
-	// limits (weekly 98, the 5-hour limit and backstop, the landing guard).
-	d.over = C <= 0 && !landed && v.wM+(F+n1)/rho <= full && fit5 && v.hM < full
+	// limits (weekly 98 or the switch's cap, the 5-hour limit and backstop, the landing guard).
+	d.over = C <= 0 && !landed && v.wM+(F+n1)/rho <= full7 && fit5 && v.hM < full
 	if C > 0 {
 		return d
 	}

@@ -196,6 +196,9 @@ type simLane struct {
 	sb             int
 	sbF            float64
 	obsTrue, obsCW [10]float64
+	// burned: its burn so far, 5-hour points; endAt the minute it finished (sim_place_test.go).
+	burned float64
+	endAt  int
 }
 
 // trueRate10 is rate10 without the startup burst's excess.
@@ -250,7 +253,10 @@ type simResult struct {
 	FalseMoves, ReReadCost float64
 	// YoungMoves: moves of lanes under 15 minutes old (sim_young_test.go).
 	YoungMoves, YoungFalse float64
-	runs                   float64
+	// Placed: lanes the picker placed; Moved30: of them, those moved within 30 minutes of
+	// their placement (sim_place_test.go).
+	Placed, Moved30 float64
+	runs            float64
 }
 
 func (r *simResult) add(o simResult) {
@@ -278,6 +284,8 @@ func (r *simResult) add(o simResult) {
 	r.ReReadCost += o.ReReadCost
 	r.YoungMoves += o.YoungMoves
 	r.YoungFalse += o.YoungFalse
+	r.Placed += o.Placed
+	r.Moved30 += o.Moved30
 	r.Over80Owner += o.Over80Owner
 	r.Over80NoRoom += o.Over80NoRoom
 	r.Over80Other += o.Over80Other
@@ -324,7 +332,24 @@ type simStrat struct {
 	measure func(l *simLane) float64
 	// readFull: the readings are compared with the meter of the full rates (not measure's).
 	readFull bool
+	// The picker's placement as on the live lanes strategy (sim_place_test.go): rank puts the
+	// aggressive accounts in drain, then at risk, first; capTarget aims the drain and at-risk
+	// room at the switch's caps less the pin reserve (else 98, the reserve only on the
+	// weekly limit); laneRate is the new lane's rate in the switch-projection check (pickProj):
+	// laneEst its estimate (l.est), laneClass the size class (cost over wall time),
+	// laneMeasured the measured per-model rate of finished and running lanes.
+	rank, capTarget bool
+	laneRate        int
+	rateQ           float64 // laneMeasured: the quantile of the lanes' rates
 }
+
+// The new lane's rate in the picker's switch-projection check (simStrat.laneRate).
+const (
+	laneEst = iota
+	laneClass
+	laneMeasured
+	laneTrue // its true busy rate (an upper bound on what a better estimate does)
+)
 
 // rateOf is the session rate the plan sees.
 func (st simStrat) rateOf(l *simLane) float64 {
@@ -467,6 +492,20 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 	// 5-hour reading among the aggressive ones with room, else a protected one under its gate
 	// (5h < 60, 7d < 70), else the least-used aggressive one.
 	var place func(m int, est float64) int
+	// newMF is the model of the lane being placed; newRate its rate in the picker's
+	// switch-projection check (simStrat.laneRate).
+	newMF, newMult := 5.0, 1.0
+	newRate := func(m int, est float64) float64 {
+		switch st.laneRate {
+		case laneTrue:
+			return est * newMult
+		case laneClass:
+			return simClassRate
+		case laneMeasured:
+			return measuredRate(lanes, newMF, st.rateQ)
+		}
+		return est
+	}
 	placeR := func(m int, est float64, useR bool) int {
 		r5, r7 := rsv5, rsv7
 		if !useR {
@@ -479,7 +518,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 				return false
 			}
 			a := accs[i]
-			r := est
+			r := newRate(m, est)
 			for _, l := range lanes {
 				if l.on && !l.done && !l.stopped && l.acc == i {
 					r += l.rate10()
@@ -496,12 +535,23 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			return st.p.Project(acc, nil, 0, simAt(m)).Window != ""
 		}
 		best := -1
+		var bestK rankKey
 		for i, a := range accs {
 			if !a.loggedIn || a.protected || a.l5 >= 90-r5[i] || a.l7 >= 95-r7[i] || holds(i, m, est, r5[i]) || over(i) {
 				continue
 			}
-			if best < 0 || a.l5 < accs[best].l5 {
-				best = i
+			k := rankKey{group: 2, l5: a.l5}
+			if st.rank {
+				fwd := 0.0 // the running lanes' burn before the weekly reset, 5-hour points
+				for _, l := range lanes {
+					if l.on && !l.done && !l.stopped && l.acc == i {
+						fwd += l.est * 0.8 * math.Min(float64(l.work)/60, float64(a.r7-m)/60)
+					}
+				}
+				k = rankOf(st, a, m, r5[i], r7[i], fwd)
+			}
+			if best < 0 || k.less(bestK) {
+				best, bestK = i, k
 			}
 		}
 		if best >= 0 {
@@ -606,6 +656,8 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 					}
 					l.acc = groups[l.group]
 				default:
+					newMF, newMult = l.mf, l.mult
+					res.Placed++
 					l.acc = place(m, l.est)
 				}
 				l.on, l.busy = true, 4+l.r.IntN(20)
@@ -684,6 +736,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 				b = rate / 60
 				l.turnAge++
 				burnAcc(a, b, m, true)
+				l.burned += b
 				l.ctx += 6000
 				if l.ctx > 800_000 {
 					l.ctx = 200_000
@@ -692,7 +745,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 				l.busy--
 				l.steps(60)
 				if l.work <= 0 {
-					l.done = true
+					l.done, l.endAt = true, m
 				} else if l.busy == 0 {
 					l.idle = 1 + l.r.IntN(6)
 					if l.owner || l.r.Float64() < 0.15 {
@@ -1024,6 +1077,9 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			l := byID[mv.Session]
 			if l.coord == nil && l.age < 15 && l.movedFrm < 0 {
 				res.YoungMoves++
+			}
+			if l.coord == nil && !l.owner && l.group == 0 && l.age < 30 && l.movedFrm < 0 && l.pendTo < 0 {
+				res.Moved30++
 			}
 			if l.pendTo >= 0 {
 				continue // already waiting for its step to end

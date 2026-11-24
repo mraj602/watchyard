@@ -25,6 +25,11 @@ type PassAccount struct {
 	Reset7S   int64   `json:"reset7_s"`         // seconds to the weekly reset
 	Window    string  `json:"window,omitempty"` // "5h" or "7d": over its cap
 	Note      string  `json:"note,omitempty"`   // the rate note ("... used the readings")
+	// Read7 is the weekly reading Level7 starts from, Read7AgeS its age in seconds and Meter7
+	// what the meter, its margin and the unexplained use add (Level7 = Read7 + Meter7).
+	Read7     float64 `json:"l7_read,omitempty"`
+	Read7AgeS int64   `json:"l7_read_age_s,omitempty"`
+	Meter7    float64 `json:"l7_meter,omitempty"`
 }
 
 // PassRecord is one line of <state>/move/passes.jsonl.

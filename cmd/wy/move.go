@@ -324,6 +324,9 @@ type moveWorld struct {
 	// per token unit (wy burn reads them too).
 	tokens []picker.TokenUse
 	f5     map[string]float64
+	// live are the accounts as the picker read them, by key (the weekly reading's parts for
+	// passes.jsonl).
+	live map[string]picker.LiveAccount
 }
 
 func (e moveEnv) world(noHub bool) (*moveWorld, error) {
@@ -446,6 +449,10 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		}
 		w.input.Accounts = append(w.input.Accounts, ma)
 		f5[a.Key] = a.F5
+		if w.live == nil {
+			w.live = map[string]picker.LiveAccount{}
+		}
+		w.live[a.Key] = a
 	}
 
 	// Sessions: the registry of every folder, with their burn (their token rows of the burn

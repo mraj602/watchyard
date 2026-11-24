@@ -18,6 +18,11 @@ type LiveAccount struct {
 	Ratio, F5 float64
 	// Stale: its reading is too old or unknown to forecast.
 	Stale bool
+	// WeeklyRead is the weekly reading Weekly starts from (at ReadingAt); WeeklyMeter what the
+	// token meter with its margin and the unexplained use add to it, weekly points. Shown only
+	// (passes.jsonl): the picker's `--json` lanes weekly_measured_pct is the same Weekly.
+	WeeklyRead, WeeklyMeter float64
+	ReadingAt               time.Time
 }
 
 // LiveLane is one running lane (a lease whose session runs): its burn over the last
@@ -45,6 +50,11 @@ func (in LaneInput) Live() ([]LiveAccount, []LiveLane) {
 			la.FiveReset, la.FiveHour = time.Time{}, 0
 		}
 		la.WeeklyReset = now.Add(time.Duration(v.hrs * float64(time.Hour)))
+		w0, _, _ := c.effective(now)
+		la.WeeklyRead, la.WeeklyMeter = w0, v.wM-w0
+		if !c.noTS {
+			la.ReadingAt = c.ts
+		}
 		accs = append(accs, la)
 		f5[a.Key] = pa.F5
 	}

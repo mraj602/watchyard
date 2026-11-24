@@ -247,8 +247,15 @@ func (e moveEnv) printDigest(since string, asJSON bool) error {
 func (w *moveWorld) recordPass(st mover.State, r mover.Result, now time.Time) {
 	rec := mover.PassRecord{At: now}
 	for _, a := range r.Accounts {
-		rec.Accounts = append(rec.Accounts, mover.PassAccount{Key: a.Key, Label: a.Label, Protected: a.Protected, Level5: a.Level5, Level7: a.Level7,
-			P5: a.P5, P7: a.P7, Cap5: a.Cap5, Cap7: a.Cap7, R5: a.R5, Reset7S: int64(a.Reset7.Seconds()), Window: a.Window, Note: a.RateNote})
+		pa := mover.PassAccount{Key: a.Key, Label: a.Label, Protected: a.Protected, Level5: a.Level5, Level7: a.Level7,
+			P5: a.P5, P7: a.P7, Cap5: a.Cap5, Cap7: a.Cap7, R5: a.R5, Reset7S: int64(a.Reset7.Seconds()), Window: a.Window, Note: a.RateNote}
+		if la, ok := w.live[a.Key]; ok {
+			pa.Read7, pa.Meter7 = la.WeeklyRead, la.WeeklyMeter
+			if !la.ReadingAt.IsZero() {
+				pa.Read7AgeS = int64(now.Sub(la.ReadingAt).Seconds())
+			}
+		}
+		rec.Accounts = append(rec.Accounts, pa)
 	}
 	_ = st.AppendPass(rec)
 }

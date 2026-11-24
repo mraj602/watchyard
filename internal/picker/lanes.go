@@ -174,14 +174,39 @@ func (p LaneParams) account(acc LaneAccount) LaneParams {
 	return p
 }
 
-// needHours is how long acc needs to use its weekly room up to AggrSkip at full 5-hour speed:
-// each 5-hour window gives at most AggrSkip/ratio weekly points (fill_exp, setup.md 8.5).
+// needHours is how long acc needs to use its weekly room up to its hard weekly limit at full
+// 5-hour speed: each 5-hour window gives at most its hard 5-hour limit/ratio weekly points
+// (fill_exp, setup.md 8.5). The limits are AggrSkip, no higher than the switch's caps, less
+// the pin reserve (hard).
 func (p LaneParams) needHours(acc LaneAccount, w float64) float64 {
-	room := math.Max(0, p.AggrSkip-w)
-	if room == 0 || p.AggrSkip <= 0 {
+	if p.AggrSkip <= 0 {
 		return 0
 	}
-	return room * p.account(acc).ratio() / p.AggrSkip * 5
+	h7, h5 := p.hard(acc)
+	room := math.Max(0, h7-w)
+	if room == 0 {
+		return 0
+	}
+	return room * p.account(acc).ratio() / h5 * 5
+}
+
+// hard are acc's hard weekly and 5-hour limits: AggrSkip (98), no higher than Smart Account
+// Switch's caps while it is on, less the pin reserve. Every account, protected too, takes no
+// lane past them.
+func (p LaneParams) hard(acc LaneAccount) (h7, h5 float64) {
+	full := p.AggrSkip
+	if full <= 0 {
+		full = full98
+	}
+	return pinLess(switchMin(full, acc.SwitchCap7), acc.PinReserve7), pinLess(switchMin(full, acc.SwitchCap5), acc.PinReserve5)
+}
+
+// switchMin is lim, no higher than the switch's cap c (0: the switch is off).
+func switchMin(lim, c float64) float64 {
+	if c > 0 && c < lim {
+		return c
+	}
+	return lim
 }
 
 func (p LaneParams) ratio() float64 {
@@ -237,6 +262,10 @@ type LaneAccount struct {
 	PinReserve5, PinReserve7 float64
 	// MoveUnits is its measured burn now, units per hour (MoverView.Units).
 	MoveUnits float64
+	// SwitchCap5 and SwitchCap7 are Smart Account Switch's caps for it while the switch is on
+	// (MoverView, before the pin reserve; 0: off): its limits, the hard ones too, are no higher,
+	// so the drain, the at-risk test and the rank aim at the level the switch keeps.
+	SwitchCap5, SwitchCap7 float64
 }
 
 // LaneLease is one lease, local or another machine's.
@@ -326,6 +355,7 @@ type LaneRow struct {
 	Skip         bool
 	Reason       string
 	Weekly       float64 // effective weekly level
+	WeeklyM      float64 // measured weekly level (no lease charges): Smart Account Switch's (LaneInput.Live)
 	FiveHour     float64 // effective 5-hour level
 	Reserve      float64 // weekly level with the running lanes' expected cost
 	HoursToReset float64
@@ -606,6 +636,7 @@ func (p LaneParams) limits(acc LaneAccount) (lim7, lim5 float64) {
 	if acc.Limit5h > 0 {
 		lim5 = acc.Limit5h
 	}
+	lim7, lim5 = switchMin(lim7, acc.SwitchCap7), switchMin(lim5, acc.SwitchCap5)
 	return pinLess(lim7, acc.PinReserve7), pinLess(lim5, acc.PinReserve5)
 }
 
@@ -785,6 +816,14 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 		res.Waiting = in.N
 		return res, nil
 	}
+	if in.Mover != nil {
+		// The switch's caps bound every limit of the account (LaneAccount.SwitchCap5/7).
+		accts := append([]LaneAccount(nil), in.Accounts...)
+		for i := range accts {
+			accts[i].SwitchCap5, accts[i].SwitchCap7 = in.Mover.caps(accts[i].Protected)
+		}
+		in.Accounts = accts
+	}
 	clean := make([]cleanSample, len(in.Accounts))
 	for i, a := range in.Accounts {
 		clean[i] = cleanLaneSample(a.Sample, now)
@@ -898,7 +937,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 						// model's forward burn) plus one more lane must stay under the limit.
 						_, lim5 := p.limits(acc)
 						if prot {
-							lim5 = pinLess(full98, acc.PinReserve5) // NoStall: past its gate a protected account has the hard limit only
+							_, lim5 = p.hard(acc) // NoStall: past its gate a protected account has the hard limit only
 						}
 						t5 := v.fiveRst.Sub(now).Hours()
 						// A lane nothing measures is taken as a median lane (no Lindy rule: an old
@@ -926,7 +965,8 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 				// NoStall: limits that only order (the burst cap, the protected gate, drain
 				// capacity) leave the account able to take a lane under the hard limits.
 				if p.NoStall && skip {
-					hardOK := v.w < pinLess(full98, acc.PinReserve7) && v.h < pinLess(full98, acc.PinReserve5) &&
+					h7, h5 := p.hard(acc)
+					hardOK := v.w < h7 && v.h < h5 &&
 						(len(v.unknown) > 0 || v.w+tl/p.account(acc).ratio() <= pinLess(p.LandMax, acc.PinReserve7))
 					switch {
 					case d.On:
@@ -940,6 +980,11 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 				// The switch's projection (setup.md 8.5): with this lane's burn added, the account
 				// must stay under the caps at which Smart Account Switch would move a session off.
 				if in.Mover != nil && !skip && len(v.unknown) == 0 {
+					// The new lane at the measured lane burn (setup.md 8.5, The switch's projection):
+					// a size class's cost over its wall time is the average of lanes mostly idle.
+					if in.Stats.Rate > lr {
+						lr = in.Stats.Rate
+					}
 					if why5 := moverOver(in.Mover, acc, v, lr, p, now); why5 != "" {
 						skip, why, level, capped, soft = true, why5, 3, false, false
 					}
@@ -966,7 +1011,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 					key = laneKey{group: 0, last: ll, hrs: v.hrs, ord: acc.Ord}
 				}
 			}
-			row := LaneRow{Key: acc.Key, Protected: prot, Score: sc, Skip: skip, Reason: why, Weekly: v.w, FiveHour: v.h,
+			row := LaneRow{Key: acc.Key, Protected: prot, Score: sc, Skip: skip, Reason: why, Weekly: v.w, WeeklyM: v.wM, FiveHour: v.h,
 				Reserve: v.wRes, HoursToReset: v.hrs, Leases: v.leaseN, Burst: v.capN, BurstCap: cp, Capped: capped,
 				Added5: v.add5, Meter5: v.m5, Meter7: v.m7, Margin5: v.g5, Margin7: v.g7, WeeklyCap: cap7, FiveHourCap: cap5, SampleAgeMin: v.ageMin, FiveReset: v.fiveRst,
 				Pins: acc.Pins, PinReserve5: acc.PinReserve5, PinReserve7: acc.PinReserve7,
@@ -1222,16 +1267,21 @@ func cut(s string, n int) string {
 	return s
 }
 
+// caps are the switch's caps for an aggressive or a protected account (before the pin reserve).
+func (m *MoverView) caps(protected bool) (c5, c7 float64) {
+	if protected {
+		return m.Cap5Protected, m.Cap7Protected
+	}
+	return m.Cap5, m.Cap7
+}
+
 // moverOver is why Smart Account Switch would move a session off acc once a new lane burning
 // lr 5-hour points per hour runs there ("" when it would not): its projection at its measured
 // burn plus the lane (projection.Levels, the switch's own maths) over the switch's caps less
 // the pin reserve.
 func moverOver(m *MoverView, acc LaneAccount, v laneState, lr float64, p LaneParams, now time.Time) string {
 	pa := p.account(acc)
-	c5, c7 := m.Cap5, m.Cap7
-	if acc.Protected {
-		c5, c7 = m.Cap5Protected, m.Cap7Protected
-	}
+	c5, c7 := m.caps(acc.Protected)
 	if c5 <= 0 && c7 <= 0 {
 		return ""
 	}
