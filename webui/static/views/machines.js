@@ -117,6 +117,7 @@ function card(m, ctx, idx) {
         row('Last seen', agoLabel(m.last_seen, now) || '–'),
         row('Updates waiting', m.backlog == null ? 'not reported' : num(m.backlog)),
         row('Notifies on its own', m.direct_push ? 'on' : 'off'))),
+    h('p', { class: 'small' }, h('a', { href: `#/switches?machine=${encodeURIComponent(m.id)}`, 'data-key': `machine-switches-${m.id}` }, 'Account switches on this machine')),
     owner && !removed ? actions(m, pl) : null);
 }
 

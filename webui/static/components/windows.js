@@ -35,14 +35,23 @@ const BAND = {
 };
 
 // null when the window has no projection.
+// Which rate a projection used: the last hour's, or the whole window's average ('' from a hub
+// that does not say).
+export function paceBasis(basis, key) {
+  if (basis === 'recent') return "at the last hour's pace";
+  if (basis === 'average') return key === 'seven_day' ? "at this week's average pace" : "at this window's average pace";
+  return '';
+}
+
 export function paceInfo(w, now = Date.now()) {
   const p = w.pace;
   if (!p || !p.band) return null;
   const b = BAND[p.band] || { cls: 'ok', text: humanKey(p.band) };
   const proj = p.projected_pct != null ? Math.round(p.projected_pct) : null;
+  const basis = paceBasis(p.basis, w.key);
   let text;
-  if (p.band === 'runaway' && p.full_at) text = `At this pace: 100% by ${clock(p.full_at, now)}`;
-  else if (proj != null) text = `${b.text}: ~${proj}% at reset`;
+  if (p.band === 'runaway' && p.full_at) text = `At ${basis ? basis.replace(/^at /, '') : 'this pace'}: 100% by ${clock(p.full_at, now)}`;
+  else if (proj != null) text = `${b.text}: ~${proj}% at reset${basis ? ` ${basis}` : ''}`;
   else text = b.text;
   return { cls: b.cls, text, band: p.band, projected: p.projected_pct || 0 };
 }

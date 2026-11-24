@@ -1355,6 +1355,45 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
 
+  /v1/switches:
+    get:
+      tags: [alerts]
+      operationId: listSwitches
+      summary: The Smart Account Switch log, newest first, with a summary of the filter
+      description: |
+        setup.md 8.6 Switch log, record.md 4.13. Every move of a session to another account
+        that a machine reported (`switch_move` records), by the switch or by hand, failed ones
+        included. `summary` covers everything the filters match, not only this page. A
+        machine that does not send the record has no rows.
+      x-scopes: [read, push, owner]
+      parameters:
+        - {name: machine, in: query, description: "Machine id.", schema: {type: string}}
+        - {name: account, in: query, description: "Account label, matched against the account the session left and the one it went to.", schema: {type: string}}
+        - {name: session, in: query, description: "Session id.", schema: {type: string}}
+        - {name: mode, in: query, schema: {type: string, enum: [auto, manual]}}
+        - {name: result, in: query, schema: {type: string, enum: [resumed, failed]}}
+        - {name: since, in: query, description: "First moment, inclusive.", schema: {type: string, format: date-time}}
+        - {name: until, in: query, description: "Last moment, exclusive.", schema: {type: string, format: date-time}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+        - {name: cursor, in: query, description: Opaque `next` value., schema: {type: string}}
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [moves, next, summary]
+                properties:
+                  moves:
+                    type: array
+                    items: {$ref: "#/components/schemas/SwitchMove"}
+                  next: {type: [string, "null"]}
+                  summary: {$ref: "#/components/schemas/SwitchSummary"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
   /v1/alerts/{id}:
     get:
       tags: [alerts]
@@ -2423,9 +2462,11 @@ components:
         updated_at: {type: [string, "null"], format: date-time}
         pace:
           type: [object, "null"]
-          description: Projection at the current rate.
+          description: "Projection of where the window will be at its reset, from the last hour's rate when there are enough recent readings, else the window's average rate."
           properties:
             projected_pct: {type: number}
+            basis: {type: string, enum: [recent, average], description: "recent: the slope of the last hour's readings; average: use so far over the time elapsed (too few recent readings). Absent from an older hub."}
+            rate_per_hour: {type: number, description: "The rate the projection used, in points of the window per hour."}
             full_at: {type: [string, "null"], format: date-time}
             band: {type: string, enum: [comfortable, on_track, fast, runaway]}
 
@@ -3471,6 +3512,54 @@ components:
             deliveries:
               type: array
               items: {$ref: "#/components/schemas/Delivery"}
+
+    SwitchMove:
+      type: object
+      required: [id, at, machine_id, machine_name, session_id, kind, from, to, auto, result]
+      properties:
+        id: {type: string, description: The record id.}
+        at: {type: string, format: date-time}
+        machine_id: {type: string}
+        machine_name: {type: string}
+        session_id: {type: string}
+        session_name: {type: string}
+        session_known: {type: boolean, description: "The hub has the session, so its page opens."}
+        kind: {type: string, enum: [tmux, wy-run, terminal, background, headless]}
+        interactive: {type: boolean, description: "A human-facing session (tmux, wy-run, terminal) that got a message where its owner sees it."}
+        from: {type: string, description: Label of the account the session left.}
+        to: {type: string, description: Label of the account it went to.}
+        auto: {type: boolean, description: Made by the Smart Account Switch; false is by hand.}
+        reason: {type: string}
+        window: {type: string, description: '"5h" or "7d" for an automatic move, else empty.'}
+        p5: {type: [number, "null"], description: The account's projected 5-hour level at its burn.}
+        p7: {type: [number, "null"], description: The account's projected weekly level.}
+        cap5: {type: [number, "null"]}
+        cap7: {type: [number, "null"]}
+        burn5: {type: [number, "null"], description: The account's 5-hour points per hour.}
+        cross_org: {type: boolean}
+        move_no: {type: [integer, "null"], description: This move's number in the session's path (null when it failed).}
+        result: {type: string, enum: [resumed, failed]}
+        error: {type: [string, "null"]}
+
+    SwitchSummary:
+      type: object
+      required: [moves, failed, auto, manual, sessions, sessions_twice, by_account]
+      properties:
+        moves: {type: integer, description: Moves that resumed the session.}
+        failed: {type: integer}
+        auto: {type: integer}
+        manual: {type: integer}
+        sessions: {type: integer, description: Sessions moved.}
+        sessions_twice: {type: integer, description: Sessions moved 2 or more times.}
+        by_account:
+          type: array
+          items:
+            type: object
+            required: [account, out, in]
+            properties:
+              account: {type: string}
+              out: {type: integer}
+              in: {type: integer}
 
     Delivery:
       type: object

@@ -28,6 +28,7 @@ const ASSETS = [
   'components/live.js',
   'components/machines-fmt.js',
   'components/nav.js',
+  'components/switches-fmt.js',
   'components/pair-error.js',
   'components/notif-note.js',
   'components/order.js',
@@ -98,6 +99,7 @@ const ASSETS = [
   'views/peers.js',
   'views/keys.js',
   'views/session.js',
+  'views/switches.js',
   'views/sessions.js',
   'views/settings.js',
 ];

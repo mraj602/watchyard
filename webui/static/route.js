@@ -5,6 +5,7 @@
 //   #/sessions/<id>          Session (?alert=<alert id>)
 //   #/accounts               Accounts (?seat=<id>)
 //   #/machines               Machines (?machine=<id>)
+//   #/switches               Switches: the Smart Account Switch log (?machine, ?account, ?session, ?mode=auto|manual, ?result=failed, ?range=24h|7d|30d|all|custom, ?from, ?to)
 //   #/more                   More
 //   #/more/alerts            Alerts and rules
 //   #/more/settings          Settings
@@ -24,7 +25,7 @@ export const PUBLIC_VIEWS = new Set(['login', 'pair', 'owner']);
 // Which bottom-tab (phone) is lit for a page.
 export const TAB_OF = {
   now: 'now', sessions: 'sessions', accounts: 'accounts',
-  machines: 'more', alerts: 'more', settings: 'more', devices: 'more', peers: 'more', keys: 'more', analytics: 'more', more: 'more',
+  machines: 'more', switches: 'more', alerts: 'more', settings: 'more', devices: 'more', peers: 'more', keys: 'more', analytics: 'more', more: 'more',
   notfound: '',
 };
 
@@ -45,6 +46,7 @@ export function parseRoute(hash) {
   if (a === 'sessions') return { page: 'sessions', view: 'sessions', query };
   if (a === 'accounts') return { page: 'accounts', view: 'accounts', query };
   if (a === 'machines') return { page: 'machines', view: 'machines', query };
+  if (a === 'switches') return { page: 'switches', view: 'switches', query };
   if (a === 'more') {
     if (b === 'alerts') return { page: 'alerts', view: 'alerts', query };
     if (b === 'settings') return { page: 'settings', view: 'settings', query };

@@ -41,6 +41,8 @@ test('parseRoute covers every screen', async () => {
   assert.equal(parseRoute('#/sessions/abc?alert=al_1').query.get('alert'), 'al_1');
   assert.deepEqual(r('#/accounts?seat=s1'), ['accounts', 'accounts', '']);
   assert.deepEqual(r('#/machines'), ['machines', 'machines', '']);
+  assert.deepEqual(r('#/switches?machine=m_1&mode=auto'), ['switches', 'switches', '']);
+  assert.equal(parseRoute('#/switches?machine=m_1&mode=auto').query.get('mode'), 'auto');
   assert.deepEqual(r('#/more'), ['more', 'more', '']);
   assert.deepEqual(r('#/more/alerts'), ['alerts', 'alerts', '']);
   assert.deepEqual(r('#/more/settings'), ['settings', 'settings', '']);
@@ -60,7 +62,7 @@ test('parseRoute covers every screen', async () => {
 test('public views and tabs', async () => {
   const { PUBLIC_VIEWS, TAB_OF, hashOfLink } = await mod('route.js');
   assert.deepEqual([...PUBLIC_VIEWS].sort(), ['login', 'owner', 'pair']);
-  for (const p of ['machines', 'alerts', 'settings', 'devices', 'peers', 'more']) assert.equal(TAB_OF[p], 'more');
+  for (const p of ['machines', 'switches', 'alerts', 'settings', 'devices', 'peers', 'more']) assert.equal(TAB_OF[p], 'more');
   assert.equal(hashOfLink('/#/sessions/1?alert=a'), '#/sessions/1?alert=a');
   assert.equal(hashOfLink('/'), '#/');
   assert.equal(hashOfLink(null), '#/');

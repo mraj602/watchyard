@@ -61,7 +61,11 @@ reset.
 
 The board's Accounts screen (and the Android app's) lists every account, in an order the
 owner can drag. For each: its windows, reset times and pace. Pace compares use so far with
-even use over the window, and projects where the window will be at reset.
+even use over the window, and projects where the window will be at reset. The projection
+follows how fast you are burning now (the slope of the last hour's readings, when there are
+enough of them), so a burst late in a window shows up; with too few recent readings it uses the
+window's average rate. The line says which: "at the last hour's pace" or "at this week's
+average pace".
 
 The line **Most room right now** names the account with the most room left. It is a
 suggestion only. Watchyard never switches or rotates accounts on its own, and never moves a

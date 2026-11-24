@@ -47,8 +47,9 @@ func moveUsage(w io.Writer) {
                                          session pinned in Claude Code needs --force
   wy move --auto                         one pass of Smart Account Switch (the timer runs it; does
                                          nothing unless account.smart_switch is on)
-  wy move --list [--json]                the moves of the last day and the sessions pinned in
-                                         Claude Code (the switch never moves those)
+  wy move --list [--since 24h] [--json]  the moves of the last day (or 7d, 12h...), failed ones too,
+                                         and the sessions pinned in Claude Code (the switch never
+                                         moves those)
   wy move --digest [--since 24h] [--json]
                                          moves, limit hits, weekly room, protected time over cap and
                                          suspect moves of the period
@@ -92,7 +93,7 @@ func moveCmd(e moveEnv, args []string) error {
 	asJSON := fs.Bool("json", false, "print JSON")
 	list := fs.Bool("list", false, "the moves of the last day")
 	digest := fs.Bool("digest", false, "the digest of the period (--since)")
-	since := fs.String("since", "24h", "the period of --digest (24h, 7d)")
+	since := fs.String("since", "24h", "the period of --digest and --list (24h, 7d)")
 	selftest := fs.Bool("selftest", false, "run --plan in the timer's own environment and report what it can find")
 	noHub := fs.Bool("no-hub", false, "use only this machine's data")
 	force := fs.Bool("force", false, "move to the named account even when its limit is (nearly) reached, or a session pinned in Claude Code")
@@ -123,7 +124,11 @@ func moveCmd(e moveEnv, args []string) error {
 	case *pin != "" || *unpin != "":
 		return errors.New("wy move --pin-account and --unpin are gone: pin or unpin the session in Claude Code itself (its account's jobs/pins.json); Smart Account Switch reads those pins")
 	case *list:
-		es := st.Log(e.now().Add(-24 * time.Hour))
+		span, err := parseDigestSpan(*since)
+		if err != nil {
+			return err
+		}
+		es := st.LogAll(e.now().Add(-span))
 		pins, warns := e.listPins(e.config())
 		if *asJSON {
 			if es == nil {
@@ -142,7 +147,14 @@ func moveCmd(e moveEnv, args []string) error {
 			return "~/" + filepath.Base(dir)
 		}
 		for _, x := range es {
-			fmt.Fprintf(e.stdout, "%s  %s  %s -> %s  %s  %s\n", x.At.Local().Format("01-02 15:04"), short(x.SessionID), name(x.FromDir, x.From), name(x.ToDir, x.To), x.Kind, x.Reason)
+			line := fmt.Sprintf("%s  %s  %s -> %s  %s  %s", x.At.Local().Format("01-02 15:04"), short(x.SessionID), name(x.FromDir, x.From), name(x.ToDir, x.To), x.Kind, x.Reason)
+			if x.Error != "" {
+				line += "  FAILED: " + x.Error
+			}
+			fmt.Fprintln(e.stdout, line)
+		}
+		if len(es) == 0 {
+			fmt.Fprintf(e.stdout, "No moves in the last %s.\n", *since)
 		}
 		printPinRows(e.stdout, pins)
 		for _, x := range warns {
@@ -1175,9 +1187,11 @@ func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mov
 	if err != nil {
 		entry.Error = err.Error()
 		_ = st.Append(entry)
+		w.reportMove(e, cfg, entry, l, t, mv)
 		return laneNotice{}, fmt.Errorf("move %s: %w", short(l.SessionID), err)
 	}
 	_ = st.Append(entry)
+	w.reportMove(e, cfg, entry, l, t, mv)
 	protected := false
 	for _, a := range w.input.Accounts {
 		protected = protected || (a.Key == t.Key && a.Protected)
@@ -1185,6 +1199,38 @@ func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mov
 	parent := moveLease(e, l.SessionID, t, from, protected)
 	fmt.Fprintf(e.stdout, "moved %s %s from %s to %s (%s)\n", short(l.SessionID), l.Name, from, t.Label, l.Kind)
 	return laneNotice{Parent: parent, Session: l.SessionID, Name: l.Name, From: from, To: t.Label, ToDir: t.Dir, At: e.now(), Move: mv}, nil
+}
+
+// reportMove sends the move, failed or not, to the hub's Switches log (record.md 4.13): its
+// accounts' labels, why, the projections of the account it left (none for a move by hand
+// without a trigger) and the result.
+func (w *moveWorld) reportMove(e moveEnv, cfg config.Config, entry mover.LogEntry, l mover.Launch, t mover.Target, mv mover.Move) {
+	label := func(l, dir, key string) string {
+		if l != "" {
+			return l
+		}
+		if n := slotName(cfg, dir, key); n != "" {
+			return n
+		}
+		return "?"
+	}
+	p := record.SwitchMovePayload{At: entry.At.UTC().Format(time.RFC3339), SessionID: entry.SessionID, SessionName: cutBytes(entry.Name, record.SwitchMoveMaxLabel),
+		Kind: string(entry.Kind), Interactive: entry.Kind == mover.KindTmux || entry.Kind == mover.KindWrapped || entry.Kind == mover.KindTerminal,
+		From: label(w.labelOfDir[l.Slot], l.Slot, entry.From), To: label(t.Label, t.Dir, t.Key), Auto: entry.Auto,
+		Reason: cutBytes(entry.Reason, record.SwitchMoveMaxText), Window: mv.Window, CrossOrg: mv.OrgChanged, Error: cutBytes(entry.Error, record.SwitchMoveMaxError)}
+	if pr, ok := w.proj[entry.From]; ok {
+		p5, p7, c5, c7, b5 := pr.P5, pr.P7, pr.Cap5, pr.Cap7, pr.R5
+		p.P5, p.P7, p.Cap5, p.Cap7, p.Burn5 = &p5, &p7, &c5, &c7, &b5
+	}
+	queueSwitchMove(e.dirs, cfg, entry.At, p)
+}
+
+// cutBytes cuts s to at most n bytes on a rune boundary.
+func cutBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.ToValidUTF8(s[:n], "")
 }
 
 // moveLease ends the session's lease and leases it on t (setup.md 8.6, Records). The new

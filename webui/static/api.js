@@ -138,6 +138,7 @@ export const getPeers = () => getJSON('/v1/peers');
 export const getTrustedSenders = () => getJSON('/v1/peers/trusted');
 export const revokeTrustedSender = (body) => postJSON('/v1/peers/trusted/revoke', body);
 export const getPeerMessages = (params) => getJSON('/v1/peers/messages', params);
+export const getSwitches = (params) => getJSON('/v1/switches', params);
 export const getAlerts = (params) => getJSON('/v1/alerts', params);
 export const getAlert = (id) => getJSON(`/v1/alerts/${enc(id)}`);
 export const snoozeAlert = (id, minutes) => postJSON(`/v1/alerts/${enc(id)}/snooze`, minutes ? { minutes } : {});

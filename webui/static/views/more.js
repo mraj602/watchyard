@@ -1,4 +1,4 @@
-// More (phone tab): Alerts, Machines, Settings, Peers, Analytics; the owner also gets Devices.
+// More (phone tab): Alerts, Machines, Switches, Settings, Peers, Analytics; the owner also gets Devices.
 
 import { h } from '../components/dom.js';
 import { isOwner, inApp } from '../store.js';
@@ -19,6 +19,7 @@ export function render({ store }) {
     h('header', { class: 'page-head' }, h('h1', {}, 'More')),
     h('ul', { class: 'panel more-list' },
       item('#/more/alerts', 'Alerts', 'Which notifications you get, and the recent ones'),
+      item('#/switches', 'Switches', 'Every time a session moved to another account, and why'),
       item('#/machines', 'Machines', `${plural(store.overview.machines.length, 'machine')} reporting to this hub`),
       item('#/more/settings', 'Settings', `Notifications, this ${mobile ? 'phone' : 'device'}, app version`),
       item('#/more/peers', 'Peers', 'Which accounts’ sessions may message each other, and how to pause them'),

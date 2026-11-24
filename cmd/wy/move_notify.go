@@ -86,6 +86,79 @@ func moveOutFor(d paths.Dirs, cfg config.Config, now time.Time) moveOut {
 	return o
 }
 
+// queueSwitchMove writes one switch_move record (record.md 4.13) to the outbox for the hub's
+// Switches log; the tick flushes it. Nothing happens without a hub. A failure is not the
+// move's: the log on this machine (moves.jsonl) has it either way.
+func queueSwitchMove(d paths.Dirs, cfg config.Config, now time.Time, p record.SwitchMovePayload) bool {
+	if cfg.Hub.URL == "" {
+		return false
+	}
+	opts, err := directEnv{dirs: d, cfg: cfg}.options()
+	if err != nil {
+		return false
+	}
+	r, err := record.NewSwitchMove(record.Meta{Machine: opts.MachineID, Client: "wy/" + version.Version, Now: now}, p)
+	if err != nil {
+		return false
+	}
+	ob := outbox.New(opts.OutboxDir)
+	ob.NoFsync = !cfg.Outbox.Fsync
+	_, err = ob.Append(r)
+	return err == nil
+}
+
+// switchBackfillDays is how far back the first tick after the update sends moves.
+const switchBackfillDays = 14
+
+// entryPayload is a moves.jsonl line as a switch_move payload. An older line lacks the
+// projections, the window and the reason: they stay empty. ok is false for a line the hub
+// would refuse (no session, a kind that cannot move).
+func entryPayload(cfg config.Config, e mover.LogEntry) (record.SwitchMovePayload, bool) {
+	p := record.SwitchMovePayload{At: e.At.UTC().Format(time.RFC3339), SessionID: e.SessionID, SessionName: cutBytes(e.Name, record.SwitchMoveMaxLabel),
+		Kind: string(e.Kind), Interactive: e.Kind == mover.KindTmux || e.Kind == mover.KindWrapped || e.Kind == mover.KindTerminal,
+		From: slotName(cfg, e.FromDir, e.From), To: slotName(cfg, e.ToDir, e.To), Auto: e.Auto,
+		Reason: cutBytes(e.Reason, record.SwitchMoveMaxText), Error: cutBytes(e.Error, record.SwitchMoveMaxError)}
+	if p.From == "" {
+		p.From = "?"
+	}
+	if p.To == "" {
+		p.To = "?"
+	}
+	p.CrossOrg = e.From != "" && e.To != "" && mover.Org(e.From) != mover.Org(e.To)
+	return p, p.Validate() == nil
+}
+
+// backfillSwitchMoves sends the moves of the last 14 days in moves.jsonl that the hub has not
+// been sent (setup.md 8.6, Switch log): everything after the high-water mark in
+// <state>/move/hub_sent.json, which does not exist before the first run. The hub keeps one row
+// per machine, session and time, so a move sent live and again here, or a resend after a crash,
+// never doubles. queued reports records written (the tick flushes again).
+func backfillSwitchMoves(d paths.Dirs, cfg config.Config, now time.Time) (queued bool) {
+	if cfg.Hub.URL == "" {
+		return false
+	}
+	st := mover.NewState(d.State.Path)
+	from := now.Add(-switchBackfillDays * 24 * time.Hour)
+	if cur, ok := st.HubSentCursor(); ok && cur.After(from) {
+		from = cur.Add(time.Nanosecond)
+	}
+	var last time.Time
+	for _, e := range st.LogAll(from) {
+		if p, ok := entryPayload(cfg, e); ok {
+			if !queueSwitchMove(d, cfg, e.At, p) {
+				break // the hub path is not usable now: try again next tick
+			}
+			queued = true
+		}
+		last = e.At
+	}
+	if last.IsZero() {
+		last = now // nothing to send: the mark still says the back-fill ran
+	}
+	_ = st.SaveHubSentCursor(last)
+	return queued
+}
+
 // directMovePush is the machine's direct push path (push.md 7, machines.md 5): the ntfy topic
 // of `wy direct-push on`. nil when direct push is off or has no topic.
 func directMovePush(o directpush.Options) *movePush {

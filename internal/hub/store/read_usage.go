@@ -24,6 +24,15 @@ type WindowRow struct {
 	// newer than every usage_window of the key. ResetsAt and StartedAt are 0, Final is 0 and
 	// UpdatedAt is that reading's ts. Only from Windows(…, current = true).
 	Idle bool
+	// Recent are the window's readings of the last hour, oldest first (only from
+	// Windows(…, current = true)): the pace line's recent rate.
+	Recent []RateReading
+}
+
+// RateReading is one used-percent reading of a window.
+type RateReading struct {
+	TS   int64
+	Used float64
 }
 
 // idleSQL finds, per seat and key, the newest idle claude.ai reading (used 0, no resets_at;
@@ -156,6 +165,9 @@ func (s *Store) Windows(ctx context.Context, seat string, keys []string, since t
 		return out, err
 	}
 	rows.Close()
+	if err := s.attachRecent(ctx, seat, out); err != nil {
+		return nil, err
+	}
 	idle, err := idleReadings(ctx, s.r, seat)
 	if err != nil {
 		return nil, err
@@ -398,4 +410,35 @@ type MachineView struct {
 // Machines lists machines that are not removed, by name. ids filters (nil = all).
 func (s *Store) Machines(ctx context.Context, ids []string, now time.Time) ([]MachineView, error) {
 	return s.MachineList(ctx, MachineQuery{IDs: ids}, now)
+}
+
+const recentWindow = time.Hour
+
+// attachRecent fills Recent of each window with the seat's readings of its key from the last
+// hour (both sources: they read the same account) that belong to the window (same reset).
+func (s *Store) attachRecent(ctx context.Context, seat string, ws []WindowRow) error {
+	if len(ws) == 0 {
+		return nil
+	}
+	rows, err := s.r.QueryContext(ctx, `SELECT window_key, resets_at, ts, used_pct FROM limit_sample
+		WHERE seat_id = ? AND ts >= ? AND used_pct IS NOT NULL AND resets_at IS NOT NULL ORDER BY ts`,
+		seat, s.now().Add(-recentWindow).UnixMilli())
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var resets, ts int64
+		var used float64
+		if err := rows.Scan(&key, &resets, &ts, &used); err != nil {
+			return err
+		}
+		for i := range ws {
+			if ws[i].Key == key && resets >= ws[i].ResetsAt-ResetTolerance && resets <= ws[i].ResetsAt+ResetTolerance {
+				ws[i].Recent = append(ws[i].Recent, RateReading{TS: ts, Used: used})
+			}
+		}
+	}
+	return rows.Err()
 }

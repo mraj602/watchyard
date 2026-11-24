@@ -191,6 +191,7 @@ wy move --plan                         # each account's projection, the moves an
 wy config set account.smart_switch on  # let it move sessions by itself (off: nothing moves)
 wy config set account.move_orgs same-first   # any (default) | same-first | same
 wy move <session> [<account>]          # move one by hand
+wy move --list --since 7d              # this machine's log of moves (default: the last day)
 wy move --selftest                     # run --plan in the timer's own environment: is claude found there?
 ```
 
@@ -224,6 +225,9 @@ What it does, in short:
   session alone would take its account to 100% within 2 hours, `wy status` and the switch's log
   say so once, with the `wy move` command to move it by hand. `wy account next --explain` and
   `wy move --plan` show each account's reserve.
+
+The board's **Switches** page ([board.md](board.md)) shows every move on every machine: when,
+which accounts, automatic or by hand, why, the projections behind it and how it ended.
 
 Every number above is a setting (`wy config list | grep move_`); the full rules are in
 setup.md 8.6.

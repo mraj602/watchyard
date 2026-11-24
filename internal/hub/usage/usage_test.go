@@ -105,19 +105,78 @@ func TestPace(t *testing.T) {
 	resets := start.Add(10 * time.Hour)
 	half := start.Add(5 * time.Hour)
 	for used, band := range map[float64]string{30: "comfortable", 50: "on_track", 60: "fast", 80: "runaway"} {
-		p := PaceOf(used, start, resets, half)
+		p := PaceOf(used, start, resets, half, nil)
 		if p == nil || p.Band != band || p.ProjectedPct != used*2 {
 			t.Errorf("used %v: %+v, want %s", used, p, band)
 		}
 	}
-	if p := PaceOf(80, start, resets, half); p.FullAt == nil || !p.FullAt.Equal(start.Add(time.Duration(6.25*float64(time.Hour)))) {
+	if p := PaceOf(80, start, resets, half, nil); p.FullAt == nil || !p.FullAt.Equal(start.Add(time.Duration(6.25*float64(time.Hour)))) {
 		t.Errorf("full at %v", p.FullAt)
 	}
-	if PaceOf(10, start, resets, start.Add(time.Minute)) != nil {
+	if PaceOf(10, start, resets, start.Add(time.Minute), nil) != nil {
 		t.Error("too young window has a pace")
 	}
-	if PaceOf(10, start, resets, resets) != nil || PaceOf(10, time.Time{}, resets, half) != nil {
+	if PaceOf(10, start, resets, resets, nil) != nil || PaceOf(10, time.Time{}, resets, half, nil) != nil {
 		t.Error("pace after reset or without start")
+	}
+}
+
+// A weekly window 89% used with 35 minutes left and a recent slope of 9 points an hour
+// projects ~94%, where the whole week's average says ~89%; a quiet week projects where it is;
+// too few or too narrow readings fall back to the average.
+func TestPaceRecentRate(t *testing.T) {
+	resets := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
+	start := resets.Add(-7 * 24 * time.Hour)
+	now := resets.Add(-35 * time.Minute)
+	at := func(minAgo int, used float64) Reading {
+		return Reading{At: now.Add(-time.Duration(minAgo) * time.Minute), Used: used}
+	}
+	// 9 points an hour: 0.15 a minute.
+	rising := []Reading{at(60, 89-9), at(45, 89-6.75), at(30, 89-4.5), at(15, 89-2.25), at(0, 89)}
+	p := PaceOf(89, start, resets, now, rising)
+	if p == nil || p.Basis != BasisRecent || p.ProjectedPct < 94 || p.ProjectedPct > 94.4 || p.RatePerHour < 8.9 || p.RatePerHour > 9.1 || p.Band != "on_track" {
+		t.Fatalf("recent: %+v", p)
+	}
+	avg := PaceOf(89, start, resets, now, nil)
+	if avg == nil || avg.Basis != BasisAverage || avg.ProjectedPct < 89 || avg.ProjectedPct > 89.6 {
+		t.Fatalf("average: %+v", avg)
+	}
+	// Quiet: the same level in every reading projects the level itself.
+	quiet := []Reading{at(60, 89), at(30, 89), at(0, 89)}
+	if q := PaceOf(89, start, resets, now, quiet); q.Basis != BasisRecent || q.ProjectedPct != 89 || q.RatePerHour != 0 || q.FullAt != nil {
+		t.Fatalf("quiet: %+v", q)
+	}
+	// A quiet week (40% a day and a half in) that is not burning now: 40, not the average's 187.
+	wk := time.Date(2026, 11, 20, 6, 0, 0, 0, time.UTC)
+	wstart, wresets := wk.Add(-36*time.Hour), wk.Add(-36*time.Hour).Add(7*24*time.Hour)
+	flat := []Reading{{At: wk.Add(-50 * time.Minute), Used: 40}, {At: wk.Add(-25 * time.Minute), Used: 40}, {At: wk, Used: 40}}
+	if q := PaceOf(40, wstart, wresets, wk, flat); q.ProjectedPct != 40 || q.Band != "comfortable" {
+		t.Fatalf("quiet week: %+v", q)
+	}
+	if q := PaceOf(40, wstart, wresets, wk, nil); q.Basis != BasisAverage || q.ProjectedPct < 180 {
+		t.Fatalf("quiet week average: %+v", q)
+	}
+	// Full time from the recent rate: 80% now, 10 an hour, 3 h left: full in 2 h.
+	r2 := now.Add(3 * time.Hour)
+	fast := []Reading{at(60, 70), at(30, 75), at(0, 80)}
+	if f := PaceOf(80, r2.Add(-7*24*time.Hour), r2, now, fast); f.FullAt == nil || !f.FullAt.Equal(now.Add(2*time.Hour)) || f.Band != "fast" {
+		t.Fatalf("full at: %+v", f)
+	}
+	// Too few readings, or readings bunched in a few minutes: the average.
+	if q := PaceOf(89, start, resets, now, rising[:2]); q.Basis != BasisAverage {
+		t.Fatalf("two readings: %+v", q)
+	}
+	bunched := []Reading{at(4, 88), at(2, 88.4), at(0, 89)}
+	if q := PaceOf(89, start, resets, now, bunched); q.Basis != BasisAverage {
+		t.Fatalf("bunched: %+v", q)
+	}
+	// Readings older than an hour do not count; a falling slope counts as 0.
+	old := []Reading{at(180, 50), at(150, 60), at(120, 70)}
+	if _, ok := RecentRate(old, now); ok {
+		t.Fatal("old readings")
+	}
+	if r, ok := RecentRate([]Reading{at(50, 90), at(25, 89), at(0, 88)}, now); !ok || r != 0 {
+		t.Fatalf("falling %v %v", r, ok)
 	}
 }
 

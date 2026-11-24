@@ -8,6 +8,19 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Added
 
+- **Switches log on the board** (setup.md 8.6, Switch log; record.md 4.13). The board has a
+  Switches page with every move of a session to another account on every machine, newest first:
+  time, machine, session (a link to its page) and how it ran, account left and entered,
+  automatic or by hand, reason, the projections behind it (5-hour and weekly level against the
+  cap, burn), another organisation, the move's number in the session's path, and resumed or the
+  error. A strip sums the chosen dates (moves, sessions moved, moved 2 or more times, failed,
+  moves out of and into each account). Filters: machine, account, session, automatic or by hand,
+  failed only, dates; paged, and fine on a phone. A moved session's page shows its path
+  (`claude-3 → claude-2 → claude-6` with times). Machines send each move, failed ones too, as a
+  new `switch_move` record; hub schema v24 (migration 0024) adds `switch_move`;
+  `GET /v1/switches` serves it. A machine that does not send the record keeps working and shows
+  nothing there. On its first tick after the update a machine also sends its last 14 days of moves
+  (older lines show without projections), once. `wy move --list` takes `--since 7d` (default 1 day) and marks failed moves.
 - **The picker uses the switch's projection** (setup.md 8.6, The picker and the switch). While
   the switch is on, `wy account next` places no new lane where the switch's projection (one
   shared function, `internal/projection`) of the account's measured burn plus the new lane would
@@ -126,6 +139,12 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **Pace follows the recent burn.** The board's pace line projected the whole window's average
+  rate, so a late burst was missed (weekly 89% with 35 minutes left, burning 9 points an hour,
+  showed "~89% at reset" instead of ~94%). The projection and the time it fills now use the slope
+  of the last hour's readings when there are at least 3 over 20 minutes, else the window's
+  average, and the line says which ("at the last hour's pace", "at this week's average pace").
+  `pace` gains `basis` and `rate_per_hour`.
 - **The switch moved a session pinned in Claude Code** (live: 2abbe6d1 was pinned in Claude
   Code at 03:14 and moved at 03:20). Pins now come from Claude Code only: a session listed in its
   config folder's `jobs/pins.json` (short ids, prefix match; read only, mtime-cached; missing or

@@ -4,16 +4,22 @@ import { h } from '../components/dom.js';
 import { dot, copyButton, ask } from '../components/cards.js';
 import { seatIndex, sessionSeat } from '../components/seat.js';
 import { stateTag, stateInfo, isEnded, isHistory } from '../components/state.js';
-import { ago, agoLabel, dateTime, timeOfDay, day, pct, projectOf, compact, humanKey, httpsUrl, subtitleOf } from '../format.js';
+import { clock, ago, agoLabel, dateTime, timeOfDay, day, pct, projectOf, compact, humanKey, httpsUrl, subtitleOf } from '../format.js';
 import { openDetail } from '../store.js';
 import { alertButtons, alertLine, alertText } from '../components/alerts.js';
-import { getAlert } from '../api.js';
+import { getAlert, getSwitches } from '../api.js';
+import { movePath, failedCount, failedText } from '../components/switches-fmt.js';
 
 // The alert a push linked to (#/sessions/<id>?alert=<al>), when it is not the session's current one.
 let linked = null;
+// This session's moves to other accounts (the Switch log), oldest first.
+let moves = { id: '', list: [] };
 
 export function load({ route }) {
   linked = null;
+  if (moves.id !== route.id) moves = { id: route.id, list: [] };
+  const asked = route.id;
+  getSwitches({ session: asked, limit: '200' }).then((r) => { moves = { id: asked, list: r.moves }; window.dispatchEvent(new Event('wy-rerender')); }).catch(() => {});
   if (route.id !== showAllFor) { showAll = false; showAllFor = route.id; }
   const id = route.query.get('alert');
   if (id) getAlert(id).then((a) => { linked = a; window.dispatchEvent(new Event('wy-rerender')); }).catch(() => {});
@@ -35,6 +41,22 @@ function transitions(tl) {
 // "Show all events" is for the session it was turned on in.
 let showAll = false;
 let showAllFor = null;
+
+// The session's path through accounts: claude-3 → claude-2 (14:02) → claude-6 (16:40).
+function movesCard(s, now) {
+  const list = moves.id === s.id ? moves.list : [];
+  if (!list.length) return null;
+  const path = movePath(list);
+  const failed = failedCount(list);
+  return h('section', { class: 'card sw-path', 'aria-labelledby': 'h-moves', 'data-key': 'session-moves' },
+    h('div', { class: 'block-head' }, h('h2', { id: 'h-moves' }, 'Moved between accounts'),
+      h('a', { href: `#/switches?session=${encodeURIComponent(s.id)}&range=all`, 'data-key': 'session-moves-all' }, 'Every move and why')),
+    path.length ? h('ol', { class: 'sw-steps', 'aria-label': 'Accounts in order' }, path.map((p, i) => h('li', {},
+      i > 0 ? h('span', { class: 'sw-arrow', 'aria-hidden': 'true' }, '→') : null,
+      h('span', { class: 'strong' }, p.label),
+      p.at ? h('time', { class: 'muted small mono', datetime: p.at, title: dateTime(p.at) }, ` ${clock(p.at, now)}`) : null))) : null,
+    failed ? h('p', { class: 'muted small' }, failedText(failed)) : null);
+}
 
 export function render({ store, route, now }) {
   const back = h('a', { href: '#/sessions', class: 'back' }, '← Sessions');
@@ -101,6 +123,8 @@ export function render({ store, route, now }) {
     text ? h('section', { class: `card quote needs-${info.cls}`, 'aria-label': waits ? 'Question' : 'Last message' },
       h('div', { class: 'quote-label' }, waits ? 'Waiting on you' : 'Last message'),
       h('p', { class: s.state === 'needs_permission' ? 'mono' : '' }, text)) : null,
+
+    movesCard(s, now),
 
     h('div', { class: 'cols' },
       h('section', { class: 'card', 'aria-labelledby': 'h-facts' }, h('h2', { id: 'h-facts' }, 'Details'),

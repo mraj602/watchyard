@@ -87,10 +87,11 @@ Hash routes:
 | --- | --- | --- |
 | `#/` | Now (`PhoneNow`) | Rows get **Seen** and **Snooze** (swipe left/right on touch; two buttons in a row menu for keyboard and screen readers). Every row has Seen: a skipped alert (`stale`, `rule_off`, `peers`, …) has it too, and a row with no alert uses `POST /v1/sessions/{id}/seen`; Snooze only while the alert can still push (push.md 4); a seen row leaves Needs you until its session's state changes (push.md 4); alert status ("push in 40 s", "pushed 14:04", "snoozed until 14:20"); offline banner (4) |
 | `#/sessions`, `?filter=needs_you\|working\|done\|all`, `?by=machine` | Sessions (`PhoneSessions`) | A search box (3.0b), filter chips and "By machine" grouping as drawn |
-| `#/sessions/<id>?alert=<al>` | Session (`PhoneSession`) | **Open in Claude** (`remote_url`, with the wrong-account note), **Copy resume command**, **Snooze 15 min** (alert), state history. The heading (and the Now and Sessions rows) is the folder, then ` · <title or name>` unless that only repeats the folder ("infra", not "infra · infra") |
+| `#/sessions/<id>?alert=<al>` | Session (`PhoneSession`) | A moved session shows its path through accounts (`claude-3 → claude-2 (14:02) → claude-6 (16:40)`, from `GET /v1/switches?session=<id>`; failed moves are no step) with a link to every move and why. **Open in Claude** (`remote_url`, with the wrong-account note), **Copy resume command**, **Snooze 15 min** (alert), state history. The heading (and the Now and Sessions rows) is the folder, then ` · <title or name>` unless that only repeats the folder ("infra", not "infra · infra") |
 | `#/accounts?seat=<id>` | Accounts (`PhoneAccounts`) | "Most room right now" line, then one compact row per account (3.0a); `seat` opens, scrolls to and highlights its row |
 | `#/machines?machine=<id>` | Machines | Under More on phones; stays in the desktop sidebar |
-| `#/more` | More (new) | Links: Alerts, Machines, Peers, Settings; owner only: Devices, Add phone; Analytics (`#/more/analytics`) |
+| `#/switches`, `?machine=<id>&account=<label>&session=<id>&mode=auto\|manual&result=failed&range=24h\|7d\|30d\|all\|custom&from=<day>&to=<day>` | Switches | The Smart Account Switch log (setup.md 8.6, Switch log): `GET /v1/switches`, a summary strip for the range (moves, sessions moved, moved 2 or more times, failed, moves out of and into each account), then one row per move, newest first, 25 to a page (Newer / Older); read scope, so also for a read-only phone; a Switches entry in the desktop sidebar and a pill in the More tabs, linked from each machine's card and from a moved session's page |
+| `#/more` | More (new) | Links: Alerts, Machines, Switches, Peers, Settings; owner only: Devices, Add phone; Analytics (`#/more/analytics`) |
 | `#/more/alerts` | Alerts and rules (`PhoneAlerts`) | Rule list (5 below), quiet hours, recent pushes from `GET /v1/alerts` with outcome (open, seen, snoozed, cancelled + the "cancelled means you answered first" note) |
 | `#/more/settings` | Settings | Hub address, version, live status; notifications (6); private pushes, tap behaviour, own quiet hours (device prefs); ntfy topic (push.md 7); install status; app version + "Check for update"; **Unpair this phone** |
 | `#/more/peers` | Settings → Peers | The account matrix, **Pause all peers**, the audit list (3.1); under More on phones and a Peers entry in the desktop sidebar; linked from Settings |
@@ -103,7 +104,7 @@ Hash routes:
 | `#/login` | Sign in | Unchanged token login; adds "Pair with a code instead" |
 
 Navigation: phone bottom tabs **Now, Sessions, Accounts, More**; desktop
-sidebar Now, Sessions, Accounts, Machines, Alerts, Settings, Peers, Keys (+ Devices for the owner). `nav.js` gets a `phone`/`desk`
+sidebar Now, Sessions, Accounts, Machines, Switches, Alerts, Settings, Peers, Keys (+ Devices for the owner). `nav.js` gets a `phone`/`desk`
 flag per item; CSS decides as today.
 
 Start-up: `GET /v1/me`. 401 → pair screen when running installed (`display-mode:

@@ -100,7 +100,7 @@ export function ownerHintNode({ app, lead = '', key = 'owner-hint', cls = 'muted
 
 // Pill row shown right under the title of the screens behind the More tab. One row on a phone; it scrolls sideways when it does not fit.
 export function moreTabs(current, { owner } = {}) {
-  const items = [['alerts', '#/more/alerts', 'Alerts'], ['machines', '#/machines', 'Machines'], ['settings', '#/more/settings', 'Settings'], ['peers', '#/more/peers', 'Peers'], ['keys', '#/more/keys', 'Keys'], ['analytics', '#/more/analytics', 'Analytics']];
+  const items = [['alerts', '#/more/alerts', 'Alerts'], ['machines', '#/machines', 'Machines'], ['switches', '#/switches', 'Switches'], ['settings', '#/more/settings', 'Settings'], ['peers', '#/more/peers', 'Peers'], ['keys', '#/more/keys', 'Keys'], ['analytics', '#/more/analytics', 'Analytics']];
   if (owner) items.push(['devices', '#/more/devices', 'Devices']);
   return pillNav(items, current);
 }

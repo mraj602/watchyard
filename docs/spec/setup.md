@@ -2285,6 +2285,30 @@ when `account.move_digest` (default `on`) is on and the switch is on or moved so
 last 24 hours, the same way as the moves: a `switch_notice` record for a `switch_digest` alert,
 direct push only as the fallback.
 
+**Switch log.** Every move, automatic or by hand, failed ones included, is also sent to the hub
+as a `switch_move` record (record.md 4.13) when `hub.url` is set, so the owner sees all moves of
+all machines in one place: the board's **Switches** page (`#/switches`, pwa.md 3). The record
+carries the time, session id and name, how it ran (`tmux`, `wy-run`, `terminal`, `background`,
+`headless`; the first three are interactive and told whoever was at the terminal), the labels of
+the account it left and the one it went to, automatic or by hand, the reason, the window that
+triggered it, the projections of the account it left (`p5`, `p7`, caps, `burn5`; none for a move
+by hand), whether the destination is another organisation, and the error when the move failed.
+The hub keeps it in `switch_move` (schema v24) and numbers each session's moves that worked
+(move 1, 2, ...) when it reads. `GET /v1/switches` lists them newest first (filters `machine`,
+`account` (the label it left or went to), `session`, `mode` auto or manual, `result` failed,
+`since`, `until`; pages of up to 200) with a summary of the whole filter: moves that worked,
+failed moves, automatic and by hand, sessions moved, sessions moved 2 or more times, and moves
+out of and into each account. The page shows the summary strip above the rows, each row in
+words (time, `from -> to`, automatic or by hand, the session as a link to its page, machine,
+how it ran, move number, reason, projections, result or error), and filters for machine, account,
+automatic or by hand, failed only and dates (last 24 hours, 7 days, 30 days, all, or from/to
+days), 25 rows a page. A session's page shows its path through accounts with the time of each
+move. A machine that does not send the record (older than this release) shows nothing there; its
+own log is `wy move --list`. On its first tick after the update the machine also sends the moves of the last 14 days from
+`moves.jsonl` (older lines have no projections, window or reason: the board shows them without
+those numbers); `<state>/move/hub_sent.json` is the high-water mark, so later ticks send only
+what is new, and the hub keeps one row per machine, session and time.
+
 **Records.** `<state>/move/alerts.json`: the pin alerts (`at`, `session`, `name`, `account`,
 `window`, `hit_at`, `reset_at`, `rate`, `command`), each kept until its window resets.
 `<state>/move/moves.jsonl`: `{"at", "session_id", "from", "to", "from_dir", "to_dir",
@@ -2316,7 +2340,7 @@ command before anything happens. Never a second copy: a session with two live pr
 one and a resumed copy) is refused, by hand and by the switch ("2 copies of it are running: stop
 the extra one first"), and so is a by-hand move of a session moved in the last 5 minutes (its
 resumed copy may not be registered yet; `--force` overrides). `wy move --auto`: one pass, only when
-`account.smart_switch` is on. `wy move --list [--json]`: the last day's moves (accounts by label).
+`account.smart_switch` is on. `wy move --list [--since 24h] [--json]`: the moves of the last day, or of `--since` (a duration such as `12h` or whole days such as `7d`), failed ones marked `FAILED: <error>` (accounts by label), read from this machine's `moves.jsonl`.
 `wy move --digest [--since 24h] [--json]`: the digest of the period (see Notices and digest).
 `wy move --selftest`: the self-test, below.
 

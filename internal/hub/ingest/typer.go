@@ -52,7 +52,7 @@ func known(kind string) bool {
 	case record.KindHookEvent, record.KindLimitSample, record.KindWebUsage, record.KindTokenRows,
 		record.KindSessionList, record.KindHistoryImport, record.KindSlotInfo,
 		record.KindMachineInfo, record.KindDirectPush, record.KindAccountLease, record.KindAccountVerdicts,
-		record.KindSwitchNotice:
+		record.KindSwitchNotice, record.KindSwitchMove:
 		return true
 	}
 	return false
@@ -132,6 +132,8 @@ func (t *typer) dispatch(r *record.Record, ts time.Time) error {
 		return t.accountVerdicts(c)
 	case record.KindSwitchNotice:
 		return t.switchNotice(c)
+	case record.KindSwitchMove:
+		return t.switchMove(c)
 	}
 	return nil
 }
