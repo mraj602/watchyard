@@ -16,7 +16,7 @@ All notable changes to Watchyard are recorded here. The format follows
   takes a moved session when the session fits under its caps − 5 for its expected remaining time
   (else 90 minutes), capped at that account's 5-hour reset, at least 60 minutes; a protected
   account still needs the full rule and only when no aggressive one fits. Simulator: protected
-  minutes over 80 −4%, pinned and all stopped minutes unchanged (within 1%), 28% more moves.
+  minutes over 80 −4%, pinned and all stopped minutes unchanged (within 1%), 32% more moves.
 - **Cheaper moves.** When several sessions would each bring an account under its caps, the one
   with the most points freed per re-read (burn ÷ context × model factor) goes first, then the
   youngest.

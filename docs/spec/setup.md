@@ -1979,9 +1979,9 @@ at no cost in stopped minutes. The picker's check and cheap moves change little 
 (each within 1%): most new lanes already go where the switch has room, and a cheap-first choice
 only matters when several sessions would each fix an account. The destination horizon keeps
 protected accounts lower (minutes over 80 -4%, highest 5-hour level 84.6 → 82.0) and stops the
-pinned sessions as long as before (-0.6% pinned stopped minutes, +0.2% all stopped minutes,
-inside the 5% the owner allowed), but moves 28% more (aggressive accounts with a little room
-now take a short session), so 32% more re-read; it is on by default (`move_dest_horizon_min 0`
+pinned sessions as long as before (-0.7% pinned stopped minutes, +0.3% all stopped minutes,
+inside the 5% the owner allowed), but moves 32% more (aggressive accounts with a little room
+now take a short session), so 34% more re-read; it is on by default (`move_dest_horizon_min 0`
 turns it off).
 
 **Interactive sessions.** A session is *interactive* (a person uses it) when it is: a plain
