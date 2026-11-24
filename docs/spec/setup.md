@@ -1955,7 +1955,9 @@ shells).
 calling session's id on the lease (`parent`: `--parent <id>`, else the nearest Claude Code
 session above the process), and a move copies it to the new lease. After each pass (or a move
 by hand) every parent gets one Watchyard notice (peers.md 8.7) for all its lanes that moved,
-once the moved sessions show again under their new handles (at most 30 s):
+once the moved sessions show again under their new handles (at most 30 s). Only that
+recorded parent is told: a lane without one tells nobody, and no other session ever gets the
+notice:
 
 > Your lane lane-a (67ce5986) moved claude-3 -> claude-2 at 12:11 (5h would have hit at 12:23);
 > its handle is now lane-a@claude-2.box (the old handle lane-a@claude-3.box still works). Its

@@ -27,12 +27,7 @@ var noticeWait = 30 * time.Second
 // that has ended is skipped. The handles come from `wy peers list --all` (the agent's, so the
 // hub's canonical names), before the move from w and after it once the session runs again.
 func (w *moveWorld) tell(e moveEnv, ns []laneNotice) {
-	byParent := map[string][]laneNotice{}
-	for _, n := range ns {
-		if n.Parent != "" && n.Parent != n.Session {
-			byParent[n.Parent] = append(byParent[n.Parent], n)
-		}
-	}
+	byParent := noticesByParent(ns)
 	if len(byParent) == 0 {
 		return
 	}
@@ -64,6 +59,19 @@ func (w *moveWorld) tell(e moveEnv, ns []laneNotice) {
 		}
 		fmt.Fprintf(e.stdout, "told %s: %s\n", h, text)
 	}
+}
+
+// noticesByParent groups the moves by the session that started each one: the parent recorded
+// in its lease (wy account next --exec --parent, or the launching session). A move with no
+// recorded parent tells nobody; no other session is ever told.
+func noticesByParent(ns []laneNotice) map[string][]laneNotice {
+	byParent := map[string][]laneNotice{}
+	for _, n := range ns {
+		if n.Parent != "" && n.Parent != n.Session {
+			byParent[n.Parent] = append(byParent[n.Parent], n)
+		}
+	}
+	return byParent
 }
 
 // handlesAfter waits (at most noticeWait) until every session of want runs again in its new

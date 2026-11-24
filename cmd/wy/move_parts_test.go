@@ -1,10 +1,13 @@
 package main
 
 import (
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mraj602/watchyard/internal/leases"
 	"github.com/mraj602/watchyard/internal/mover"
 	"github.com/mraj602/watchyard/internal/picker"
 )
@@ -96,5 +99,44 @@ func TestNoticeText(t *testing.T) {
 	}
 	if !sameMachine("a@c-2.box", "a@c-3.box") || sameMachine("a@c-2.other", "a@c-3.box") || !sameMachine("x", "") {
 		t.Error("sameMachine")
+	}
+}
+
+// TestNoticeOnlyToParent: only the session recorded as a lane's parent in the ledger is told
+// of its move; a session with no recorded parent tells nobody, and another session's parent
+// is never told of a lane it did not start.
+func TestNoticeOnlyToParent(t *testing.T) {
+	f := newNextFixture(t)
+	e := moveEnv{nextEnv: nextEnv{dirs: f.dirs, now: func() time.Time { return nextNow }}}
+	g := leases.Ledger{Dir: filepath.Join(f.dirs.State.Path, "next")}
+	const parent, child, other, otherParent, orphan = "p0000000-1", "c0000000-1", "o0000000-1", "q0000000-1", "x0000000-1"
+	for i, l := range []leases.Line{
+		{SessionID: child, Parent: parent},
+		{SessionID: other, Parent: otherParent},
+		{SessionID: orphan},
+	} {
+		l.V, l.Op, l.ID, l.At, l.Key = 1, leases.OpLease, "id"+strconv.Itoa(i), nextNow.Add(-time.Hour).UTC(), "acct:a1/o1"
+		if err := g.Append(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	to := mover.Target{Key: "acct:a2/o1", Label: "claude-2", Dir: "/h/.claude-2"}
+	var ns []laneNotice
+	for _, sid := range []string{child, orphan} {
+		ns = append(ns, laneNotice{Session: sid, Parent: moveLease(e, sid, to, "claude-1", false)})
+	}
+	if ns[0].Parent != parent || ns[1].Parent != "" {
+		t.Fatalf("parents from the ledger: %+v", ns)
+	}
+	got := noticesByParent(ns)
+	if len(got) != 1 || len(got[parent]) != 1 || got[parent][0].Session != child {
+		t.Fatalf("told %v, want only %s about %s", got, parent, child)
+	}
+	if _, ok := got[otherParent]; ok {
+		t.Fatal("a non-parent was told")
+	}
+	// A second hop keeps the parent (the new lease carries it).
+	if p := moveLease(e, child, mover.Target{Key: "acct:a3/o1", Label: "claude-3", Dir: "/h/.claude-3"}, "claude-2", false); p != parent {
+		t.Fatalf("second hop parent %q", p)
 	}
 }
