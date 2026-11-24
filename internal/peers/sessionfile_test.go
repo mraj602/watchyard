@@ -187,3 +187,34 @@ func TestSessionFileRejectsUnsafeIDsAndPrunes(t *testing.T) {
 		t.Error("file older than 7 days must be pruned")
 	}
 }
+
+// A session that goes on after a SessionEnd (same id, same process; seen live on a tmux
+// planner) is alive again on its next event, so a bypass sender is not framed as prompting
+// and held by a bypass receiver. An event racing right after the end is not proof.
+func TestSessionFileRevivedAfterEnd(t *testing.T) {
+	f := newFx(t)
+	c := hookCtx(f, 4242)
+	ev := func(name string) peers.HookEvent {
+		return peers.HookEvent{SessionID: "sess-r", Name: name, PermissionMode: "bypassPermissions", Prompt: "go on"}
+	}
+	peers.UpdateSessionFile(c, ev("SessionStart"))
+	c.Now = f.now.Add(time.Minute)
+	peers.UpdateSessionFile(c, ev("SessionEnd"))
+	c.Now = f.now.Add(time.Minute + 5*time.Second)
+	peers.UpdateSessionFile(c, ev("Stop"))
+	sf, _ := peers.ReadSessionFile(f.state, "sess-r")
+	if sf.EndedAt == nil {
+		t.Fatal("an event 5 s after the end must not revive the session")
+	}
+	c.Now = f.now.Add(10 * time.Minute)
+	if wrote, _ := peers.UpdateSessionFile(c, ev("UserPromptSubmit")); !wrote {
+		t.Fatal("a later event must write the revival")
+	}
+	sf, _ = peers.ReadSessionFile(f.state, "sess-r")
+	if sf.EndedAt != nil || sf.PID != 4242 {
+		t.Fatalf("not revived: %+v", sf)
+	}
+	if peers.ModeClass(sf, true) != peers.ModeBypass {
+		t.Error("a revived bypass session is the bypass class again")
+	}
+}

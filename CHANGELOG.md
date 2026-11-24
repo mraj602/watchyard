@@ -44,6 +44,7 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- Peers: a session that goes on after Claude Code sent it a `SessionEnd` (same id, same process, as after `/clear`) was kept as ended, so its messages were framed as coming from a prompting session and a bypass-mode receiver held them for approval. Any later event of the session now marks it live again.
 - Peers: a session moved to another account by hand, without `wy move`, keeps its old handles
   as aliases (found from the folders Claude Code keeps per session), and a message sent under
   the account it left is delivered instead of refused with account_mismatch, by the hub and

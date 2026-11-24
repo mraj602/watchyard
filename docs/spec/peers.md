@@ -167,7 +167,7 @@ When `[peers] enabled = true`, `wy hook` also writes
   message at all, and what `prompt` then holds. Fallback: also ignore prompts within 10 s after
   the agent delivered into that session (the agent writes `<state>/peers/delivered/<session>`
   with the time).
-- `SessionEnd` sets `ended_at`. Files older than 7 days are pruned by `wy tick`.
+- `SessionEnd` sets `ended_at`. Any later event of the session, 30 s or more after it, clears it again: Claude Code sends `SessionEnd` on `/clear` and on some restarts that keep the session id and process, and such a session goes on (its mode class must stay real). Files older than 7 days are pruned by `wy tick`.
 
 The hook does a single small atomic write and nothing else; it never connects to the agent
 (hooks never wait). The prompt text is never stored.

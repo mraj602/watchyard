@@ -132,6 +132,10 @@ func MarkDelivered(state, session string, now time.Time) error {
 	return os.Chtimes(p, now, now)
 }
 
+// EndRevive is how long after a SessionEnd another event of the same session must come to
+// show that the session goes on (UpdateSessionFile).
+const EndRevive = 30 * time.Second
+
 // HookContext is what the hook knows about its caller.
 type HookContext struct {
 	State     string
@@ -166,6 +170,13 @@ func UpdateSessionFile(c HookContext, e HookEvent) (wrote bool, err error) {
 	}
 	if e.PermissionMode != "" && e.PermissionMode != f.Mode {
 		f.Mode, f.ModeAt, changed = e.PermissionMode, &now, true
+	}
+	// A session that goes on after a SessionEnd (Claude Code sends one on /clear and some
+	// restarts that keep the session id and process) is alive again: any later event clears
+	// ended_at, so its mode class is real again (peers.md 2.4). A hook that ran just after the
+	// end (events race) is not proof: it must come EndRevive after it.
+	if e.Name != "SessionEnd" && e.Name != "SessionStart" && f.EndedAt != nil && c.Now.Sub(*f.EndedAt) > EndRevive {
+		f.EndedAt, changed = nil, true
 	}
 	switch e.Name {
 	case "SessionStart":
