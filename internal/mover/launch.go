@@ -262,8 +262,10 @@ func Note(from, to string, at time.Time, mv Move, chain ...string) string {
 	case mv.Window != "" && !mv.HitAt.IsZero() && mv.HitAt.After(at):
 		s += fmt.Sprintf(" (%s would have hit at %s, before its %s reset)", mv.Window, mv.HitAt.Local().Format("15:04"),
 			mv.ResetAt.Local().Format("15:04"))
-	case mv.Window != "":
+	case mv.Window != "" && mv.Stopped:
 		s += fmt.Sprintf(" (stopped at the %s limit, which resets at %s)", mv.Window, mv.ResetAt.Local().Format("15:04"))
+	case mv.Window != "":
+		s += fmt.Sprintf(" (its %s limit was reached; it resets at %s)", mv.Window, mv.ResetAt.Local().Format("15:04"))
 	case mv.ByHand:
 		s += " (by hand, with wy move)"
 	}

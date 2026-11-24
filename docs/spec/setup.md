@@ -1846,6 +1846,10 @@ newest `context_pct` × 200k tokens), whether it is idle and for how long, and i
 is not stopped at a limit, its rate (burn + 0.5 × its helper burst) for its expected remaining
 time, until the window resets; a session's expected remaining time is its `--expect` left, else
 its age again (the Lindy rule), at least 15 minutes; the weekly window counts 5-hour points / ρ.
+*Stopped at a limit* means a limit ended the session's last turn: its last turn-boundary hook
+event (`UserPromptSubmit`, `Stop`, `StopFailure`) is a `StopFailure` with error `rate_limit`, and
+that window is still full. An idle session that finished its turn normally on a full account is
+not stopped, whatever the account's level.
 The hit time is where this piecewise-linear line reaches the limit (100); no hit before the reset
 means no move. An account whose 5-hour window has not started resets 5 hours from now.
 
@@ -1855,7 +1859,8 @@ reset (soonest hit first):
 | Rule | Default | Why |
 | --- | --- | --- |
 | Trigger | the hit is before the reset and within 90 min (H) | a far hit waits for later readings; 90 min beat 45 min and no horizon in the simulator |
-| Already stopped | a session a limit stopped moves at once | nothing is lost; it is the only exception to the turn rule |
+| Already stopped | a session a limit stopped moves at once, if that window resets 40 min or more from now; nearer, it waits for the reset | nothing is lost; it is the only exception to the turn rule; a move takes minutes and re-reads the context, so a near reset is cheaper |
+| Idle on a full window | an idle session that a limit did not stop is never moved because its account's window is full | it burns nothing there and goes on after the reset; the move only costs (1.3.3-pre worker case) |
 | Turn boundary | only an idle session (registry `idle` or `shell`, no subagent or tool running) | a kill mid-turn loses the turn and its subagents; background shells survive the move |
 | Near hit, mid-turn | under 5 min to the hit: planned as a wait, moved as soon as it stops | it would stop at the limit anyway |
 | Owner at it | an interactive session the owner prompted in the last 3 min (a `UserPromptSubmit` that is not a peer message) is not moved | the owner is typing or reading; a restart or a turn ending is not typing |
@@ -1942,7 +1947,8 @@ The line:
 > before its 13:59 reset). Background shells started before keep running (Claude Code lists
 > them as stopped; they are not) but are no longer tracked here: check their output files.
 
-(A session a limit stopped: "(stopped at the 5h limit, which resets at 13:59)"; a move by hand
+(A session a limit stopped: "(stopped at the 5h limit, which resets at 13:59)"; one moved from a
+full window without being stopped: "(its 5h limit was reached; it resets at 13:59)"; a move by hand
 without a forecast hit: "(by hand, with wy move)".) From its second move in 7 days the line carries the
 whole path once, "(move 3: claude-3 → claude-4 → claude-2)", so the latest note alone tells the
 history: an idle hop that never got a prompt leaves no note in the transcript (Claude Code

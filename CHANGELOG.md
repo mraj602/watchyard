@@ -24,8 +24,8 @@ All notable changes to Watchyard are recorded here. The format follows
   moved session gets one line on resume and nothing else changes for other sessions. `wy move
   --plan` shows the forecast and the moves; `wy move <session> [<account>]` moves one by hand;
   `--pin-account` or the peers tag `no-move` opts a session out. In the simulator (300 runs per
-  pattern) the default cuts lane-minutes stopped at a limit from 4,210 to 532 a day, better than
-  a fixed 92% threshold (540), with under half its limit hits, half its moves and token cost, no
+  pattern) the default cuts lane-minutes stopped at a limit from 4,210 to 538 a day, about as
+  few as a fixed 92% threshold (540) with under half its limit hits, moves and token cost, no
   session killed mid-turn and no ping-pong. Destinations: the session's own organisation first,
   then the account whose 5-hour room expires soonest.
 - Everyone involved learns about a move. The moved session's note carries its whole path of
@@ -44,6 +44,10 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- Moves: an idle session on an account at its limit is no longer planned as "stopped at the
+  limit". Stopped now means a limit reply ended its last turn (a `StopFailure` for
+  `rate_limit`); such a session moves only when the window resets 40 minutes or more from now,
+  and an idle session that finished its turn is never moved because its account is full.
 - Moves, found in end-to-end tests on a machine with 7 accounts: a background session is now
   stopped through its old account's supervisor (`claude stop`), which otherwise restarted it
   there and left two copies running; it is resumed with the flags from its job record (its

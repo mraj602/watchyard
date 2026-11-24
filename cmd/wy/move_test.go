@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -159,6 +160,7 @@ func TestMoveByHand(t *testing.T) {
 func TestMoveAuto(t *testing.T) {
 	// Off by default: nothing moves.
 	f, h, run := moveFixture(t, 100, "idle")
+	f.hookEvents("5e55a0a0-0000-4000-8000-000000000001", "UserPromptSubmit", "StopFailure:rate_limit")
 	if out, _, code := run("--auto"); code != 0 || !strings.Contains(out, "Smart Account Switch is off") || len(h.calls) != 0 {
 		t.Fatalf("off: %q %q", out, h.calls)
 	}
@@ -176,11 +178,89 @@ func TestMoveAuto(t *testing.T) {
 	}
 	// Pinned: never moved.
 	f2, h2, run2 := moveFixture(t, 100, "idle")
+	f2.hookEvents("5e55a0a0-0000-4000-8000-000000000001", "StopFailure:rate_limit")
 	f2.set("account.smart_switch", "on")
 	if out, errOut, code := run2("--pin-account", "lane-a"); code != 0 || !strings.Contains(out, "pinned") {
 		t.Fatalf("pin: %q %q", out, errOut)
 	}
 	if out, _, code := run2("--auto"); code != 0 || out != "" || len(h2.calls) != 0 {
 		t.Fatalf("pinned moved: %q %q", out, h2.calls)
+	}
+}
+
+// hookEvents writes hook events of session sid to the outbox (event[:error], a minute apart,
+// the last one a minute ago).
+func (f *nextFixture) hookEvents(sid string, events ...string) {
+	f.t.Helper()
+	dir := filepath.Join(f.dirs.State.Path, "outbox")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	var b strings.Builder
+	for i, ev := range events {
+		name, errKind, _ := strings.Cut(ev, ":")
+		at := nextNow.Add(-time.Duration(len(events)-i) * time.Minute)
+		fmt.Fprintf(&b, `{"v":1,"id":"01JA00000000000000000H%04d","kind":"hook_event","ts":"%s","machine":"%s","slot":"~/.claude","payload":{"session_id":"%s","hook_event_name":"%s","error":"%s"}}`+"\n",
+			i, at.Format(time.RFC3339Nano), f.machine, sid, name, errKind)
+	}
+	if err := os.WriteFile(filepath.Join(dir, nextNow.UTC().Format("2006-01-02")+".jsonl"), []byte(b.String()), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// fiveReset moves the 5-hour reset of every seat to now+d.
+func (f *nextFixture) fiveReset(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, s := range f.seats {
+		for _, w := range s["windows"].([]map[string]any) {
+			if w["key"] == "five_hour" {
+				w["resets_at"] = nextNow.Add(d).Format(time.RFC3339)
+			}
+		}
+	}
+}
+
+// TestMovePlanStoppedOnlyByLimit: the real worker case of 1.3.3-pre (idle tmux sessions at a
+// prompt on an account at 100 % were planned as "stopped at the 5h limit"). Only a session
+// whose last turn ended on the limit reply is stopped; it moves only when the reset is far
+// enough away; an idle session that finished its turn is never moved for a full account.
+func TestMovePlanStoppedOnlyByLimit(t *testing.T) {
+	const sid = "5e55a0a0-0000-4000-8000-000000000001"
+	for _, c := range []struct {
+		name   string
+		events []string
+		reset  time.Duration
+		want   string // in the plan output
+		moves  bool
+	}{
+		{"idle after a normal turn, reset in 20 min", []string{"UserPromptSubmit", "Stop"}, 20 * time.Minute,
+			"lane-a stays on claude: idle, not stopped by the limit", false},
+		{"idle after a normal turn, reset in 3 h", []string{"UserPromptSubmit", "Stop"}, 3 * time.Hour,
+			"lane-a stays on claude: idle, not stopped by the limit", false},
+		{"idle with no events at all", nil, 3 * time.Hour, "idle, not stopped by the limit", false},
+		{"stopped by the limit, reset in 20 min", []string{"UserPromptSubmit", "StopFailure:rate_limit"}, 20 * time.Minute,
+			"lane-a stays on claude: stopped at the 5h limit, which resets in 20m0s: waiting is cheaper than a move", false},
+		{"stopped by the limit, reset in 3 h", []string{"UserPromptSubmit", "StopFailure:rate_limit"}, 3 * time.Hour,
+			"lane-a (tmux): claude -> claude-2: stopped at the 5h limit", true},
+		{"stopped earlier, then went on and finished", []string{"StopFailure:rate_limit", "UserPromptSubmit", "Stop"}, 3 * time.Hour,
+			"idle, not stopped by the limit", false},
+		{"another error is not the limit", []string{"UserPromptSubmit", "StopFailure:server_error"}, 3 * time.Hour,
+			"idle, not stopped by the limit", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f, h, run := moveFixture(t, 100, "idle")
+			f.hookEvents(sid, c.events...)
+			f.fiveReset(c.reset)
+			out, _, code := run("--plan")
+			if code != 0 || !strings.Contains(out, c.want) || strings.Contains(out, "-> claude-2") != c.moves || len(h.calls) != 0 {
+				t.Fatalf("plan: %d\n%s", code, out)
+			}
+			f.set("account.smart_switch", "on")
+			out, _, _ = run("--auto")
+			if strings.Contains(out, "moved ") != c.moves {
+				t.Fatalf("auto:\n%s\n%q", out, h.calls)
+			}
+		})
 	}
 }

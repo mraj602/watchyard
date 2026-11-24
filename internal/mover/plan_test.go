@@ -1,6 +1,7 @@
 package mover
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -180,5 +181,44 @@ func TestDestination(t *testing.T) {
 	}
 	if to, why := Destination(in, "x"); to != "" || why == "" {
 		t.Error("unknown session")
+	}
+}
+
+// TestPlanFullAccountIdleSessions: the shape of the 1.3.3-pre worker case. Three idle tmux
+// sessions at a prompt (contexts of different size, idle 5 min to 2 h) on an account at 100 %
+// whose 5-hour window resets in 20 minutes, a destination with room: nothing moves, each with
+// its reason. Stopped by the limit, they wait for a near reset and move for a far one.
+func TestPlanFullAccountIdleSessions(t *testing.T) {
+	for _, p := range []Params{M4, M5} {
+		full := acc("c4", 100, 20*time.Minute, 30)
+		dst := acc("c2", 20, 4*time.Hour, 20)
+		ss := []Session{
+			idle("voice", "c4", 0, 3*time.Hour, 5*time.Minute),
+			idle("bench", "c4", 0, 6*time.Hour, 40*time.Minute),
+			idle("aws", "c4", 0, 26*time.Hour, 2*time.Hour),
+		}
+		ss[0].Context, ss[1].Context, ss[2].Context = 40_000, 120_000, 180_000
+		in := Input{Now: t0, Accounts: []Account{full, dst}, Sessions: ss, Params: p}
+		ms, skips := PlanWhy(in)
+		if len(ms) != 0 || len(skips) != 3 {
+			t.Fatalf("%s idle: moves %+v skips %+v", p.Name, ms, skips)
+		}
+		for _, s := range skips {
+			if !strings.Contains(s.Why, "idle, not stopped by the limit") {
+				t.Errorf("%s: %+v", p.Name, s)
+			}
+		}
+		for i := range in.Sessions {
+			in.Sessions[i].Stopped, in.Sessions[i].Idle = true, false
+		}
+		ms, skips = PlanWhy(in)
+		if len(ms) != 0 || len(skips) != 3 || !strings.Contains(skips[0].Why, "waiting is cheaper than a move") {
+			t.Fatalf("%s stopped, near reset: %+v %+v", p.Name, ms, skips)
+		}
+		in.Accounts[0].W5.Reset = t0.Add(2 * time.Hour)
+		ms, _ = PlanWhy(in)
+		if len(ms) == 0 || ms[0].To != "c2" || !strings.HasPrefix(ms[0].Reason, "stopped at the 5h limit") {
+			t.Fatalf("%s stopped, far reset: %+v", p.Name, ms)
+		}
 	}
 }

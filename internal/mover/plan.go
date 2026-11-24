@@ -64,6 +64,10 @@ type Params struct {
 	// DrainFirst: among destinations with room, the one whose 5-hour window resets soonest
 	// first (its room expires unused otherwise), instead of the picker's order.
 	DrainFirst bool
+	// StoppedWait: a session a limit stopped moves only when that window resets later than
+	// this; nearer, waiting for the reset is cheaper than a move (minutes to restart, the
+	// context re-read on the new account) (0: always move it).
+	StoppedWait time.Duration
 	// LindyFrac: a session without an estimate is expected to run this many times its age
 	// again (0: 1, the Lindy rule).
 	LindyFrac float64
@@ -89,7 +93,8 @@ var (
 	M4 = Params{Name: "M4 Smart Account Switch", Horizon: 90 * time.Minute, Slack: 5, Hysteresis: 5,
 		CostAware: true, MoveCostPerMTok: 1.2, MoveCostFixed: 0.2, WaitHit: 5 * time.Minute, Cooldown: 30 * time.Minute,
 		NoReturn: 2 * time.Hour, AccountMoves: 3, AccountWindow: 30 * time.Minute, BurstWeight: 0.5,
-		TokenRules: true, CacheTTL: 5 * time.Minute, OncePer: 5 * time.Hour, StallValue: 5}
+		TokenRules: true, CacheTTL: 5 * time.Minute, OncePer: 5 * time.Hour, StallValue: 5,
+		StoppedWait: 40 * time.Minute}
 	// M5 (the default since the end-to-end pass): M4 with the prompt cache taken as cold only
 	// after an hour (a subscription keeps the main conversation's cache for an hour) and the
 	// destination with the soonest 5-hour reset first (its room expires unused otherwise).
@@ -133,6 +138,8 @@ type Move struct {
 	Window  string
 	HitAt   time.Time
 	ResetAt time.Time
+	// Stopped: a limit reply ended the session's last turn (it waits on the owner).
+	Stopped bool
 	// ByHand: asked for with wy move <session>, not planned (the note says so when no
 	// forecast hit explains it).
 	ByHand bool
@@ -257,6 +264,16 @@ func PlanWhy(in Input) ([]Move, []Skip) {
 				skip("moved " + now.Sub(l.At).Round(time.Minute).String() + " ago (cooldown)")
 				continue
 			}
+			if s.Stopped && p.StoppedWait > 0 && sc.f.ResetIn < p.StoppedWait {
+				skip(fmt.Sprintf("stopped at the %s limit, which resets in %s: waiting is cheaper than a move", sc.f.Window, sc.f.ResetIn.Round(time.Minute)))
+				continue
+			}
+			// Idle with nothing pending on a window that is already full: it burns nothing
+			// there, and it goes on after the reset; moving it only costs.
+			if !s.Stopped && s.Idle && p.TokenRules && sc.f.Level >= sc.f.Limit {
+				skip(fmt.Sprintf("idle, not stopped by the limit: it burns nothing on the full %s window", sc.f.Window))
+				continue
+			}
 			hitIn := max(0, sc.f.HitIn)
 			if p.TokenRules && !s.Stopped {
 				if s.Attended {
@@ -273,7 +290,7 @@ func PlanWhy(in Input) ([]Move, []Skip) {
 				}
 			}
 			mv := Move{Session: s.ID, From: a.Key, Window: sc.f.Window, HitAt: now.Add(hitIn),
-				ResetAt: now.Add(sc.f.ResetIn)}
+				ResetAt: now.Add(sc.f.ResetIn), Stopped: s.Stopped}
 			mv.Saved = p.rate(s) * math.Min(p.remaining(s).Hours(), sc.f.ResetIn.Hours())
 			mv.Cost = p.moveCost(s)
 			if p.TokenRules {

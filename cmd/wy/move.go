@@ -208,7 +208,7 @@ func moveCmd(e moveEnv, args []string) error {
 	}
 	if f, ok := w.forecasts[w.keyOfDir[l.Slot]]; ok {
 		if wf, hits := f.First(); hits {
-			mv = mover.Move{Window: wf.Window, HitAt: e.now().Add(wf.HitIn), ResetAt: e.now().Add(wf.ResetIn)}
+			mv = mover.Move{Window: wf.Window, HitAt: e.now().Add(wf.HitIn), ResetAt: e.now().Add(wf.ResetIn), Stopped: w.byID[l.SessionID].Stopped}
 		}
 	}
 	if *bg && (l.Kind == mover.KindTmux || l.Kind == mover.KindWrapped || l.Kind == mover.KindTerminal) {
@@ -399,16 +399,36 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	}
 	ctx := map[string]float64{}
 	typed := map[string]time.Time{} // the owner's last prompt per session (not a peer's)
+	limitStop := map[string]bool{}  // its last turn ended on a limit reply
 	if recs, err := status.Load(filepath.Join(e.dirs.State.Path, "outbox"), now.Add(-status.Window)); err == nil {
+		lastEnd := map[string]time.Time{}
 		for _, r := range recs {
 			var p struct {
 				SessionID string `json:"session_id"`
 				Event     string `json:"hook_event_name"`
+				Error     string `json:"error"`
 			}
-			if r.Kind != record.KindHookEvent || json.Unmarshal(r.Payload, &p) != nil || p.Event != "UserPromptSubmit" || string(r.Derived["peer_prompt"]) == "true" {
+			if r.Kind != record.KindHookEvent || json.Unmarshal(r.Payload, &p) != nil {
 				continue
 			}
-			if t, err := time.Parse(time.RFC3339Nano, r.TS); err == nil && t.After(typed[p.SessionID]) {
+			t, err := time.Parse(time.RFC3339Nano, r.TS)
+			if err != nil {
+				continue
+			}
+			// Stopped by a limit: the last turn-boundary event of the session is a StopFailure
+			// for rate_limit (Claude Code's limit reply). A later prompt or a normal Stop means it
+			// went on, or finished its turn: idle is not stopped (owner 2026-11-24).
+			switch p.Event {
+			case "UserPromptSubmit", "Stop", "StopFailure":
+				if !t.Before(lastEnd[p.SessionID]) {
+					lastEnd[p.SessionID] = t
+					limitStop[p.SessionID] = p.Event == "StopFailure" && p.Error == "rate_limit"
+				}
+			}
+			if p.Event != "UserPromptSubmit" || string(r.Derived["peer_prompt"]) == "true" {
+				continue
+			}
+			if t.After(typed[p.SessionID]) {
 				typed[p.SessionID] = t
 			}
 		}
@@ -476,8 +496,11 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		if x, ok := last[l.SessionID]; ok {
 			s.MovedAt, s.MovedFrom = x.At, x.From
 		}
+		// Stopped: a limit ended its last turn and that window is still full. An idle session
+		// on a full account that finished its turn normally is not stopped: it burns nothing
+		// there and goes on after the reset.
 		for _, a := range w.input.Accounts {
-			if a.Key == key && s.Idle && (a.W5.Level >= 100 || a.W7.Level >= 100) {
+			if a.Key == key && limitStop[l.SessionID] && (a.W5.Level >= 100 || a.W7.Level >= 100) {
 				s.Stopped = true
 			}
 		}
