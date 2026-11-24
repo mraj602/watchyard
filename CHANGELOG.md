@@ -119,6 +119,13 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **The switch moved a session that burned nothing** (live on pre5: a mid-turn lane at 0.0
+  points/h moved with a 4.6 points/h one). A running session is a candidate only when its own
+  burn is at least `account.move_min_burn` (default 1 point/h); a session under
+  `move_young_min` never is; the greedy stops at a pick that would not lower the projection.
+- Move notes, reasons, lane notices and pin alerts name the day of a reset or hit time over
+  24 hours away ("before its Thu 03:30 reset", not "before its 03:30 reset").
+
 - **New lanes placed where the switch moves them off** (live on pre4.1: four lanes leased to
   claude-3 at 81-83% of its week, each moved off 4-20 minutes later). The lanes picker's drain,
   at-risk test and rank now aim at the switch's caps less the pin reserve (claude-3 with 2 pins

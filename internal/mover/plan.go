@@ -80,6 +80,11 @@ type Params struct {
 	// the burn window then holds only those minutes. Younger sessions' rates are left out of
 	// their account's meter (not of a rate from the readings). 0: counted at once.
 	YoungGate time.Duration
+	// MinBurn: a running session is a candidate only when its own measured burn (points per
+	// hour over the burn window) is at least this; busy with no burn frees nothing (live
+	// 2026-11-25: a mid-turn session at 0.0 points/h was moved). 0: any burn above 0;
+	// negative: none, a busy session with no burn too (the simulator's tables before it).
+	MinBurn float64
 }
 
 // PinReserve is the reserve of an account with pins live pinned sessions: pins x
@@ -104,7 +109,7 @@ var DefaultParams = Params{
 	Cooldown: 20 * time.Minute, NoReturn: time.Hour, AccountMoves: 3, AccountWindow: 15 * time.Minute,
 	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, Orgs: OrgsAny,
 	PinReserve5: 10, PinReserve7: 5, PinAlertWithin: 2 * time.Hour,
-	DestHorizon: 90 * time.Minute, CheapMoves: true, YoungGate: 15 * time.Minute,
+	DestHorizon: 90 * time.Minute, CheapMoves: true, YoungGate: 15 * time.Minute, MinBurn: 1,
 }
 
 // PinIdle: a pinned session idle this long holds no reserve (the caller counts the live pins).
@@ -476,6 +481,17 @@ func Plan(in Input) Result {
 			if !s.burned() && !p.IdleMoves {
 				continue // idle with no burn: moving it frees nothing
 			}
+			if !p.IdleMoves && p.MinBurn >= 0 {
+				switch {
+				case p.young(s, now):
+					// Its burn is left out (GateYoung): moving it would free nothing counted.
+					skip(s, fmt.Sprintf("under %d min old: its burn does not count yet", int(p.YoungGate.Minutes())))
+					continue
+				case s.Rate <= 0 || s.Rate < p.MinBurn:
+					skip(s, fmt.Sprintf("burns %.1f points/h, under the %.1f a move must free", s.Rate, p.MinBurn))
+					continue
+				}
+			}
 			if why := p.excluded(s, st, now); why != "" {
 				skip(s, why)
 				continue
@@ -519,6 +535,13 @@ func Plan(in Input) Result {
 				return x.ID < y.ID
 			})
 			s := cands[0]
+			// Greedy: a pick that would not lower the source's projection frees nothing.
+			if !p.IdleMoves && p.MinBurn >= 0 && !p.lowers(cur, s.Rate) {
+				for _, x := range cands {
+					skip(x, fmt.Sprintf("moving it would not lower %s's projection", a.Label))
+				}
+				break
+			}
 			cands = cands[1:]
 			mv := Move{Session: s.ID, From: a.Key, Window: cur.Window, P: cur.pOf(cur.Window), ResetAt: now.Add(cur.resetOf(cur.Window)),
 				MidTurn: s.Busy, Rate: s.Rate, Interactive: s.Interactive}
@@ -586,11 +609,26 @@ func (p Params) place(in Input, res *Result, st *moveState, s Session, a Account
 			delta[a.Key] -= s.Rate
 		}
 	}
-	mv.Reason = p.reason(a, mv, why)
+	mv.Reason = p.reason(a, mv, why, in.Now)
 	res.Moves = append(res.Moves, mv)
 }
 
 // overBy reports whether a projection is over its caps less m.
+// lowers reports whether taking rate off the account lowers its projection in the window
+// over the cap (both when neither is named).
+func (p Params) lowers(pr Projection, rate float64) bool {
+	if rate <= 0 {
+		return false
+	}
+	switch pr.Window {
+	case "5h":
+		return rate*pr.Reset5.Hours() > 0
+	case "7d":
+		return rate/pr.ratio*math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours()) > 0
+	}
+	return true
+}
+
 func (pr Projection) overBy(m float64) bool {
 	return pr.P5 > pr.Cap5-m || pr.P7 > pr.Cap7-m || (m == 0 && pr.Hard)
 }
@@ -826,16 +864,29 @@ func Org(key string) string {
 	return ""
 }
 
+// Clock is t as the owner reads it in notes, notices, reasons and alerts: "15:04" within 24
+// hours of now, else with its weekday ("Thu 03:30"), and its date beyond 6 days ("Dec 2 03:30").
+func Clock(t, now time.Time) string {
+	t = t.Local()
+	switch d := t.Sub(now); {
+	case d > -24*time.Hour && d < 24*time.Hour:
+		return t.Format("15:04")
+	case d > -6*24*time.Hour && d < 6*24*time.Hour:
+		return t.Format("Mon 15:04")
+	}
+	return t.Format("Jan 2 15:04")
+}
+
 // reason is the move's one-line explanation.
-func (p Params) reason(a Account, mv Move, why string) string {
+func (p Params) reason(a Account, mv Move, why string, now time.Time) string {
 	var b strings.Builder
 	switch {
 	case mv.Stopped:
-		fmt.Fprintf(&b, "stopped at the %s limit (resets %s)", mv.Window, mv.ResetAt.Local().Format("15:04"))
+		fmt.Fprintf(&b, "stopped at the %s limit (resets %s)", mv.Window, Clock(mv.ResetAt, now))
 	default:
 		fmt.Fprintf(&b, "%s projected %.0f%% (cap %.0f%%) at %.1f points/h of burn", mv.Window, mv.P, p.capOf(a, mv.Window), mv.Rate)
 		if !mv.HitAt.IsZero() {
-			fmt.Fprintf(&b, ", 100%% at %s", mv.HitAt.Local().Format("15:04"))
+			fmt.Fprintf(&b, ", 100%% at %s", Clock(mv.HitAt, now))
 		}
 		if mv.MidTurn {
 			b.WriteString("; mid-turn")

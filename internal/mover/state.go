@@ -307,7 +307,7 @@ func (a PinAlert) Text() string {
 		name += " " + a.Name
 	}
 	t := fmt.Sprintf("pinned session %s alone takes %s's %s window to 100%% at %s (%.1f points/h; it resets %s)", name, a.Account, a.Window,
-		a.HitAt.Local().Format("15:04"), a.Rate, a.ResetAt.Local().Format("Mon 15:04"))
+		Clock(a.HitAt, a.At), a.Rate, Clock(a.ResetAt, a.At))
 	if a.Command != "" {
 		return t + ": move it by hand: " + a.Command
 	}

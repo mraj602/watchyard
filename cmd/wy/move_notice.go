@@ -127,7 +127,7 @@ func noticeText(lanes []laneNotice) string {
 		}
 		fmt.Fprintf(&b, "Your lane %s (%s) moved %s -> %s at %s", name, short(n.Session), n.From, n.To, n.At.Local().Format("15:04"))
 		if n.Move.Window != "" && !n.Move.HitAt.IsZero() && n.Move.HitAt.After(n.At) {
-			fmt.Fprintf(&b, " (%s would have hit at %s)", n.Move.Window, n.Move.HitAt.Local().Format("15:04"))
+			fmt.Fprintf(&b, " (%s would have hit at %s)", n.Move.Window, mover.Clock(n.Move.HitAt, n.At))
 		}
 		switch {
 		case n.New != "" && n.Old != "":
