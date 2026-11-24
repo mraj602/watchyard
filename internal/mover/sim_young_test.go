@@ -26,6 +26,7 @@ var youngStrategies = func() []simStrat {
 	// shipped: Params.YoungGate as shipped; the sim's meter is the full one, so the readings
 	// are compared with it, as in wy move.
 	shipped := func(s simStrat) simStrat { s.p.YoungGate = DefaultParams.YoungGate; return s }
+	floor := func(s simStrat) simStrat { s.p.MinBurn = DefaultParams.MinBurn; return s }
 	readFull := func(s simStrat) simStrat { s.readFull = true; return s }
 	ageW := func(l *simLane, full float64) float64 { return math.Min(1, float64(l.age)/full) }
 	gate := func(min int) func(l *simLane) float64 {
@@ -69,6 +70,7 @@ var youngStrategies = func() []simStrat {
 		mk("no startup burst (reference)", false, nil),
 		mk("startup burst, as now", true, nil),
 		shipped(mk("shipped: YoungGate 15 min (Plan)", true, nil)),
+		floor(shipped(mk("shipped + burn floor 1 point/h, greedy stop", true, nil))),
 		mk("(a) counts from 8 min", true, gate(8)),
 		mk("(a) counts from 10 min", true, gate(10)),
 		mk("(a) counts from 12 min", true, gate(12)),
@@ -86,7 +88,7 @@ var youngStrategies = func() []simStrat {
 	// WY_SIM_YOUNG=short: the main candidates only (for the 300-run table).
 	if os.Getenv("WY_SIM_YOUNG") == "short" {
 		var out []simStrat
-		for _, i := range []int{0, 1, 2, 4, 5, 6, 7, 9, 10, 12, 14} {
+		for _, i := range []int{0, 1, 2, 3} {
 			out = append(out, all[i])
 		}
 		return out
@@ -94,13 +96,13 @@ var youngStrategies = func() []simStrat {
 	return all
 }()
 
-const youngHeader = "| strategy | young moves | false young moves | moves | false moves | all stopped min | hits | pinned stopped min | prot 5h max | prot>80 min | re-read cost (opus-eq Mtok) |\n" +
-	"|---|---|---|---|---|---|---|---|---|---|---|\n"
+const youngHeader = "| strategy | young moves | false young moves | moves under 1 point/h | moves | false moves | all stopped min | hits | pinned stopped min | prot 5h max | prot>80 min | re-read cost (opus-eq Mtok) |\n" +
+	"|---|---|---|---|---|---|---|---|---|---|---|---|\n"
 
 func writeYoungRow(b *strings.Builder, name string, s simResult) {
 	days := s.runs * simDays
-	fmt.Fprintf(b, "| %s | %.2f | %.2f | %.2f | %.2f | %.1f | %.2f | %.1f | %.1f | %.2f | %.2f |\n", name,
-		s.YoungMoves/days, s.YoungFalse/days, s.Moves/days, s.FalseMoves/days, s.StoppedMin/days, s.Hits/days, s.PinStopped/days,
+	fmt.Fprintf(b, "| %s | %.2f | %.2f | %.2f | %.2f | %.2f | %.1f | %.2f | %.1f | %.1f | %.2f | %.2f |\n", name,
+		s.YoungMoves/days, s.YoungFalse/days, s.LowMoves/days, s.Moves/days, s.FalseMoves/days, s.StoppedMin/days, s.Hits/days, s.PinStopped/days,
 		s.MaxProt5/s.runs, s.Over80Min/days, s.ReReadCost/days)
 }
 

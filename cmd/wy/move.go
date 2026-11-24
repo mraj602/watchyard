@@ -704,6 +704,7 @@ func moveParams(cfg config.Config) mover.Params {
 	p.WeekSpan = mins(60 * a.MoveWeekSpanH)
 	p.DestHorizon = mins(a.MoveDestHorizonMin)
 	p.YoungGate = mins(a.MoveYoungMin)
+	p.MinBurn = math.Max(0, a.MoveMinBurn)
 	p.SpikePasses, p.SpikeNear = int(a.MoveSpikePasses), mins(a.MoveSpikeNearMin)
 	p.Cooldown, p.NoReturn = mins(a.MoveCooldownMin), mins(a.MoveNoReturnMin)
 	p.AccountMoves, p.AccountWindow = int(a.MoveAccountMoves), mins(a.MoveAccountWindowMin)
@@ -872,7 +873,7 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 			p.PinReserve5, p.PinReserve7)
 	}
 	for _, a := range r.Alerts {
-		x := mover.PinAlert{Session: a.Session, Name: w.byID[a.Session].Name, Account: w.accLabel(a.Account), Window: a.Window, HitAt: a.HitAt,
+		x := mover.PinAlert{At: w.input.Now, Session: a.Session, Name: w.byID[a.Session].Name, Account: w.accLabel(a.Account), Window: a.Window, HitAt: a.HitAt,
 			ResetAt: a.ResetAt, Rate: a.Rate, Command: w.pinCommand(a.Session)}
 		fmt.Fprintln(out, "alert: "+x.Text())
 	}
@@ -913,7 +914,7 @@ func (w *moveWorld) humanMessage(cfg config.Config, l mover.Launch, t mover.Targ
 	case mv.Stopped && mv.Window != "":
 		fmt.Fprintf(&b, " (it was stopped at %s's %s limit)", from, mv.Window)
 	case mv.Window != "" && !mv.HitAt.IsZero():
-		fmt.Fprintf(&b, " (%s's %s would hit 100%% at %s)", from, mv.Window, mv.HitAt.Local().Format("15:04"))
+		fmt.Fprintf(&b, " (%s's %s would hit 100%% at %s)", from, mv.Window, mover.Clock(mv.HitAt, at))
 	case mv.ByHand:
 		b.WriteString(" (by hand, with wy move)")
 	}

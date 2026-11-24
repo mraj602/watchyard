@@ -256,7 +256,9 @@ type simResult struct {
 	// Placed: lanes the picker placed; Moved30: of them, those moved within 30 minutes of
 	// their placement (sim_place_test.go).
 	Placed, Moved30 float64
-	runs            float64
+	// LowMoves: moves of running sessions burning under 1 point/h (they free next to nothing).
+	LowMoves float64
+	runs     float64
 }
 
 func (r *simResult) add(o simResult) {
@@ -286,6 +288,7 @@ func (r *simResult) add(o simResult) {
 	r.YoungFalse += o.YoungFalse
 	r.Placed += o.Placed
 	r.Moved30 += o.Moved30
+	r.LowMoves += o.LowMoves
 	r.Over80Owner += o.Over80Owner
 	r.Over80NoRoom += o.Over80NoRoom
 	r.Over80Other += o.Over80Other
@@ -363,6 +366,7 @@ func v2(name string, f func(p *Params)) simStrat {
 	p := DefaultParams
 	p.Name = name
 	p.YoungGate = 0 // the tables before young sessions (sim_young_test.go) are kept as they were
+	p.MinBurn = -1  // ... and before the burn floor
 	if f != nil {
 		f(&p)
 	}
@@ -1077,6 +1081,9 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			l := byID[mv.Session]
 			if l.coord == nil && l.age < 15 && l.movedFrm < 0 {
 				res.YoungMoves++
+			}
+			if !mv.Stopped && mv.Rate < 1 && l.pendTo < 0 {
+				res.LowMoves++
 			}
 			if l.coord == nil && !l.owner && l.group == 0 && l.age < 30 && l.movedFrm < 0 && l.pendTo < 0 {
 				res.Moved30++

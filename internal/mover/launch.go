@@ -371,13 +371,13 @@ func Note(from, to string, at time.Time, mv Move, chain ...string) string {
 	}
 	switch {
 	case mv.Stopped && mv.Window != "":
-		s += fmt.Sprintf(" (stopped at the %s limit, which resets at %s)", mv.Window, mv.ResetAt.Local().Format("15:04"))
+		s += fmt.Sprintf(" (stopped at the %s limit, which resets at %s)", mv.Window, Clock(mv.ResetAt, at))
 	case mv.Window != "" && !mv.HitAt.IsZero() && mv.HitAt.After(at):
 		s += fmt.Sprintf(": %s's %s would hit 100%% at %s at its current burn (P%s %.0f%%)", from, mv.Window,
-			mv.HitAt.Local().Format("15:04"), strings.TrimSuffix(strings.TrimSuffix(mv.Window, "h"), "d"), mv.P)
+			Clock(mv.HitAt, at), strings.TrimSuffix(strings.TrimSuffix(mv.Window, "h"), "d"), mv.P)
 	case mv.Window != "" && mv.P > 0:
 		s += fmt.Sprintf(": %s's %s would reach %.0f%% before its %s reset at its current burn", from, mv.Window, mv.P,
-			mv.ResetAt.Local().Format("15:04"))
+			Clock(mv.ResetAt, at))
 	case mv.ByHand:
 		s += " (by hand, with wy move)"
 	}
