@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -80,10 +81,13 @@ const nextAuthFresh = time.Minute
 
 func nextUsage(w io.Writer) {
 	fmt.Fprint(w, `usage: wy account next [--strategy lanes|smart|expiring|most-room|spread|fill|sticky] [--model <m>]
-                       [--n <K>] [--session-id <uuid>]... [--urgent]
+                       [--n <K>] [--session-id <uuid>]... [--urgent] [--expect short|medium|long|<duration>]
+                       [--expect-minutes <N>] [--expect-tokens <N>]
                        [--env | --json | --explain] [--no-reserve] [--no-hub]
        wy account next [flags] --exec [-- <command> [args...]]     (default command: claude)
---n, --session-id and --urgent are for the lanes strategy (the default).
+--n, --session-id, --urgent and the --expect flags are for the lanes strategy (the default).
+--expect says how big each new session will be (short: under 25 min, medium: up to 2 h, long:
+over 2 h); a long session is kept off accounts whose week or 5-hour window resets first.
 Exit 0: every session asked for was placed. Exit 4: fewer were placed (none for one);
 launch only the printed picks. Exit 3: a --session-id is already leased or given twice.
 `)
@@ -126,6 +130,9 @@ func accountNext(e nextEnv, args []string) error {
 	doExec := fs.Bool("exec", false, "start the command after -- (default claude) with the pick's CLAUDE_CONFIG_DIR")
 	n := fs.Int("n", 0, "picks for this many sessions, 1 to 50 (default: the number of --session-id, else 1)")
 	urgent := fs.Bool("urgent", false, "lanes: may pass an aggressive account's burst cap when nothing else is free")
+	expect := fs.String("expect", "", "lanes: the session's expected size, short, medium or long, or its wall time, e.g. 3h")
+	expectMin := fs.Float64("expect-minutes", 0, "lanes: the session's expected wall time in minutes")
+	expectTok := fs.Float64("expect-tokens", 0, "lanes: the session's expected tokens (input + output + cache)")
 	var sids []string
 	fs.Func("session-id", "the session id (a UUID) each session will get, repeatable, in pick order", func(v string) error {
 		sids = append(sids, v)
@@ -172,6 +179,10 @@ func accountNext(e nextEnv, args []string) error {
 			return bad(fmt.Sprintf("--session-id %q is not a UUID", sid))
 		}
 	}
+	x, xerr := parseExpect(*expect, *expectMin, *expectTok)
+	if xerr != nil {
+		return bad(xerr.Error())
+	}
 	if k > 1 && (*envOut || *doExec) {
 		return bad("--env and --exec start one session: use them without --n or with --n 1")
 	}
@@ -194,8 +205,8 @@ func accountNext(e nextEnv, args []string) error {
 		strat = settings.Strategy
 	}
 	lanes := strat == config.NextStrategyLanes
-	if !lanes && (k > 1 || len(sids) > 0 || *urgent) {
-		return bad("--n above 1, --session-id and --urgent are for the lanes strategy (strategy is " + strat + ")")
+	if !lanes && (k > 1 || len(sids) > 0 || *urgent || x != (picker.LaneExpect{})) {
+		return bad("--n above 1, --session-id, --urgent and --expect are for the lanes strategy (strategy is " + strat + ")")
 	}
 	now := e.now()
 
@@ -224,7 +235,10 @@ func accountNext(e nextEnv, args []string) error {
 	}
 	src.Local = ob.Samples
 	in := picker.Input{Now: now, Strategy: strat, Model: *model, Settings: settings, Candidates: picker.Candidates(slots, src),
-		Outbox: ob, N: k, SIDs: sids, Urgent: *urgent}
+		Outbox: ob, N: k, SIDs: sids, Urgent: *urgent, Expect: x.Dur, HubDown: hubErr != ""}
+	if x != (picker.LaneExpect{}) {
+		in.Expects = []picker.LaneExpect{x}
+	}
 	// The seats' hub modes: kept after each hub read, used when the hub could not be read (a
 	// setting: no age limit; setup.md 8.5, Kind).
 	modesPath := filepath.Join(e.dirs.State.Path, "next", "modes.json")
@@ -330,7 +344,7 @@ func accountNext(e nextEnv, args []string) error {
 		if p.Urgent {
 			fmt.Fprintln(e.stderr, "wy account next: urgent: "+p.Label+" passed its burst cap")
 		}
-		return nextExec(e, p.Ranked, withSessionID(cmdArgs, p.SessionID))
+		return nextExec(e, p, withSessionID(cmdArgs, p.SessionID))
 	default:
 		for _, p := range res.Picks {
 			line := picker.Line(p.Ranked)
@@ -354,6 +368,35 @@ func accountNext(e nextEnv, args []string) error {
 	return nil
 }
 
+// parseExpect reads --expect (a class or a wall time), --expect-minutes and --expect-tokens.
+func parseExpect(v string, minutes, tokens float64) (picker.LaneExpect, error) {
+	var x picker.LaneExpect
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+	case picker.ExpectShort, picker.ExpectMedium, picker.ExpectLong:
+		x.Class = strings.ToLower(strings.TrimSpace(v))
+	default:
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return x, fmt.Errorf("--expect %q: use short, medium, long or a wall time such as 90m", v)
+		}
+		x.Dur = d
+	}
+	switch {
+	case minutes < 0 || math.IsNaN(minutes) || math.IsInf(minutes, 0):
+		return x, errors.New("--expect-minutes must be a positive number")
+	case minutes > 0 && x.Dur > 0:
+		return x, errors.New("give the wall time once: --expect <duration> or --expect-minutes")
+	case minutes > 0:
+		x.Dur = time.Duration(minutes * float64(time.Minute))
+	}
+	if tokens < 0 || math.IsNaN(tokens) || math.IsInf(tokens, 0) {
+		return x, errors.New("--expect-tokens must be a positive number")
+	}
+	x.Tokens = tokens
+	return x, nil
+}
+
 // nextDuplicate reports a --session-id that is already leased or given twice (exit 3).
 func nextDuplicate(e nextEnv, err error) error {
 	if !errors.Is(err, picker.ErrDuplicateSession) {
@@ -375,6 +418,10 @@ func leaseLines(res picker.Result, model string, now time.Time) []leases.Line {
 		out = append(out, leases.Line{V: 1, Op: leases.OpLease, ID: record.NewID(now), At: now.UTC(), Key: p.Key(),
 			Account: p.Account(), Org: p.Org(), Folder: p.Folder, Label: p.Label, Kind: p.LaneKind,
 			SessionID: p.SessionID, C5: &c5, CF: &cf, Model: model, Strategy: res.Strategy, Urgent: p.Urgent, Batch: batch})
+		if p.Drain {
+			fb := p.FinishBy.UTC()
+			out[len(out)-1].Drain, out[len(out)-1].FinishBy = true, &fb
+		}
 	}
 	return out
 }
@@ -397,7 +444,8 @@ func mirrorLeases(e nextEnv, cfg config.Config, machine string, res picker.Resul
 		r, err := record.NewAccountLease(record.Meta{Machine: machine, Client: "wy/" + version.Version, Now: l.At,
 			Seat: &record.Seat{Account: l.Account, Org: l.Org, Src: "claude_json"}},
 			record.AccountLeasePayload{LeaseID: l.ID, SessionID: l.SessionID, Kind: l.Kind, C5: *l.C5, CF: *l.CF,
-				Strategy: l.Strategy, Urgent: l.Urgent, Model: l.Model, Folder: l.Folder, Batch: l.Batch})
+				Strategy: l.Strategy, Urgent: l.Urgent, Model: l.Model, Folder: l.Folder, Batch: l.Batch,
+				Drain: l.Drain, FinishBy: l.FinishBy})
 		if err == nil {
 			_, err = ob.Append(r)
 		}
@@ -566,8 +614,10 @@ func nextHub(e nextEnv, cfg config.Config, slots []picker.Slot, machine string, 
 }
 
 // nextExec starts the command (default claude) with CLAUDE_CONFIG_DIR set to the pick, or
-// unset for the default view of ~/.claude.
-func nextExec(e nextEnv, pick picker.Ranked, argv []string) error {
+// unset for the default view of ~/.claude. A drain pick also gets WY_FINISH_BY and
+// WY_ACCOUNT_RESET (RFC 3339 UTC; owner Q4) and its instruction line on stderr.
+func nextExec(e nextEnv, p picker.Pick, argv []string) error {
+	pick := p.Ranked
 	if len(argv) == 0 {
 		argv = []string{"claude"}
 	}
@@ -585,14 +635,20 @@ func nextExec(e nextEnv, pick picker.Ranked, argv []string) error {
 	}
 	var env []string
 	for _, kv := range environ() {
-		if !strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
+		if !strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") && !strings.HasPrefix(kv, "WY_FINISH_BY=") && !strings.HasPrefix(kv, "WY_ACCOUNT_RESET=") {
 			env = append(env, kv)
 		}
 	}
 	if !pick.Default {
 		env = append(env, "CLAUDE_CONFIG_DIR="+pick.Dir)
 	}
+	if p.Drain {
+		env = append(env, "WY_FINISH_BY="+p.FinishBy.UTC().Format(time.RFC3339), "WY_ACCOUNT_RESET="+p.Reset.UTC().Format(time.RFC3339))
+	}
 	fmt.Fprintln(e.stderr, "wy account next: "+picker.Line(pick))
+	if h := p.Hint(); h != "" {
+		fmt.Fprintln(e.stderr, "wy account next: "+h)
+	}
 	run := e.exec
 	if run == nil {
 		run = execWithEnv

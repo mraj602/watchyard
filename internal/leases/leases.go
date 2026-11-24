@@ -60,6 +60,9 @@ type Line struct {
 	Strategy  string    `json:"strategy,omitempty"`
 	Urgent    bool      `json:"urgent,omitempty"`
 	Batch     string    `json:"batch,omitempty"`
+	// Drain: picked by the lanes drain rules, to finish by FinishBy (setup.md 8.5, Drain).
+	Drain    bool       `json:"drain,omitempty"`
+	FinishBy *time.Time `json:"finish_by,omitempty"`
 }
 
 // Lease is a lease line with the times of its `launched` and `ended` lines (zero when absent).

@@ -38,6 +38,13 @@ type Input struct {
 	Params *LaneParams
 	// Calibration is the kept copy of the hub's factors by account key (CalibFile; lanes).
 	Calibration map[string]calib.Factors
+	// Expect is --expect (how long the caller expects its lane to run; 0 unknown) and HubDown
+	// that a hub is set up but could not be read (lanes drain rules).
+	Expect  time.Duration
+	HubDown bool
+	// Expects are the agents' estimates per lane, in pick order (--expect, --expect-minutes,
+	// --expect-tokens; the last one holds for the rest); none: medium or the measured median.
+	Expects []LaneExpect
 }
 
 // Ranked is one account in the result.
@@ -89,6 +96,24 @@ type Pick struct {
 	Urgent    bool   // --urgent passed a burst cap for it
 	LaneKind  string // aggressive or protected
 	C5, CF    float64
+	// Drain picks (lanes, setup.md 8.5 Drain): finish by FinishBy, the weekly room ends at
+	// Reset; Spill: the lane will likely run past the reset.
+	Drain    bool
+	Spill    bool
+	FinishBy time.Time
+	Reset    time.Time
+	// Expect is the lane size class the pick used (short, medium, long, measured; "" without
+	// estimates); Over: placed past a soft limit because no account was free under them.
+	Expect string
+	Over   bool
+}
+
+// Hint is the one-line instruction for the agent on a drain pick ("" otherwise).
+func (p Pick) Hint() string {
+	if !p.Drain {
+		return ""
+	}
+	return DrainHint(p.Label, p.Reset, p.FinishBy)
 }
 
 // Result is the ranking.

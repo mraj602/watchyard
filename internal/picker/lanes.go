@@ -31,29 +31,117 @@ type LaneParams struct {
 	H5Weight     float64 // score damping by the 5-hour level
 	ExpH         float64 // an aggressive account resetting within this many hours goes first ...
 	ExpMax5h     float64 // ... while its 5-hour level is under this
-	BurstAggr    int     // new leases per aggressive account per BurstWindow
-	BurstProt    int     // new leases per protected account per BurstWindow
-	BurstWindow  time.Duration
-	LeasePrice   float64 // first-5h lane price, 5-hour points
-	LaneFull5    float64 // expected full lane cost (0 = LeasePrice)
-	CostMult     float64 // safety factor on both
-	Ratio        float64 // 5-hour points per weekly point
-	F5           float64 // 5-hour points per weighted token unit
-	LeaseTTL     time.Duration
-	Settle       time.Duration
-	StaleGuard   time.Duration
-	StaleLease   time.Duration
-	Unlaunched   time.Duration
+	// Order is the account order: OrderDrain (default; setup.md 8.5, Order and Drain),
+	// OrderFill (the 2026-11-23 draft, kept for the replay and the simulator only) or OrderRRExp
+	// (the reference: one round robin over all eligible accounts, expiring aggressive ones first
+	// while their week resets within ExpH and their 5-hour level is under ExpMax5h).
+	// OrderFill groups: 0 aggressive accounts in their last day (LastDayH) with room left, 1
+	// aggressive accounts whose room is at risk (ExpSlack), 2 the other aggressive accounts,
+	// 3 protected accounts; groups 0 and 1 need the 5-hour level under ExpMax5h; each group takes
+	// turns (newest lease oldest first). ExpH is not used.
+	Order string
+	// ExpSlack (fill_exp): room at risk when the hours to the weekly reset are at most ExpSlack
+	// times the hours needed to use the weekly room (to AggrSkip) at full 5-hour speed (one
+	// 5-hour window = AggrSkip/ratio weekly points, the account's own ratio).
+	ExpSlack float64
+	// LastDayH (fill_exp): an aggressive account whose week resets this soon, with room left,
+	// goes before every other account.
+	LastDayH    float64
+	BurstAggr   int // new leases per aggressive account per BurstWindow
+	BurstProt   int // new leases per protected account per BurstWindow
+	BurstWindow time.Duration
+	LeasePrice  float64 // first-5h lane price, 5-hour points
+	LaneFull5   float64 // expected full lane cost (0 = LeasePrice)
+	CostMult    float64 // safety factor on both
+	Ratio       float64 // 5-hour points per weekly point
+	F5          float64 // 5-hour points per weighted token unit
+	LeaseTTL    time.Duration
+	Settle      time.Duration
+	StaleGuard  time.Duration
+	StaleLease  time.Duration
+	Unlaunched  time.Duration
+
+	// Drain (OrderDrain only; setup.md 8.5, Drain).
+	DrainMinRoom   float64       // weekly points of room under which an account never drains
+	DrainFloorH    float64       // an aggressive account with room drains within this many hours of its reset
+	DrainSlack     float64       // ... or within DrainSlack × need
+	ProtDrainSlack float64       // a protected account drains only within this × need (owner Q3: 1)
+	RiskSlack      float64       // at risk (ordering only): hours to reset <= RiskSlack × need
+	Guard          time.Duration // finish_by = weekly reset − Guard; no drain closer to the reset
+	DrainMargin    float64       // weekly points kept under the limit (doubled when stale or hub down)
+	DrainMargin5h  float64       // 5-hour points kept under the 5-hour limit by a drain's capacity
+	LaneCost       float64       // E fallback: a lane's first-5h cost, 5-hour points
+	LaneLen        time.Duration // Lmed fallback: the median lane length
+	BurnWindow     time.Duration // a running lane's burn rate is measured over this
+	FreshSoon      time.Duration // a 5-hour window resetting this soon does not limit a drain
+	Backstop5h     float64       // no new drain lane at a measured 5-hour level at or over this
+	SpillMax       int           // lanes running past the reset per account
+	LandMax        float64       // no aggressive lane whose expected cost alone lands over this
+	ShortWait      time.Duration // wait this long for an aggressive account rather than use a protected one
+	HubDownFactor  float64       // drain capacities times this with the hub down
+
+	// Owner change 2 (setup.md 8.5, No stalling and Estimates).
+	NoStall     bool    // burst caps, the protected gate and drain capacity only order; a lane waits only when every account is at a hard limit or unreadable
+	UseEstimate bool    // size lanes by the agent's estimate (--expect); keep long lanes off accounts that reset first
+	ProtSoft5h  float64 // > 0 (comparison only): protected before aggressive accounts at or over this 5-hour level
+	EstFloor    bool    // with estimates: a lane's cost is never taken under the measured one (mean for capacity, p95 for the hard checks)
+	// Class benchmarks (from the worker's sessions, setup.md 8.5) and the wall-time cut points
+	// between them; UnitsPerToken turns --expect-tokens into weighted units.
+	ExpectShort, ExpectMedium, ExpectLong LaneClass
+	ExpectCutShort, ExpectCutLong         time.Duration
+	UnitsPerToken                         float64
 }
 
 // DefaultLaneParams are the shipped values (setup.md 8.5, Parameters).
 var DefaultLaneParams = LaneParams{
 	Target: 85, Headstart: 10, Handicap: 0.85, Cap5h: 80, Lane5h: 35, ProtMinHours: 24, MinHours: 0.5,
-	AggrSkip: 98, H5Weight: 1, ExpH: 48, ExpMax5h: 30, BurstAggr: 6, BurstProt: 2, BurstWindow: time.Hour,
+	AggrSkip: 98, H5Weight: 1, ExpH: 48, ExpMax5h: 90, Order: OrderDrain, ExpSlack: 3, LastDayH: 24, BurstAggr: 6, BurstProt: 2, BurstWindow: time.Hour,
 	LeasePrice: 4, LaneFull5: 0, CostMult: 2, Ratio: 7.2, F5: 1.4e-6,
 	LeaseTTL: 5 * time.Hour, Settle: 10 * time.Minute, StaleGuard: time.Hour, StaleLease: 6 * time.Hour,
-	Unlaunched: 10 * time.Minute,
+	Unlaunched:   10 * time.Minute,
+	DrainMinRoom: 0.5, DrainFloorH: 24, DrainSlack: 2, ProtDrainSlack: 1, RiskSlack: 4, Guard: 10 * time.Minute,
+	DrainMargin: 1, DrainMargin5h: 2, LaneCost: 8, LaneLen: 15 * time.Minute, BurnWindow: 15 * time.Minute, FreshSoon: 15 * time.Minute,
+	Backstop5h: 95, SpillMax: 2, LandMax: 99, ShortWait: 15 * time.Minute, HubDownFactor: 0.5,
+	NoStall: true, UseEstimate: true, EstFloor: true,
+	ExpectShort: LaneClass{Dur: 7 * time.Minute, Cost: 1.2}, ExpectMedium: LaneClass{Dur: 48 * time.Minute, Cost: 3.2},
+	ExpectLong: LaneClass{Dur: 3 * time.Hour, Cost: 14}, ExpectCutShort: 25 * time.Minute, ExpectCutLong: 2 * time.Hour,
+	UnitsPerToken: 0.19,
 }
+
+// full98 is the hard weekly and 5-hour limit.
+const full98 = 98.0
+
+// Account orders (LaneParams.Order).
+const (
+	OrderDrain = "drain"
+	OrderFill  = "fill_exp"
+	OrderRRExp = "rr_exp"
+)
+
+// DraftLaneParams are the parameters of the 2026-11-23 draft (fill_exp), kept to compare
+// against in the replay and the simulator.
+var DraftLaneParams = func() LaneParams {
+	p := DefaultLaneParams
+	p.Order = OrderFill
+	return p
+}()
+
+// V3LaneParams are the drain order as first built (strategy S1): lanes wait behind burst caps,
+// the protected gate and drain capacity, and no estimates. Kept for the comparison and for the
+// scenario tests of the drain arithmetic.
+var V3LaneParams = func() LaneParams {
+	p := DefaultLaneParams
+	p.NoStall, p.UseEstimate = false, false
+	return p
+}()
+
+// ReferenceLaneParams are the parameters of the reference ranker (the golden cases): the
+// rr_exp order with the expiring turn only under 30% of the 5-hour window.
+var ReferenceLaneParams = func() LaneParams {
+	p := DefaultLaneParams
+	p.ExpMax5h, p.Order = 30, OrderRRExp
+	return p
+}()
 
 // Price is the charge of a new lane: c5 for its first 5 hours and cf, its expected full cost,
 // in 5-hour points.
@@ -83,6 +171,16 @@ func (p LaneParams) account(acc LaneAccount) LaneParams {
 		p.LeasePrice, p.CostMult, p.LaneFull5 = acc.Charge, 1, 0
 	}
 	return p
+}
+
+// needHours is how long acc needs to use its weekly room up to AggrSkip at full 5-hour speed:
+// each 5-hour window gives at most AggrSkip/ratio weekly points (fill_exp, setup.md 8.5).
+func (p LaneParams) needHours(acc LaneAccount, w float64) float64 {
+	room := math.Max(0, p.AggrSkip-w)
+	if room == 0 || p.AggrSkip <= 0 {
+		return 0
+	}
+	return room * p.account(acc).ratio() / p.AggrSkip * 5
 }
 
 func (p LaneParams) ratio() float64 {
@@ -151,6 +249,15 @@ type LaneLease struct {
 	// whether the lease came from the kept copy of the last hub read.
 	From string
 	Copy bool
+	// Recent is the units its session used in the last BurnWindow (RecentOK: something
+	// measures the session), for the drain forward burn.
+	Recent   float64
+	RecentOK bool
+	// Spill: picked as a lane that runs past its account's reset; Expect: --expect. EstRate:
+	// the estimated burn (5-hour points per hour) while nothing measures it (0: the new-lane rate).
+	Spill   bool
+	Expect  time.Duration
+	EstRate float64
 }
 
 // Lease states in LeaseCharge.
@@ -187,10 +294,22 @@ type LaneInput struct {
 	N        int
 	SIDs     []string // session ids per pick (may be shorter than N, or empty)
 	Urgent   bool
+	// Drain inputs: the measured lane statistics, --expect, and whether the hub could not be
+	// read (other machines' new leases unseen).
+	Stats   LaneStats
+	Expect  time.Duration
+	Expects []LaneExpect // per lane (the last repeats); empty: Expect for every lane
+	HubDown bool
+	cur     LaneExpect // the estimate of the lane being placed (RankLanes)
+	// prior are picks of the same batch already made by earlier calls (tests that rank a
+	// batch one pick at a time).
+	prior []LanePick
 }
 
 // LaneRow is one account in the ranking of the first pick.
 type LaneRow struct {
+	fwd5         bool // held by its running lanes' 5-hour burn (counts for the short wait)
+	soft         bool // skipped only by a soft limit: it may take a lane rather than none (NoStall)
 	Key          string
 	Protected    bool
 	Score        float64
@@ -222,6 +341,9 @@ type LaneRow struct {
 	Expiring     bool
 	Forced       bool
 	ETA          *time.Time
+	// Class (OrderDrain): drain, at_risk, aggressive, unknown or protected; Drain its drain rules.
+	Class string
+	Drain DrainInfo
 	// LeaseCharges are the account's leases younger than the lease life and older ones that
 	// keep a weekly charge, in lease order.
 	LeaseCharges []LeaseCharge
@@ -233,6 +355,16 @@ type LanePick struct {
 	SID    string
 	Forced bool
 	C5, CF float64
+	// Drain picks: finish by FinishBy, the weekly reset at Reset; Spill runs past it.
+	Drain    bool
+	Spill    bool
+	FinishBy time.Time
+	Reset    time.Time
+	Class    string
+	// Over: placed past a soft limit (burst cap, protected gate, drain capacity) because no
+	// account had room under it (NoStall). Expect: the size class used ("" the measured median).
+	Over   bool
+	Expect string
 }
 
 // LaneResult is what RankLanes decided.
@@ -332,6 +464,7 @@ func (c cleanSample) effective(now time.Time) (w, h, hrs float64) {
 
 type laneState struct {
 	w, h, wRes, hrs float64
+	wM, hM          float64 // measured: the reading, the meter and its margins, unexplained use; no lease charges
 	stale           bool
 	unknown         []string
 	leaseN, capN    int
@@ -440,6 +573,8 @@ func laneLive(acc LaneAccount, c cleanSample, now time.Time, p LaneParams, lease
 	st.h = math.Min(math.Max(h2, 0), 100)
 	st.wRes = math.Max(wRes, 0)
 	st.add5 = add5
+	st.hM = math.Min(math.Max(h+m5part+g5+math.Max(0, acc.Extra5), 0), 100)
+	st.wM = math.Min(math.Max(w+add7+g7+math.Max(0, acc.Extra5)/ratio, 0), 100)
 	return st
 }
 
@@ -566,10 +701,11 @@ func hoursDur(h float64) time.Duration { return time.Duration(h * float64(time.H
 
 // laneKey is the rr_exp order key: lower first.
 type laneKey struct {
-	group int     // 0 expiring aggressive, 1 the rest
+	group int     // 0 expiring aggressive, 1 the rest (fill_exp: 1 other aggressive, 2 protected)
 	last  float64 // newest lease, unix seconds; -inf when never leased
 	hrs   float64
 	ord   int
+	n     int // fill_exp: leases in the burst window; fewer first when the newest leases tie (a batch)
 }
 
 func (a laneKey) less(b laneKey) bool {
@@ -578,6 +714,9 @@ func (a laneKey) less(b laneKey) bool {
 	}
 	if a.last != b.last {
 		return a.last < b.last
+	}
+	if a.n != b.n {
+		return a.n < b.n
 	}
 	if a.hrs != b.hrs {
 		return a.hrs < b.hrs
@@ -628,9 +767,12 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 	for i, a := range in.Accounts {
 		clean[i] = cleanLaneSample(a.Sample, now)
 	}
+	drainOrder := p.Order == OrderDrain
 	for k := 0; k < in.N; k++ {
+		in.cur = in.expectAt(k)
 		table := make([]LaneRow, 0, len(in.Accounts))
 		keys := make([]laneKey, 0, len(in.Accounts))
+		dkeys := make([]drainKey, 0, len(in.Accounts))
 		for i, acc := range in.Accounts {
 			v := laneLive(acc, clean[i], now, p, leases)
 			prot := acc.Protected
@@ -650,6 +792,9 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 					skip, why, level = true, "unknown: "+strings.Join(v.unknown, "; "), 2
 				} else {
 					last, why = true, "unknown (ranked last): "+strings.Join(v.unknown, "; ")
+					if drainOrder {
+						why = "unknown (after known aggressive accounts): " + strings.Join(v.unknown, "; ")
+					}
 				}
 			}
 			if !skip && prot && v.wRes >= lim7 {
@@ -672,15 +817,130 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 				ll = float64(v.lastLease.UnixNano()) / 1e9
 			}
 			key := laneKey{group: 1, last: ll, hrs: 0, ord: acc.Ord}
-			expiring := !prot && v.hrs <= p.ExpH && v.h < p.ExpMax5h
-			if expiring {
-				key = laneKey{group: 0, last: ll, hrs: v.hrs, ord: acc.Ord}
+			var expiring bool
+			var d DrainInfo
+			var fwdFree *time.Time
+			soft := false
+			class := ""
+			dk := drainKey{last: ll, n: v.capN, hrs: v.hrs, ord: acc.Ord}
+			switch p.Order {
+			case OrderDrain:
+				d = p.drainInfo(acc, clean[i], v, in, leases, now)
+				need := p.needHours(acc, v.w)
+				switch {
+				case d.On:
+					// Drain rules replace the normal ones (owner Q1: no burst cap; Q3: a protected
+					// account's pace and target give way to room that would expire anyway).
+					class, expiring, last, capped = ClassDrain, true, false, false
+					skip, why, level = false, "", 0
+					if d.Capacity <= 0 {
+						skip, why, level = true, d.Why, 3
+					}
+					dk.group, dk.deficit, dk.finish = 0, d.Deficit, float64(d.FinishBy.Unix())
+					for _, pk := range append(in.prior, res.Picks...) {
+						dk.batched = dk.batched || pk.Key == acc.Key
+					}
+					if prot {
+						dk.group = 1
+					}
+				case prot:
+					class, dk.group = ClassProtected, 5
+				case last:
+					class, dk.group = ClassUnknown, 4
+				case need > 0 && v.hrs <= p.RiskSlack*need:
+					class, dk.group, dk.risk = ClassAtRisk, 2, v.hrs/need
+				default:
+					class, dk.group = ClassAggressive, 3
+				}
+				// The size of the lane (estimates): its landing cost and its burn until the
+				// 5-hour reset; and whether it would run past this account's weekly reset.
+				tl, _, lmed, r := p.laneStats(in.Stats)
+				tl = p.laneTail(in.Stats)
+				lr := r // the new lane's burn, points per hour
+				if p.UseEstimate {
+					est := p.estimate(in.cur, acc, in.Stats)
+					if est.given && (!p.EstFloor || est.cost > tl) {
+						tl = est.cost
+					}
+					lr = est.rate()
+					if len(v.unknown) == 0 && v.hrs > 0 && est.dur > v.hrs-p.Guard.Hours() {
+						dk.late = true // keep long lanes off accounts that reset first (runway)
+					}
+				}
+				if !d.On && (!prot || p.NoStall) && (!skip || level == 0 || (prot && level == 2)) && len(v.unknown) == 0 && p.LandMax > 0 {
+					if v.w+tl/p.account(acc).ratio() > p.LandMax {
+						skip, why, level = true, fmt.Sprintf("7d %s%%: one costly lane (%s points) would land over %s%%", f0(v.w), f0(tl), f0(p.LandMax)), 3
+						capped = false // a hard limit: --urgent may not pass it
+					} else if !v.fiveRst.IsZero() && v.fiveRst.After(now) {
+						// The 5-hour window: what the running lanes will still burn in it (the drain
+						// model's forward burn) plus one more lane must stay under the limit.
+						_, lim5 := p.limits(acc)
+						if prot {
+							lim5 = full98 // NoStall: past its gate a protected account has the hard limit only
+						}
+						t5 := v.fiveRst.Sub(now).Hours()
+						// A lane nothing measures is taken as a median lane (no Lindy rule: an old
+						// lease with no burn data is more likely over than running).
+						rs, past := p.runningLanes(acc, clean[i], leases, now, r, lmed, t5, false)
+						for j := range rs {
+							if !rs[j].measured && !rs[j].est {
+								rs[j].rem = math.Max(lmed-rs[j].age, 10.0/60)
+							}
+						}
+						if f := v.hM + past + forward(rs, t5); f+math.Min(tl, lr*t5) > lim5 {
+							skip, why, level = true, fmt.Sprintf("5h %s%%: running lanes will burn %s more, one more lane would land over %s%%", f0(v.hM), f0(f-v.hM), f0(lim5)), 3
+							capped = false
+							// Free when the first running lane is expected to end, at the latest at the reset.
+							t := v.fiveRst
+							for _, x := range rs {
+								if e := now.Add(hoursDur(x.rem)); e.Before(t) {
+									t = e
+								}
+							}
+							fwdFree = &t
+						}
+					}
+				}
+				// NoStall: limits that only order (the burst cap, the protected gate, drain
+				// capacity) leave the account able to take a lane under the hard limits.
+				if p.NoStall && skip {
+					hardOK := v.w < full98 && v.h < full98 && (len(v.unknown) > 0 || v.w+tl/p.account(acc).ratio() <= p.LandMax)
+					switch {
+					case d.On:
+						soft = d.over
+					case level == 0 && capped:
+						soft = hardOK && (!prot || v.h < p.Backstop5h)
+					case prot && level == 2 && len(v.unknown) == 0 && !v.stale:
+						soft = hardOK && v.h < p.Backstop5h
+					}
+				}
+			case OrderFill:
+				// fill_exp groups (LaneParams.Order); ties within a group by the time left per hour
+				// needed (most at risk first).
+				need := p.needHours(acc, v.w)
+				key.group, key.n = 2, v.capN
+				if need > 0 {
+					key.hrs = v.hrs / need
+				}
+				switch {
+				case prot:
+					key.group = 3
+				case need > 0 && v.h < p.ExpMax5h && v.hrs <= p.LastDayH:
+					key.group, expiring = 0, true
+				case need > 0 && v.h < p.ExpMax5h && v.hrs <= p.ExpSlack*need:
+					key.group, expiring = 1, true
+				}
+			default:
+				expiring = !prot && v.hrs <= p.ExpH && v.h < p.ExpMax5h
+				if expiring {
+					key = laneKey{group: 0, last: ll, hrs: v.hrs, ord: acc.Ord}
+				}
 			}
 			row := LaneRow{Key: acc.Key, Protected: prot, Score: sc, Skip: skip, Reason: why, Weekly: v.w, FiveHour: v.h,
 				Reserve: v.wRes, HoursToReset: v.hrs, Leases: v.leaseN, Burst: v.capN, BurstCap: cp, Capped: capped,
 				Added5: v.add5, Meter5: v.m5, Meter7: v.m7, Margin5: v.g5, Margin7: v.g7, WeeklyCap: cap7, FiveHourCap: cap5, SampleAgeMin: v.ageMin, FiveReset: v.fiveRst,
 				Stale: v.stale, Unknown: v.unknown, SkipLevel: level, Last: last, Expiring: expiring && !skip,
-				LeaseCharges: v.charges}
+				LeaseCharges: v.charges, Class: class, Drain: d, fwd5: fwdFree != nil, soft: soft}
 			if !v.noTS {
 				row.SampleAt = v.ts
 			}
@@ -688,10 +948,18 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 				row.LastLease = v.lastLease
 			}
 			if skip {
-				row.ETA = laneETA(acc, v, p, now, leases)
+				if d.On {
+					row.ETA = d.FreeAt
+				} else {
+					row.ETA = laneETA(acc, v, p, now, leases)
+					if fwdFree != nil && row.ETA != nil && fwdFree.After(*row.ETA) {
+						row.ETA = fwdFree
+					}
+				}
 			}
 			table = append(table, row)
 			keys = append(keys, key)
+			dkeys = append(dkeys, dk)
 		}
 		idx := make([]int, len(table))
 		for i := range idx {
@@ -702,18 +970,25 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 			if ra.Skip != rb.Skip {
 				return !ra.Skip
 			}
+			if drainOrder {
+				return dkeys[idx[a]].less(dkeys[idx[b]])
+			}
 			if ra.Last != rb.Last {
 				return !ra.Last
 			}
 			return keys[idx[a]].less(keys[idx[b]])
 		})
 		sorted := make([]LaneRow, len(table))
+		groups := make([]int, len(table))
 		for i, j := range idx {
 			sorted[i] = table[j]
+			groups[i] = dkeys[j].group
 		}
 		table = sorted
-		pick := -1
-		if !table[0].Skip {
+		pick, over := -1, false
+		if drainOrder {
+			pick, over = drainPick(table, groups, in.Urgent, now, p)
+		} else if !table[0].Skip {
 			pick = 0
 		} else if in.Urgent {
 			for i, r := range table {
@@ -753,11 +1028,118 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 				break
 			}
 		}
-		res.Picks = append(res.Picks, LanePick{Key: r.Key, SID: sid, Forced: r.Forced, C5: pyRound(c5, 4), CF: pyRound(cf, 4)})
+		lp := LanePick{Key: r.Key, SID: sid, Forced: r.Forced, C5: pyRound(c5, 4), CF: pyRound(cf, 4), Class: r.Class, Over: over}
+		if r.Class == ClassDrain {
+			lp.Drain, lp.Spill, lp.FinishBy, lp.Reset = true, r.Drain.Spill, r.Drain.FinishBy, r.Drain.Reset
+		}
+		pl := LaneLease{Key: r.Key, T0: now, SID: sid, Spill: lp.Spill, Expect: in.Expect}
+		if p.UseEstimate {
+			for _, a := range in.Accounts {
+				if a.Key == r.Key {
+					est := p.estimate(in.cur, a, in.Stats)
+					lp.Expect = est.class
+					pl.Expect, pl.EstRate = hoursDur(est.dur), est.rate()
+				}
+			}
+		}
+		res.Picks = append(res.Picks, lp)
 		lc5, lcf := pyRound(c5, 4), pyRound(cf, 4)
-		leases = append(leases, LaneLease{Key: r.Key, T0: now, SID: sid, C5: &lc5, CF: &lcf})
+		pl.C5, pl.CF = &lc5, &lcf
+		leases = append(leases, pl)
 	}
 	return res, nil
+}
+
+// drainPick is the pick of the drain order on a sorted table (setup.md 8.5, Order): the first
+// eligible account that is not protected (drain accounts, then at risk, aggressive and unknown
+// ones); else with --urgent the aggressive account blocked only by its burst cap with the
+// lowest 5-hour level; else, when an aggressive account is blocked only by its burst cap or
+// frees up within ShortWait from its 5-hour window, nothing (the batch waits); else the first
+// eligible protected account. With NoStall the wait goes: an account held only by soft limits
+// takes the lane (over: aggressive first, then eligible protected, then protected past its
+// gate), and -1 means every account is at a hard limit or unreadable. -1: nothing.
+func drainPick(table []LaneRow, groups []int, urgent bool, now time.Time, p LaneParams) (int, bool) {
+	// past is an aggressive account at or over the soft 5-hour level (ProtSoft5h, comparison
+	// only): protected accounts go before it.
+	past := func(r LaneRow) bool {
+		return p.ProtSoft5h > 0 && !r.Protected && r.Class != ClassDrain && r.FiveHour >= p.ProtSoft5h
+	}
+	for i, r := range table {
+		if !r.Skip && groups[i] < 5 && !past(r) {
+			return i, false
+		}
+	}
+	if p.ProtSoft5h > 0 {
+		for i, r := range table {
+			if !r.Skip && r.Protected {
+				return i, false
+			}
+		}
+		for i, r := range table {
+			if !r.Skip && groups[i] < 5 {
+				return i, false
+			}
+		}
+	}
+	if urgent {
+		pick := -1
+		for i, r := range table {
+			if r.Protected || r.SkipLevel != 0 || !r.Capped || r.Class == ClassDrain {
+				continue
+			}
+			if pick < 0 || lessRounded(r, table[pick]) {
+				pick = i
+			}
+		}
+		if pick >= 0 {
+			table[pick].Forced = true
+			return pick, false
+		}
+	}
+	if p.NoStall {
+		// No stalling (owner change 2): an account held only by a soft limit takes the lane:
+		// aggressive ones first (table order), then protected ones that are eligible, then
+		// protected ones past their gate. A lane waits only when every account is at a hard
+		// limit or unreadable.
+		for _, late := range []bool{false, true} {
+			for i, r := range table {
+				if r.Skip && r.soft && !r.Protected && past(r) == late {
+					return i, true
+				}
+			}
+			if !late {
+				for i, r := range table {
+					if !r.Skip && r.Protected {
+						return i, false
+					}
+				}
+			}
+		}
+		for i, r := range table {
+			if r.Skip && r.soft && r.Protected {
+				return i, true
+			}
+		}
+		return -1, false
+	}
+	for _, r := range table {
+		if r.Protected || !r.Skip {
+			continue
+		}
+		if r.SkipLevel == 0 && r.Capped {
+			return -1, false // room behind a burst cap: wait (owner Q1)
+		}
+		short := r.Drain.waitShort || r.fwd5 || (r.Class != ClassDrain && r.FiveHour >= r.FiveHourCap)
+		if short && r.ETA != nil && !r.ETA.After(now.Add(p.ShortWait)) {
+			return -1, false
+		}
+	}
+	for i, r := range table {
+		if !r.Skip && r.Protected {
+			return i, false
+		}
+	}
+	return -1, false
 }
 
 // lessRounded orders --urgent candidates: lowest 5-hour level, then weekly, as shown

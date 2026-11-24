@@ -182,8 +182,7 @@ The desktop app's Hub tab shows this same page.
   open row, above Details. Its wording comes from one place, `components/pick-mode.js`
   (`MODE_WORDS`; tested in `pick-mode.test.cjs`), which every other mention of protected or
   aggressive on the board also uses (the verdict below, its hover title):
-  - **Protected**: "Kept for you. New sessions only while this week is behind an even pace and
-    the 5-hour window is under 45%."
+  - **Protected**: "Kept for you. Used last: new sessions go here only when no aggressive account can take them, or for room that would expire unused anyway."
   - **Aggressive**: "Use it up. Sessions go here until 98% of the week or 5 hours."
   - **Not chosen**: "Not chosen yet; treated as aggressive."
 
@@ -210,8 +209,8 @@ The desktop app's Hub tab shows this same page.
      - the headline: "Can take the next new session", "Can take a new session: 3rd in line",
        or "Not taking new sessions now"; with the place explained: "3rd in line: 2 other
        accounts get a new session before this one; they take turns." (1st: "It gets the next
-       new session started with wy account next."); "weekly room expiring" says "Its week
-       resets within 2 days, so it goes first."
+       new session started with wy account next."); "weekly room expiring" says "Its weekly room would
+       otherwise expire unused, so it goes first."
      - its kind in words, with the definition from `MODE_WORDS` inline (a protected account
        also on hover, `title`), and when it is not chosen: "Not chosen yet; treated as
        aggressive.";

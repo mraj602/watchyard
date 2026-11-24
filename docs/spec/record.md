@@ -570,6 +570,8 @@ with `typed = 0` and a `type_error`, as section 5 says.
 | `model` | string | no | `--model`, when given. |
 | `folder` | string | no | The picked folder, with `~` (`~/.claude-3`). |
 | `batch` | string | no | The id shared by the picks of one call. |
+| `drain` | boolean | no | True for a pick the `lanes` drain rules made (setup.md 8.5, Drain); absent otherwise. |
+| `finish_by` | string | no | A drain pick's `finish_by` (RFC 3339 UTC): the weekly reset less 10 minutes. |
 
 ### 4.11 `account_verdicts`
 
