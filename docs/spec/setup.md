@@ -1097,8 +1097,11 @@ account with neither has no reading time.
    0.1 × cache_read` of the token rows of the sessions of that seat: this machine's token rows
    (outbox), except that a leased session whose burned units come from the hub (3) is counted
    from the hub's per-minute units of it (`burn`) instead of this machine's rows of the lease's
-   life. A session's seat is that of its lease, else that of its hook events, else the login
-   of the row's `slot`. Other machines' sessions without a recent lease are not in the meter:
+   life. A row's seat is that of the session's lease begun by the row's time (a session moved
+   from A to B counts its rows before the move to A: counting them all to its last lease put B's
+   5-hour level at 100% right after moves in while its reading was ~60%); a row from before the
+   session's first lease is the login of its `slot`; an unleased session's is that of its hook
+   events, else the login of the row's `slot`. Other machines' sessions without a recent lease are not in the meter:
    only readings show their use. `m5` = units since the later of `ts` and the start of the current 5-hour
    window: while the reading's window is open that is `resets_at − 5 h`; when it has ended,
    the next window starts at the first token after its reset (and so on, 5 hours each), and
@@ -2175,6 +2178,11 @@ a turn). The hook marks such a prompt (it starts "Watchyard moved this session")
 > still need them. Background shells keep running (listed as stopped; check their output files).
 > Carry on with your task.
 
+The hit time (here, in the reason of the move log and the phone notice, and in the human's
+message) is now + (100 − level)/R5 from the account's current level and burn, the sooner of
+the two windows; it is left out when that is not after the pass (an account already at 100%;
+live: "100% at 04:24" in a pass at 04:25).
+
 Only when the organisation changed, "(different organisation: earlier thinking blocks are not
 visible to you; the conversation is intact)" follows the reason (e2e: a cross-organisation
 resume drops the other organisation's thinking blocks and goes on). A session moved while
@@ -2214,7 +2222,12 @@ check its result before redoing it." The wait runs in the pass, which `wy tick` 
 the tick is never held up. `<state>/move/pass.lock` is held only while a pass plans (one plans at
 a time); each move holds its session's lock (`<state>/move/locks/<session>.lock`) while it waits
 and runs, so the next pass runs and leaves that session alone ("a move of it is under way"), and
-`wy move` by hand refuses it. The timer's
+`wy move` by hand refuses it. `wy move --plan` is read-only and takes no lock: it tests a
+session's lock with a shared, non-blocking probe of the existing file (it creates nothing), and
+taking a session's lock retries for one second, so a probe never makes a move refuse. A
+mid-turn `wy move --now` by hand waits for the step as a pass does, but at most
+`move_pass_wait_s` (90 s; the owner is at the prompt: at the full 3 minutes each move by hand
+took 3.5), and says so first ("inside a step (Bash): waiting up to 1m30s"). The timer's
 systemd service has `KillMode=process`: with the default (`control-group`) systemd kills the
 detached pass when `wy tick` exits, and no timer pass ever finishes (live run, 1.3.3-pre3). A
 unit an older wy wrote is rewritten by the next `wy update`; `wy doctor` warns about one without

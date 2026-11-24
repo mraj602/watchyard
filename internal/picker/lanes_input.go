@@ -289,6 +289,37 @@ func windowOf(c Candidate, key string) *Window {
 	return nil
 }
 
+// leaseAt is one lease of a session: from when, on which account.
+type leaseAt struct {
+	at  time.Time
+	key string
+}
+
+// rowKey is the account a token row made at at counts to: the account of the session's
+// latest lease begun by then; before its first lease, the account of the folder that ran it
+// (slot); else the session's account (cur), else the folder's. A session moved from A to B
+// makes its rows before the move on A: counting them all to B (its last lease) put B's
+// 5-hour level at 100% after moves in while its reading was ~60% (live 2026-11-25 04:06,
+// 04:25: moves out of a full-looking account with "100% at" the pass time).
+func rowKey(tl []leaseAt, at time.Time, slot, cur string) string {
+	k := ""
+	for _, x := range tl {
+		if x.at.After(at) {
+			break
+		}
+		k = x.key
+	}
+	switch {
+	case k != "":
+		return k
+	case len(tl) > 0 && slot != "":
+		return slot
+	case cur != "":
+		return cur
+	}
+	return slot
+}
+
 // meter5 is the units counted against the 5-hour level since the reading, and whether the
 // reading's 5-hour level still counts (its window is open).
 func meter5(us []unitAt, ts time.Time, five reading, now time.Time) (float64, bool) {
@@ -473,11 +504,18 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		}
 	}
 	leased := map[string]bool{}
+	// timeline: each leased session's leases by start, for the meter (a moved session's
+	// rows count to the account it was on when it made them).
+	timeline := map[string][]leaseAt{}
 	for _, l := range in.Leases {
 		if l.SessionID != "" {
 			keyOf[l.SessionID] = l.Key
 			leased[l.SessionID] = true
+			timeline[l.SessionID] = append(timeline[l.SessionID], leaseAt{l.At, l.Key})
 		}
+	}
+	for _, tl := range timeline {
+		sort.SliceStable(tl, func(i, j int) bool { return tl[i].at.Before(tl[j].at) })
 	}
 	perSession := map[string][]unitAt{}
 	for _, t := range in.Outbox.Tokens {
@@ -562,10 +600,7 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		if bs.fromHub(t.Session, t.At) {
 			continue
 		}
-		k := keyOf[t.Session]
-		if k == "" {
-			k = slotKey[t.Slot]
-		}
+		k := rowKey(timeline[t.Session], t.At, slotKey[t.Slot], keyOf[t.Session])
 		if k != "" {
 			perKey[k] = append(perKey[k], unitAt{t.At, t.Units})
 		}

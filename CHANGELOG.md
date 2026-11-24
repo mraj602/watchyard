@@ -126,6 +126,22 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **A moved session's tokens counted to its new account from before the move** (live
+  2026-11-25 04:06, 04:16 and 04:25: claude-4's 5-hour level read 100% for one pass at a time
+  while its reading was 52-60%, and three sessions were moved off it). The token meter now counts
+  each row to the account of the session's lease begun by the row's time, not to its last lease.
+- **Hit times before the pass** ("5h projected 110% ... 100% at 04:24" in a pass at 04:25).
+  The hit time is now + (100 − level)/R5 from the current level and burn and is left out of the
+  reason, the note, the human's message and `--plan` when it is not in the future; a pin alert
+  on an account already at 100% says so instead of a hit time.
+- **`wy move --plan` and moves by hand.** `--plan` is read-only and takes no lock (a shared,
+  non-blocking probe of an existing session lock file; it creates nothing), and taking a session's
+  lock retries for a second so a probe never makes a move refuse. A mid-turn `wy move --now` by
+  hand waits at most `move_pass_wait_s` (90 s) for its step, not the 3-minute step wait (live:
+  3.5 minutes per move), and says first that it waits. There was no lock contention: `--plan`
+  never took `pass.lock`; the time was that step wait plus 10-16 s to read the state on a loaded
+  worker.
+
 - **The switch moved a session pinned in Claude Code** (live: 2abbe6d1 was pinned in Claude
   Code at 03:14 and moved at 03:20). Pins now come from Claude Code only: a session listed in its
   config folder's `jobs/pins.json` (short ids, prefix match; read only, mtime-cached; missing or
@@ -151,7 +167,10 @@ All notable changes to Watchyard are recorded here. The format follows
   counts only moves at or over the burn floor, is 5 (`move_account_moves`), and a new
   `move_account_burn` (40 points/h of moved burn per 15 minutes) limits burn; an aggressive
   account with room takes a move over these limits before any protected account does. Moves
-  log the session's burn (`rate` in moves.jsonl).
+  log the session's burn (`rate` in moves.jsonl). Simulator (100 runs × 2 days per pattern, all
+  patterns, per run-day), new limits against the old 3 moves of any burn: moves 40.5 vs 38.9,
+  limit hits 9.6 vs 8.4, all stopped minutes 1189 vs 1174, protected 5h max 85.1 vs 85.3: the
+  looser limits cost about one more limit hit per run-day there.
 - **A pass blind for minutes behind its step waits** (live: three mid-turn moves waited in turn,
   no pass for 6 minutes while claude-4 went from P5 76 to 155). The waits run side by side, at
   most `account.move_pass_wait_s` (default 90) in a pass; a session still inside its step waits

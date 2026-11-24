@@ -579,9 +579,7 @@ func Plan(in Input) Result {
 			if mv.Window == "" {
 				mv.Window, mv.P, mv.ResetAt = pr.Window, pr.pOf(pr.Window), now.Add(pr.resetOf(pr.Window))
 			}
-			if cur.Hit >= 0 {
-				mv.HitAt = now.Add(cur.Hit)
-			}
+			mv.HitAt = cur.HitAt(now)
 			p.place(in, &res, st, s, a, mv, delta, skip)
 		}
 		if p.MinBurn >= 0 && !p.IdleMoves {
@@ -736,6 +734,17 @@ func (pr Projection) pOf(w string) float64 {
 		return pr.P7
 	}
 	return pr.P5
+}
+
+// HitAt is when the projection reaches 100% from its current level at its burn (now +
+// (100 − level)/R5, the sooner of the two windows), or zero when that is not in the future:
+// a level already at 100 has no hit time to give (live 2026-11-25: "100% at 04:24" in a pass
+// at 04:25).
+func (pr Projection) HitAt(now time.Time) time.Time {
+	if pr.Hit <= 0 {
+		return time.Time{}
+	}
+	return now.Add(pr.Hit)
 }
 
 func (pr Projection) resetOf(w string) time.Duration {
@@ -1039,7 +1048,7 @@ func (p Params) reason(a Account, mv Move, why string, now time.Time) string {
 		fmt.Fprintf(&b, "stopped at the %s limit (resets %s)", mv.Window, Clock(mv.ResetAt, now))
 	default:
 		fmt.Fprintf(&b, "%s projected %.0f%% (cap %.0f%%) at %.1f points/h of burn", mv.Window, mv.P, p.capOf(a, mv.Window, now), mv.Rate)
-		if !mv.HitAt.IsZero() {
+		if mv.HitAt.After(now) {
 			fmt.Fprintf(&b, ", 100%% at %s", Clock(mv.HitAt, now))
 		}
 		if mv.MidTurn {

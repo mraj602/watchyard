@@ -253,9 +253,7 @@ func moveCmd(e moveEnv, args []string) error {
 		if pr.Window == mover.Win7d {
 			mv.P, mv.ResetAt = pr.P7, e.now().Add(pr.Reset7)
 		}
-		if pr.Hit >= 0 {
-			mv.HitAt = e.now().Add(pr.Hit)
-		}
+		mv.HitAt = pr.HitAt(e.now())
 	}
 	if t.Key != "" && mover.Org(t.Key) != mover.Org(w.keyOfDir[l.Slot]) {
 		mv.OrgChanged = true
@@ -893,7 +891,7 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		case pr.Held:
 			state = fmt.Sprintf("%s over its cap, pass %d of %d (spike filter)", pr.Window, pr.Streak, w.input.Params.SpikePasses)
 		}
-		if pr.Hit >= 0 {
+		if pr.Hit > 0 {
 			state += fmt.Sprintf("; 100%% in %s", pr.Hit.Round(time.Minute))
 		}
 		if pr.Left != "" {
@@ -978,7 +976,7 @@ func (w *moveWorld) humanMessage(cfg config.Config, l mover.Launch, t mover.Targ
 	case mv.ByHand:
 	case mv.Stopped && mv.Window != "":
 		fmt.Fprintf(&b, " (it was stopped at %s's %s limit)", from, mv.Window)
-	case mv.Window != "" && !mv.HitAt.IsZero():
+	case mv.Window != "" && mv.HitAt.After(at):
 		fmt.Fprintf(&b, " (%s's %s would hit 100%% at %s)", from, mv.Window, mover.Clock(mv.HitAt, at))
 	}
 	if l.Kind == mover.KindTerminal {
@@ -1120,11 +1118,16 @@ func (w *moveWorld) waitStep(e moveEnv, st mover.State, mu *sync.Mutex, l mover.
 	return true
 }
 
-// betweenSteps waits until session l is between two tool calls (setup.md 8.6, Between
-// steps), up to account.move_step_wait_min or until the projected hit, whichever is sooner,
-// and records on mv what the note says: the last step ended, or the step it is stopped inside.
+// betweenSteps waits until session l, moved by hand, is between two tool calls (setup.md
+// 8.6, Between steps), up to account.move_pass_wait_s (a pass's share; the owner is waiting
+// at the prompt: live 2026-11-25, 3.5 minutes per move at the full step wait), the step wait
+// or until the projected hit, whichever is sooner, and records on mv what the note says: the
+// last step ended, or the step it is stopped inside.
 func (w *moveWorld) betweenSteps(e moveEnv, st mover.State, l mover.Launch, mv *mover.Move) {
 	max := w.input.Params.StepWait
+	if pw := w.input.Params.PassWait; pw > 0 && pw < max {
+		max = pw
+	}
 	if !mv.HitAt.IsZero() {
 		if until := mv.HitAt.Sub(e.now()) - time.Minute; until < max {
 			max = until
@@ -1134,6 +1137,9 @@ func (w *moveWorld) betweenSteps(e moveEnv, st mover.State, l mover.Launch, mv *
 		max = 0
 	}
 	host := moveHost(e, st)
+	if x := st.StepNow(l.SessionID, time.Now()); max >= 5*time.Second && x.In {
+		fmt.Fprintf(e.stdout, "%s %s is inside a step (%s): waiting up to %s for it to end\n", short(l.SessionID), l.Name, x.Tool, max.Round(time.Second))
+	}
 	start := time.Now()
 	s, between := st.WaitStep(l.SessionID, max, func() bool { return host.Alive(l) })
 	switch {

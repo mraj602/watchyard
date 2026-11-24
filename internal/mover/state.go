@@ -311,6 +311,10 @@ func (a PinAlert) Text() string {
 	}
 	t := fmt.Sprintf("pinned session %s alone takes %s's %s window to 100%% at %s (%.1f points/h; it resets %s)", name, a.Account, a.Window,
 		Clock(a.HitAt, a.At), a.Rate, Clock(a.ResetAt, a.At))
+	if !a.HitAt.After(a.At) { // already there: no hit time to give
+		t = fmt.Sprintf("pinned session %s is on %s with its %s window at 100%% (%.1f points/h; it resets %s)", name, a.Account, a.Window,
+			a.Rate, Clock(a.ResetAt, a.At))
+	}
 	if a.Command != "" {
 		return t + ": move it by hand: " + a.Command
 	}

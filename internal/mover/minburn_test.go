@@ -214,3 +214,44 @@ func TestPlanExpiringRoomAndShortSessions(t *testing.T) {
 		t.Fatalf("short session: %+v %+v", r.Moves, r.Accounts[0])
 	}
 }
+
+// Live 2026-11-25 04:25: a pass read claude-4's 5-hour level as 100% (it was ~60%) and its
+// moves said "100% at 04:24", before the pass. The hit time is now + (100 − level)/R5 and is
+// left out when that is not in the future.
+func TestPlanHitTime(t *testing.T) {
+	now := time.Date(2026, 11, 24, 22, 55, 0, 0, time.UTC)
+	src := Account{Key: "acct:c4/oA", Label: "claude-4", Rate: 15, Meter: 15, LoggedIn: true, Ratio: 8,
+		W5: Window{Level: 60, Reset: now.Add(3 * time.Hour)}, W7: Window{Level: 40, Reset: now.Add(100 * time.Hour)}}
+	dst := Account{Key: "acct:c5/oA", Label: "claude-5", LoggedIn: true, Ratio: 8,
+		W5: Window{Level: 10, Reset: now.Add(4 * time.Hour)}, W7: Window{Level: 20, Reset: now.Add(100 * time.Hour)}}
+	old := now.Add(-2 * time.Hour)
+	ss := []Session{
+		{ID: "a", Account: src.Key, Rate: 9, Busy: true, Movable: true, Context: 80_000, Started: old},
+		{ID: "b", Account: src.Key, Rate: 6, Busy: true, Movable: true, Context: 80_000, Started: old},
+	}
+	in := Input{Now: now, Params: DefaultParams, Accounts: []Account{src, dst}, Sessions: ss,
+		Streak: map[string]int{src.Key + " " + Win5h: 5}}
+	r := Plan(in)
+	if len(r.Moves) == 0 {
+		t.Fatalf("no moves: %+v %+v", r.Accounts, r.Skips)
+	}
+	want := now.Add(time.Duration(40.0 / 15 * float64(time.Hour)))
+	if m := r.Moves[0]; !m.HitAt.Equal(want) || !strings.Contains(m.Reason, "100% at "+Clock(want, now)) {
+		t.Fatalf("hit %v (want %v), reason %q", m.HitAt, want, m.Reason)
+	}
+	// At 100% already: no hit time, and no "100% at" before the pass.
+	src.W5.Level = 100
+	in.Accounts[0] = src
+	r = Plan(in)
+	if len(r.Moves) == 0 {
+		t.Fatalf("no moves at 100%%: %+v", r.Skips)
+	}
+	for _, m := range r.Moves {
+		if !m.HitAt.IsZero() || strings.Contains(m.Reason, "100% at") {
+			t.Errorf("move %s: hit %v reason %q", m.Session, m.HitAt, m.Reason)
+		}
+	}
+	if pr := r.Accounts[0]; !pr.HitAt(now).IsZero() {
+		t.Errorf("projection hit at %v", pr.HitAt(now))
+	}
+}
