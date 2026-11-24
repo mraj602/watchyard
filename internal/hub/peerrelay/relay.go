@@ -183,6 +183,13 @@ func (r *Relay) Directory(ctx context.Context) ([]peers.WireSession, error) {
 		if fl := peers.FolderLabel(s.SlotFolder); fl != "" && fl != label {
 			w.Aliases = []string{peers.MakeHandle(w.Name, fl, machine)}
 		}
+		// A session moved to another account (identity.md 5.3) keeps its handle under the old
+		// account as an alias, so messages to it are still delivered (peers.md 3.2).
+		if s.MovedFromAccount != "" && s.MovedFromAccount != s.Account {
+			if old := peers.MakeHandle(w.Name, peers.CanonicalLabel(s.MovedFromLabel, s.MovedFromAccount), machine); !strings.EqualFold(old, w.Handle) {
+				w.Aliases = append(w.Aliases, old)
+			}
+		}
 		if d, ok := agents[s.MachineID]; ok {
 			w.Device = &d
 		}

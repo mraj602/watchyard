@@ -11,9 +11,12 @@ import (
 
 // Session is everything the local view learned about one session id, before folding.
 type Session struct {
-	ID         string
-	Slot       string
-	Seat       *record.Seat
+	ID   string
+	Slot string
+	Seat *record.Seat
+	// MovedFrom is the slot the session ran in before it was resumed in Slot (identity.md
+	// 5.3), "" when it never moved.
+	MovedFrom  string
 	Cwd        string // newest known cwd, as written in the record (not ~-normalised)
 	Inputs     []state.Input
 	ContextPct *float64
@@ -63,6 +66,28 @@ func Adapt(recs []*record.Record) map[string]*Session {
 		}
 		return s
 	}
+	// move re-attributes a session that shows up live in another slot (a hook event, or a
+	// complete session_list that lists it): it was resumed with another config folder, so it
+	// now belongs to that slot and its seat (identity.md 5.3). Records are applied in time
+	// order, so a live record from another slot is newer than everything seen before; the old
+	// slot's lists no longer count it as missing.
+	move := func(s *Session, slot string, seat *record.Seat) {
+		if slot == "" || s.Slot == slot {
+			return
+		}
+		old := bySlot[s.Slot]
+		for i, id := range old {
+			if id == s.ID {
+				bySlot[s.Slot] = append(old[:i:i], old[i+1:]...)
+				break
+			}
+		}
+		bySlot[slot] = append(bySlot[slot], s.ID)
+		s.MovedFrom, s.Slot = s.Slot, slot
+		if seat != nil {
+			s.Seat = seat
+		}
+	}
 
 	for _, it := range list {
 		r := it.r
@@ -84,6 +109,7 @@ func Adapt(recs []*record.Record) map[string]*Session {
 			}
 			in.Hook.PeerFacts(r.Derived)
 			s := get(p.SessionID, r.Slot, r.Seat)
+			move(s, r.Slot, r.Seat)
 			if p.Cwd != "" {
 				s.Cwd = p.Cwd
 			}
@@ -128,6 +154,9 @@ func Adapt(recs []*record.Record) map[string]*Session {
 			}
 			for _, id := range order {
 				s := get(id, r.Slot, r.Seat)
+				if p.Complete {
+					move(s, r.Slot, r.Seat)
+				}
 				if s.Cwd == "" {
 					s.Cwd = in[id].cwd
 				}

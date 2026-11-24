@@ -151,8 +151,17 @@ files `<config>/sessions/<digits>.json` (pid, session id, cwd, socket path, name
    - Late records (`ts` older than the open period's `since_at`) do not open or close
      periods; they are attributed by looking up the period that contains their `ts`.
 3. **Session.** A session takes the seat of the first record for it that names a seat, and
-   keeps it for life, even if the folder is re-logged later. Its slot and
-   machine are those of its first record.
+   keeps it even if the folder is re-logged later. Its slot and machine are those of its first
+   record. **A session moves** when it is resumed with another config folder (`claude
+   --resume <id>` under another `CLAUDE_CONFIG_DIR`, the transcripts being shared; `wy move`,
+   setup.md 8.6): a *live* record of it from another slot of the same machine, newer than every
+   record of it seen so far (a `hook_event`, or a complete `session_list` that lists it), gives
+   it that slot and that record's seat (hub: `session.moved_from_seat` keeps the seat it left,
+   `moved_at` when; schema v22). Its token rows and limit hits keep their seats: what it used
+   before the move stays on the old account. A late record of the old slot (older than what
+   was seen) does not move it back, and the old slot's complete lists no longer count it as
+   missing, so it is not marked gone. `wy status` and the board apply the same rule to the
+   outbox (`internal/status.Adapt`); peers keep its old handle as an alias (peers.md 3.2).
 4. **Token rows** take the seat of their session. Rows whose session has no seat are
    attributed later, when a hook event for that session arrives, or by the history
    importer from `session_dirs`-style evidence; otherwise they stay Unattributed

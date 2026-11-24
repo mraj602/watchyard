@@ -320,3 +320,43 @@ func TestAge(t *testing.T) {
 		}
 	}
 }
+
+// A session resumed under another config folder (identity.md 5.3) belongs to the new slot and
+// its seat from its first live record there; the old slot's complete lists no longer count it
+// as missing.
+func TestSessionMovedToAnotherSlot(t *testing.T) {
+	ob := outbox.New(filepath.Join(t.TempDir(), "outbox"))
+	old := &record.Seat{Account: "a4", Org: "o", Email: "four@example.test"}
+	moved := &record.Seat{Account: "a2", Org: "o", Email: "two@example.test"}
+	run := "01-write-and-bash"
+	sid, last := feed(t, ob, run, indexOfEvent(t, run, "UserPromptSubmit")+1, t0, "~/.claude-4", old)
+	// Resumed under ~/.claude-2: its next prompt arrives from there.
+	evs := loadRun(t, run)
+	at := last.Add(3 * time.Minute)
+	r, err := record.NewHookEvent(record.Meta{Machine: machine, Slot: "~/.claude-2", Seat: moved, Now: at, Client: "wy/test"},
+		evs[indexOfEvent(t, run, "UserPromptSubmit")].Payload, record.HookOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ob.Append(r); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []time.Duration{5, 10} {
+		lr, err := record.NewSessionList(record.Meta{Machine: machine, Slot: "~/.claude-4", Seat: old, Now: at.Add(m * time.Minute)},
+			record.SessionListPayload{Complete: true, Source: "claude_agents"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ob.Append(lr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := Collect(Options{OutboxDir: ob.Dir, Now: at.Add(11 * time.Minute), All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := findRow(rows, sid)
+	if row == nil || row.Slot != "~/.claude-2" || row.Email != "two@example.test" || row.State == state.Gone {
+		t.Fatalf("moved session: %+v", row)
+	}
+}

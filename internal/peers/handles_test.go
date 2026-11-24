@@ -152,3 +152,32 @@ func TestResolveAliases(t *testing.T) {
 		}
 	}
 }
+
+// A session resumed under another account (identity.md 5.3) while the hub still names it
+// under the account it left: this machine names it for its account now, keeps the hub's
+// handle as an alias, and a message to the old handle is delivered to it (no
+// account_mismatch).
+func TestMovedSessionKeepsOldHandle(t *testing.T) {
+	w, r := handleWorld(t)
+	r.names["sess-b"] = peers.HubName{Handle: "worker@team.laptop", Name: "worker", Label: "team", Account: "acc-work", Mine: true}
+	e, c := w.asA()
+	e.Remote = r
+	es, _, rf := e.List(false)
+	if rf != nil {
+		t.Fatal(rf)
+	}
+	a, ok := handles(es)["worker@remote.laptop"]
+	if !ok || !slices.Contains(a, "worker@team.laptop") {
+		t.Fatalf("moved session: %v", handles(es))
+	}
+	res, rf := e.Send(c, "worker@team.laptop", "still there?")
+	if rf != nil {
+		t.Fatal(rf)
+	}
+	if res.Target.Handle != "worker@remote.laptop" || res.Target.Account != "acc-personal" {
+		t.Fatalf("target %+v", res.Target)
+	}
+	if !w.b.Wait(1, 2*time.Second) {
+		t.Fatal("nothing arrived")
+	}
+}

@@ -91,6 +91,31 @@ func (tx *Tx) SetSessionSeat(id, seat string) error {
 	return nil
 }
 
+// MoveSession re-attributes a session that continues under another account (identity.md 5.3,
+// v22): its seat and slot become those of the live record that showed it there, and the seat
+// it had is kept in moved_from_seat (its old peers handle stays an alias, peers.md 3.2). Its
+// token rows and limit hits keep their seats: what it used before the move stays on the old
+// account. A seat of "" keeps the session's seat.
+func (tx *Tx) MoveSession(id, seat string, slot int64, at int64) error {
+	_, err := tx.exec(`UPDATE session SET moved_from_seat = CASE WHEN ? IS NOT NULL AND seat_id IS NOT NULL AND seat_id <> ?
+		THEN seat_id ELSE moved_from_seat END, seat_id = coalesce(?, seat_id), slot_id = ?, moved_at = ? WHERE id = ?`,
+		nullStr(seat), seat, nullStr(seat), slot, at, id)
+	if err == nil && seat != "" {
+		err = tx.backfillSeat(id, seat)
+	}
+	return err
+}
+
+// SessionMovedFrom is the seat a session had before its last move ("" when it never moved).
+func (tx *Tx) SessionMovedFrom(id string) (string, error) {
+	var seat sql.NullString
+	err := tx.queryRow(`SELECT moved_from_seat FROM session WHERE id = ?`, id).Scan(&seat)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return seat.String, err
+}
+
 // SetSessionSlot gives a session its slot and machine if it has none.
 func (tx *Tx) SetSessionSlot(id string, slot int64, machine string) error {
 	_, err := tx.exec(`UPDATE session SET slot_id = coalesce(slot_id, ?), machine_id = coalesce(machine_id, ?) WHERE id = ?`,

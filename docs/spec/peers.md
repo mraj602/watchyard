@@ -280,6 +280,13 @@ secret is in it. Sessions of the same account are not a reason to print it (nati
   another machine, one per label this machine shows for that account. So the laptop's
   `api@claude.laptop` and the canonical `api@claude-1.laptop` both reach the
   same session from the gpu-box, and the gpu-box's own label works on the gpu-box.
+- **A session that moved to another account** (resumed with another config folder, identity.md
+  5.3; `wy move`, setup.md 8.6) keeps its old handle as an alias, so a message to it is still
+  delivered. The hub adds the handle under the seat it left (`session.moved_from_seat`) to its
+  `aliases`. Until the hub has moved it, its own machine sees `mine` name it under the old
+  account: that name's account differs from the slot's login, so the machine names the session
+  for its account now (as for a session the hub has not named) and keeps the hub's handle and
+  aliases as aliases. Sends resolve to the session's current account, so no account_mismatch.
 - Same account on the same machine is listed too (`local: true`): it works through Watchyard
   as well, although Claude's native `/peers` already reaches it.
 - The trusted sender (4.1a) is not a session and is never listed: nothing can address it, so

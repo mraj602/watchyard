@@ -144,10 +144,18 @@ func (e Env) nameLocal(out []Session) {
 		hubLabel[n.Account] = n.Label
 	}
 	taken := map[string]bool{}
+	stale := map[int]HubName{} // sessions the hub still shows under the account they left
 	for i := range out {
 		n, ok := names[out[i].Entry.SessionID]
 		if ok && n.Mine {
 			out[i].Tags = NormTags(n.Tags)
+		}
+		if ok && n.Mine && n.Account != "" && out[i].Account != "" && n.Account != out[i].Account {
+			// The session runs under another account than the hub saw (identity.md 5.3: resumed
+			// with another config folder): it is named here for its account now, and the hub's
+			// handle stays an alias until the hub moves it too.
+			stale[i] = n
+			continue
 		}
 		if !ok || !n.Mine || n.Handle == "" || taken[strings.ToLower(n.Handle)] {
 			continue
@@ -182,6 +190,9 @@ func (e Env) nameLocal(out []Session) {
 		}
 		out[i].AccountLabel = label
 		out[i].Aliases = addAlias(nil, out[i].Handle, MakeHandle(out[i].Name, local, machine))
+		if n, ok := stale[i]; ok {
+			out[i].Aliases = addAlias(out[i].Aliases, out[i].Handle, append([]string{n.Handle}, n.Aliases...)...)
+		}
 	}
 }
 
