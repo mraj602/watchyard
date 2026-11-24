@@ -8,6 +8,18 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Added
 
+- **The picker uses the switch's projection** (setup.md 8.6, The picker and the switch). While
+  the switch is on, `wy account next` places no new lane where the switch's projection (one
+  shared function, `internal/projection`) of the account's measured burn plus the new lane would
+  go over the switch's caps less the pin reserve; `--explain` says why.
+- **Destination horizon** (`account.move_dest_horizon_min`, default 90). An aggressive account
+  takes a moved session when the session fits under its caps − 5 for its expected remaining time
+  (else 90 minutes), capped at that account's 5-hour reset, at least 60 minutes; a protected
+  account still needs the full rule and only when no aggressive one fits. Simulator: protected
+  minutes over 80 −4%, pinned and all stopped minutes unchanged (within 1%), 28% more moves.
+- **Cheaper moves.** When several sessions would each bring an account under its caps, the one
+  with the most points freed per re-read (burn ÷ context × model factor) goes first, then the
+  youngest.
 - **Move notices and digest** (setup.md 8.6). Each automatic move is pushed to the phone through
   direct push ("<session> <from> -> <to>: <reason>"), at most once per 5 minutes per machine,
   with moves inside the window batched into one push (`account.move_notify`, default on). `wy
@@ -94,6 +106,13 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **Smart Account Switch: no false moves from integer readings** (setup.md 8.6, Projections).
+  An account whose sessions ran on another machine was moved off on its readings alone: one
+  point of rise over 10 minutes read as 6 points per hour. The burn now adds the other machines'
+  sessions the hub measured; the readings are a slope over 15-30 minutes (readings 5 minutes
+  apart, one 5-hour window) used only when they hold on two passes, a trigger from the readings
+  alone needs 3 passes, and the spike filter counts per account and window. Simulator: 60% fewer
+  false moves, 17% fewer moves, no change in stopped minutes.
 - Smart Account Switch passes started by the timer were killed when `wy tick` exited (the
   systemd service's default `KillMode=control-group`): the timer's service now has
   `KillMode=process` (rewritten by `wy update`), and `wy doctor` warns about a unit without it.

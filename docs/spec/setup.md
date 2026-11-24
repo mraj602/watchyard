@@ -1855,10 +1855,17 @@ environment of another process is never read (keys.md 8).
 
 **Projections.** Per account, every pass:
 
-- R5, the account's burn: its sessions' burn here (the token meter × f). When two fresh 5-hour
-  readings exist (2 minutes or more apart, the same window, within the burn window plus 5
-  minutes), their rise per hour is a cross-check (it also sees other machines and claude.ai):
-  when the two disagree by more than 2x the larger is used, and `--plan` says so.
+- R5, the account's burn: its sessions' burn here (the token meter × f) plus the burn of its
+  sessions on other machines that the hub measured (their leases' per-minute units in the burn
+  window × f; `--plan` says "hub: other machines' sessions"). The 5-hour readings are a
+  cross-check for the rest (claude.ai, a machine without a hub lease): their **slope** (least
+  squares) over the newest 15 to 30 minutes of one 5-hour window, readings at least 5 minutes
+  apart (a reading 1-2 minutes after the last one is skipped; a window reset starts over). When
+  the slope is over twice that burn (and over 1 point per hour) on **two passes in a row**, R5 is
+  the slope; on the first such pass `--plan` says "used if it holds on the next pass". Readings
+  are whole percents: one point of rise read over 10 minutes is 6 points per hour, which is why
+  a slope over a longer span, held over passes, replaced the rise of the last two readings
+  (1.3.3-pre3 moved sessions off accounts whose sessions ran on another machine on that alone).
 - **P5** = the 5-hour level now + R5 × hours to the 5-hour reset (a window not started: 0 + R5 ×
   5 h).
 - **P7** = the weekly level now + R5 / ρ × min(hours to the weekly reset, `move_week_span_h` =
@@ -1875,14 +1882,15 @@ weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
 | Burn window | `move_burn_min` 10 min | long enough to smooth one turn, short enough to see a lane start burning hot |
 | Trigger | P5 > `move_cap_5h` (95; protected 80) or P7 > `move_cap_7d` (98; protected 80) | owner rule 1: the projected 5-hour level must stay at 95-98 or under; rule 2: the weekly 98 (aggressive) or 80 (protected); a protected account's 5-hour level never over 80 |
 | Hard now | the level is at its cap now: trigger at once | the projection cannot be under the cap any more |
-| Spike filter | a trigger must hold on `move_spike_passes` = 2 passes in a row, unless the projected hit of 100 is within `move_spike_near_min` = 30 min or it is hard now | one hot minute (a helper panel) should not move anything; a near hit cannot wait a minute |
+| Spike filter | a trigger must hold on `move_spike_passes` = 2 passes in a row, counted per account and window (a 5-hour trigger and a weekly one are two streaks), unless the projected hit of 100 is within `move_spike_near_min` = 30 min or it is hard now | one hot minute (a helper panel) should not move anything; a near hit cannot wait a minute |
+| Readings only | a trigger that only the readings' slope makes (at the measured burn the account is under its caps, and it is not hard now) must hold on 3 passes, near hit or not | readings are whole percents and lag; the measured burn is exact |
 | Candidates | every session on a triggered account that **burned** in the burn window (busy, or tokens in it), whatever its turn state: **mid-turn moves are allowed** | owner: "we move the agent that is working, not the agent that is paused"; moving an idle session frees nothing |
 | Never moved | idle sessions with no burn; pinned (`no-move`, `--pin-account`) or outside the scope; claude.ai `--sdk-url` sessions | |
 | Pin reserve | `pin_reserve_5h` 10 and `pin_reserve_7d` 5 points per live pinned session: the account's caps for every other session (trigger, enough, destination) are its caps less pins × these | long-running pinned sessions (a Slack watcher, an orchestrator) must not stop; the simulator's best row (below) |
 | Stopped by a limit | a session whose last turn a limit ended (`StopFailure` `rate_limit`) is a candidate too, whatever its burn (it wants to burn): moved when that window resets `move_stopped_wait_min` = 20 min or more from now, else it waits for the reset | a move takes a minute or two and re-reads the context; a near reset is cheaper |
-| Choice | greedy, recomputed after each pick: first a session whose move alone brings both projections under cap − hysteresis (the fewest moves); then the highest burn; then the smaller context (a cheaper re-read); then the longest expected remaining time | the highest burner frees the most |
+| Choice | greedy, recomputed after each pick: first a session whose move alone brings both projections under cap − hysteresis (the fewest moves); among those, the most points freed per re-read (burn ÷ (context, at least 20k tokens, × model factor: opus 5, sonnet 3, haiku 1, else 3)), then the highest burn, then the youngest; among the others the highest burn, then the smaller context, then the longest expected remaining time | the highest burner frees the most; when several would each do, the cheapest re-read (simulator: small gain, below) |
 | Enough | stop when P5 and P7 of the source are at most cap − `move_hysteresis` (5) | hysteresis: no move back and forth around the cap |
-| Destination | logged in on this machine (never an account only another machine has); not its own, not stale, not excluded; organisation per `move_orgs`; its P5 and P7 with this session's burn added (and the burn of the moves already planned in this pass) stay at most its caps − 5 until its resets; order: aggressive accounts first, draining ones (the picker's `drain` class: room that expires unused) first, then the soonest 5-hour reset, then the most room; protected accounts last and only within their 80/80 caps | the session must be able to run there; room that expires is worth most |
+| Destination | logged in on this machine (never an account only another machine has); not its own, not stale, not excluded; organisation per `move_orgs`; an aggressive account: its P5 and P7 (with the moves already planned in this pass) plus this session's burn for h stay at most its caps − 5, h = min(the session's expected remaining time, else `move_dest_horizon_min` = 90 min; the time to that account's 5-hour reset), at least 60 min; a protected account: the full rule, its P5 and P7 with this session's burn added until its resets at most its caps − 5, and only when no aggressive account fits; order: aggressive accounts first, draining ones (the picker's `drain` class: room that expires unused) first, then the soonest 5-hour reset, then the most room; protected accounts last and only within their 80/80 caps | the session must be able to run there; room that expires is worth most |
 | No account fits | no move; `--plan` says why ("no logged-in account on this machine has room for its burn", "no account of its organisation has room (account.move_orgs = same)", "account rate limit") | |
 | Cooldown | `move_cooldown_min` 20 min per session | |
 | No return | never back to the account it left within `move_no_return_min` 60 min, unless that account's 5-hour window reset since | no ping-pong |
@@ -1941,6 +1949,40 @@ lanes and fills the destinations. Acting on the alert helps most (-17%). On an a
 pins at 4-5× their burn) every strategy stops the pins more than twice as long; the alerts rise
 to 5.6 a day. The modelled pins use about 27% of a week each, more than the 3-10% they use
 normally, so these numbers are on the heavy side.
+
+**The picker and the switch.** While the switch is on, `wy account next` (lanes strategy, 8.5)
+places no new lane on an account where the switch would move a session off: the switch's
+projection (`internal/projection`, the same function on both sides) of the account's measured
+burn now (this machine's sessions and other machines' sessions the hub measured, as above) plus
+the new lane's burn (r, 8.5 Lane statistics), against the switch's caps less the pin
+reserve. Such an account is skipped like a hard limit ("the switch's projection is 97%, over
+its cap 95% (it would move a session off)" in `--explain`). Off, the picker is as before.
+
+**Simulator, 1.3.3-pre3 against this release** (`internal/mover/sim_v3_test.go`; every pattern
+plus *remote-integer*: four accounts carry 2-9 points per hour of the owner's sessions on
+another machine, the hub measures two of them, readings are whole percents; all with the 5
+pinned coordinators at 10/5; 10 patterns × 300 runs × 2 days; per day per run; a *false move*
+is a move whose source was under its caps at its true burn):
+
+| Strategy | False moves (remote-integer) | Moves | All stopped min | Pinned stopped min | Protected min over 80 | Re-read Mtok |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1.3.3-pre3 | 10.8 (3.47) | 39.6 | 905 | 276 | 522 | 15.2 |
+| + readings fix | 4.33 (1.69) | 32.9 | 905 | 278 | 516 | 12.6 |
+| + picker uses the switch's projection | 4.32 (1.73) | 31.7 | 899 | 279 | 515 | 12.4 |
+| + destination horizon 90 | 3.94 (1.19) | 43.3 | 908 | 276 | 506 | 16.8 |
+| + cheap moves | 4.37 (1.70) | 32.9 | 906 | 276 | 513 | 12.5 |
+| **all (this release)** | **3.99 (1.13)** | 42.0 | 906 | 278 | 498 | 16.6 |
+| all, horizon 60 | 4.02 (1.13) | 44.6 | 912 | 273 | 497 | 17.8 |
+
+The readings fix removes 60% of the false moves (51% on remote-integer) and 17% of all moves,
+at no cost in stopped minutes. The picker's check and cheap moves change little in this model
+(each within 1%): most new lanes already go where the switch has room, and a cheap-first choice
+only matters when several sessions would each fix an account. The destination horizon keeps
+protected accounts lower (minutes over 80 -4%, highest 5-hour level 84.6 → 82.0) and stops the
+pinned sessions as long as before (-0.6% pinned stopped minutes, +0.2% all stopped minutes,
+inside the 5% the owner allowed), but moves 28% more (aggressive accounts with a little room
+now take a short session), so 32% more re-read; it is on by default (`move_dest_horizon_min 0`
+turns it off).
 
 **Interactive sessions.** A session is *interactive* (a person uses it) when it is: a plain
 terminal session; a `wy run` session; a tmux pane with Remote Control on; or a tmux pane that got
@@ -2274,6 +2316,7 @@ move_cap_7d = 98            #   move_cap_5h_protected 80, move_cap_7d_protected 
                             #   move_account_moves 3, move_account_window_min 15,
                             #   move_stopped_wait_min 20, move_owner_grace_min 0,
                             #   move_step_wait_min 3
+move_dest_horizon_min = 90  # an aggressive destination must fit the session this long (its expected time first); 0: until the resets
 pin_reserve_5h = 10         # points of the 5-hour window kept free per live pinned session (8.6)
 pin_reserve_7d = 5          # points of the week kept free per live pinned session
 ```
