@@ -285,8 +285,8 @@ type moveWorld struct {
 	proj       map[string]mover.Projection
 	byID       map[string]mover.Session
 	// sw is the switch state of the last auto pass (the spike filter, the notices).
-	sw mover.SwitchState
-	warnings   []string
+	sw       mover.SwitchState
+	warnings []string
 	// scope is account.smart_switch_scope; outScope the sessions it leaves out (they count in
 	// the forecasts but never move).
 	scope    switchScope
@@ -841,6 +841,9 @@ func (w *moveWorld) noticeText(n mover.Notice, cfg config.Config) string {
 // autoPass carries out the plan: the moves that have a destination, the notices to the
 // interactive sessions, and keeps the switch state for the next pass.
 func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State) error {
+	for _, x := range mover.Reap(moveHost(e, st), st, e.now()) {
+		fmt.Fprintf(e.stdout, "stopped a copy of %s that the supervisor of %s restarted after its move\n", short(x.SessionID), filepath.Base(x.FromDir))
+	}
 	r := mover.Plan(w.input)
 	var first error
 	var told []laneNotice
@@ -893,13 +896,18 @@ func (w *moveWorld) notify(e moveEnv, cfg config.Config, ns []mover.Notice) {
 	}
 }
 
+// moveHost is the host that stops and starts sessions (tests set e.host).
+func moveHost(e moveEnv, st mover.State) mover.Host {
+	if e.host != nil {
+		return e.host
+	}
+	return mover.RealHost{Proc: peerspkg.NewProc(), State: st}
+}
+
 // carryOut moves l to t and records it: the move log, the lease ledger (the old lease ends,
 // a new one on t carries the session) and the note.
 func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mover.Launch, t mover.Target, note, reason string, auto bool, mv mover.Move) (laneNotice, error) {
-	host := e.host
-	if host == nil {
-		host = mover.RealHost{Proc: peerspkg.NewProc(), State: st}
-	}
+	host := moveHost(e, st)
 	log := filepath.Join(st.Dir, "logs", l.SessionID+".log")
 	argv, err := mover.Execute(host, l, t, cfg.Account.MoveLaunch, note, log)
 	from := w.labelOfDir[l.Slot]

@@ -5,59 +5,48 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mraj602/watchyard/internal/mover/internal/m5"
 )
 
-// The simulator (setup.md 8.6, Simulator): seven accounts, one protected, lanes that work in
-// turns with idle gaps, helper panels that add bursts, pile-ups, and readings that lag and
-// are noisy. Every strategy runs the same seeded workload; the mover passes every 2 minutes.
+// The simulator (setup.md 8.6, Simulator): seven accounts (three protected), lanes placed by
+// the picker on their estimate whose true burn differs (0.3x-5x), helper panels, long Opus
+// lanes, pile-ups, an owner's interactive sessions, weekly pressure, two organisations, a
+// laptop where only some accounts are logged in, readings that lag and are noisy. Every
+// strategy runs the same seeded workload: v2 passes every minute, the shipped M5 every 2.
 //
-//	WY_SIM_RUNS=300 WY_SIM_PAR=4 WY_SIM_OUT=/tmp/sim.md go test -run TestSimulateStrategies ./internal/mover/
+//	WY_SIM_RUNS=300 WY_SIM_PAR=8 WY_SIM_OUT=/tmp/sim.md go test -run TestSimulateStrategies -timeout 3h ./internal/mover/
 
 const (
 	simDays      = 2
 	simRatio     = 7.2
-	simPass      = 2   // minutes between mover passes
-	simMidTurn   = 3   // busy minutes a lane loses when it is killed mid-turn
+	simMidTurn   = 3   // busy minutes a lane loses when it is killed mid-turn (the step is redone)
 	simCostFixed = 0.2 // the true cost of a move, 5-hour points: fixed plus per million context tokens
 	simCostMTok  = 1.2
+	simCacheTTL  = 60 // minutes: the prompt cache of a subscription
+	simAccounts  = 7
 )
 
-// simCacheTTL is the true prompt-cache lifetime, minutes: WY_SIM_TTL, default 60 (a
-// subscription's main conversation keeps its cache for an hour; research, REPORT-MOVE-E2E).
-var simCacheTTL = envInt("WY_SIM_TTL", 60)
-
-// simHolds reports whether the picker holds a new lane of rate off account i: its 5-hour window
-// with the running lanes (true rates, the rest of their work) and the new lane for 2 hours
-// reaches the limit before it resets.
-func simHolds(accs []*simAcc, lanes []*simLane, i, m int, rate float64) bool {
-	a := accs[i]
-	if a.r5 < 0 {
-		return false
-	}
-	T := float64(a.r5-m) / 60
-	lv := a.l5 + a.other*T + rate*math.Min(2, T)
-	for _, l := range lanes {
-		if l.on && !l.done && !l.stopped && l.acc == i {
-			lv += l.rate * 0.8 * math.Min(float64(l.work)/60, T)
-		}
-	}
-	return lv >= 100
-}
+// simProtected are the protected accounts (claude-1..3).
+func simProtected(i int) bool { return i < 3 }
 
 type laneSpec struct {
-	start  int // minute
-	work   int // busy minutes
-	rate   float64
+	start  int     // minute
+	work   int     // busy minutes
+	est    float64 // the estimate the picker placed it on, 5-hour points per busy hour
+	mult   float64 // true burn = est × mult
 	burstP float64 // chance a turn starts a helper panel
-	group  int     // > 0: a pile-up, the whole group starts on one account
+	group  int     // > 0: a pile-up, the whole group lands on one expiring account
 	seed   uint64
-	// attended: the owner works in it (each turn starts with input; Attended for 3 minutes).
-	attended bool
+	// owner: the owner's interactive session (on the protected claude-1, never placed by the
+	// picker); it is typed into at the start of every turn.
+	owner bool
 }
 
 type simPattern struct {
@@ -66,46 +55,99 @@ type simPattern struct {
 	lag       [2]int  // reading lag, minutes
 	noise     float64 // reading noise, sd in points
 	rateNoise float64 // per-minute token noise, relative sd
+	// setup changes the accounts after the default draw (weekly pressure, orgs, logins).
+	setup func(r *rand.Rand, accs []*simAcc)
+	orgs  bool // the move_orgs rows apply
 }
 
 func uniform(r *rand.Rand, lo, hi float64) float64 { return lo + r.Float64()*(hi-lo) }
 
-func spread(r *rand.Rand, n, workLo, workHi int, rateLo, rateHi, burstP float64) []laneSpec {
+// logUniform draws between lo and hi evenly on a log scale (0.3x-5x).
+func logUniform(r *rand.Rand, lo, hi float64) float64 {
+	return math.Exp(uniform(r, math.Log(lo), math.Log(hi)))
+}
+
+func spread(r *rand.Rand, n, workLo, workHi int, rateLo, rateHi, burstP, multLo, multHi float64) []laneSpec {
 	var out []laneSpec
 	for range n {
 		out = append(out, laneSpec{start: r.IntN(simDays*1440 - 120), work: workLo + r.IntN(workHi-workLo+1),
-			rate: uniform(r, rateLo, rateHi), burstP: burstP, seed: r.Uint64(), attended: r.Float64() < 0.3})
+			est: uniform(r, rateLo, rateHi), mult: logUniform(r, multLo, multHi), burstP: burstP, seed: r.Uint64()})
 	}
 	return out
 }
 
-func pileups(r *rand.Rand, every int, group int) []laneSpec {
+// pileups: batches of 5 lanes onto one expiring account, 2 of them hot.
+func pileups(r *rand.Rand, every int) []laneSpec {
 	var out []laneSpec
+	group := 0
 	for t := 60 + r.IntN(every); t < simDays*1440-180; t += every/2 + r.IntN(every) {
 		group++
-		for range 4 {
-			out = append(out, laneSpec{start: t + r.IntN(3), work: 70 + r.IntN(150), rate: uniform(r, 20, 30),
+		for k := range 5 {
+			m := uniform(r, 0.6, 1.2)
+			if k < 2 {
+				m = uniform(r, 2.5, 4)
+			}
+			out = append(out, laneSpec{start: t + r.IntN(3), work: 70 + r.IntN(150), est: uniform(r, 8, 14), mult: m,
 				burstP: 0.1, group: group, seed: r.Uint64()})
 		}
 	}
 	return out
 }
 
+func owners(r *rand.Rand, n int) []laneSpec {
+	var out []laneSpec
+	for d := range simDays {
+		for range n {
+			out = append(out, laneSpec{start: d*1440 + 480 + r.IntN(240), work: 300 + r.IntN(240), est: uniform(r, 6, 12), mult: 1,
+				burstP: 0.15, seed: r.Uint64(), owner: true})
+		}
+	}
+	return out
+}
+
 var simPatterns = []simPattern{
-	{name: "bursts", lag: [2]int{1, 3}, lanes: func(r *rand.Rand) []laneSpec {
-		return spread(r, 22, 60, 240, 10, 18, 0.35)
+	{name: "unpredictable", lag: [2]int{1, 10}, noise: 1, rateNoise: 0.15, lanes: func(r *rand.Rand) []laneSpec {
+		return spread(r, 22, 60, 300, 8, 18, 0.2, 0.3, 5)
 	}},
-	{name: "long-opus", lag: [2]int{1, 3}, lanes: func(r *rand.Rand) []laneSpec {
-		return spread(r, 15, 240, 600, 16, 26, 0.05)
+	{name: "spiky", lag: [2]int{1, 10}, noise: 1, rateNoise: 0.15, lanes: func(r *rand.Rand) []laneSpec {
+		return spread(r, 22, 60, 240, 10, 18, 0.4, 0.7, 1.5)
 	}},
-	{name: "pile-up", lag: [2]int{1, 3}, lanes: func(r *rand.Rand) []laneSpec {
-		return append(pileups(r, 480, 0), spread(r, 6, 60, 240, 10, 18, 0.1)...)
+	{name: "long-opus", lag: [2]int{1, 10}, noise: 1, rateNoise: 0.15, lanes: func(r *rand.Rand) []laneSpec {
+		return spread(r, 15, 240, 600, 16, 26, 0.05, 0.6, 2)
+	}},
+	{name: "pile-up", lag: [2]int{1, 10}, noise: 1, rateNoise: 0.15, lanes: func(r *rand.Rand) []laneSpec {
+		return append(pileups(r, 480), spread(r, 6, 60, 240, 10, 18, 0.1, 0.5, 2)...)
+	}},
+	{name: "protected-owner", lag: [2]int{1, 10}, noise: 1, rateNoise: 0.15, lanes: func(r *rand.Rand) []laneSpec {
+		return append(owners(r, 2), spread(r, 14, 60, 300, 8, 18, 0.2, 0.5, 3)...)
+	}},
+	{name: "weekly-95", lag: [2]int{1, 10}, noise: 1, rateNoise: 0.15, lanes: func(r *rand.Rand) []laneSpec {
+		hot := spread(r, 3, 120, 360, 10, 16, 0.1, 3, 5)
+		return append(hot, spread(r, 12, 60, 240, 8, 16, 0.2, 0.5, 2)...)
+	}, setup: func(r *rand.Rand, accs []*simAcc) {
+		for i := 3; i < simAccounts; i++ {
+			if r.Float64() < 0.6 {
+				accs[i].l7 = uniform(r, 90, 96)
+			}
+		}
+	}},
+	{name: "two-orgs", lag: [2]int{1, 10}, noise: 1, rateNoise: 0.15, orgs: true, lanes: func(r *rand.Rand) []laneSpec {
+		return append(spread(r, 18, 60, 300, 8, 18, 0.2, 0.5, 3), pileups(r, 900)...)
+	}, setup: func(r *rand.Rand, accs []*simAcc) {
+		accs[2].org, accs[6].org = "oB", "oB" // 2 + 5: one protected and one aggressive in oB
+	}},
+	{name: "laptop", lag: [2]int{1, 10}, noise: 1, rateNoise: 0.15, lanes: func(r *rand.Rand) []laneSpec {
+		return spread(r, 14, 60, 300, 8, 18, 0.2, 0.5, 3)
+	}, setup: func(r *rand.Rand, accs []*simAcc) {
+		for i, a := range accs {
+			a.loggedIn = i == 0 || i == 3 || i == 4 // claude-1 (protected), 4, 5
+			if !a.loggedIn {
+				a.other = uniform(r, 4, 15) // the other machines' lanes on it
+			}
+		}
 	}},
 	{name: "noisy", lag: [2]int{3, 10}, noise: 3, rateNoise: 0.4, lanes: func(r *rand.Rand) []laneSpec {
-		return append(append(spread(r, 10, 60, 240, 10, 18, 0.3), spread(r, 6, 240, 600, 16, 26, 0.05)...), pileups(r, 900, 0)...)
-	}},
-	{name: "mixed", lag: [2]int{1, 4}, noise: 1, rateNoise: 0.2, lanes: func(r *rand.Rand) []laneSpec {
-		return append(append(spread(r, 12, 60, 240, 10, 18, 0.3), spread(r, 7, 240, 600, 16, 26, 0.05)...), pileups(r, 900, 0)...)
+		return append(append(spread(r, 10, 60, 240, 10, 18, 0.3, 0.3, 5), spread(r, 6, 240, 600, 16, 26, 0.05, 0.6, 2)...), pileups(r, 900)...)
 	}},
 }
 
@@ -118,61 +160,132 @@ type simLane struct {
 	busy, idle, restart    int
 	burst                  int
 	burstRate, ctx, ewma   float64
+	obs                    [10]float64 // the observed burn of the last 10 minutes, points per hour
 	last5                  [5]float64
 	age, movedAt, movedFrm int
 	idleFor, turnAge       int
 }
 
+// rate10 is the lane's measured burn over the last 10 minutes, points per hour.
+func (l *simLane) rate10() float64 {
+	s := 0.0
+	for _, x := range l.obs {
+		s += x
+	}
+	return s / 10
+}
+
 type simObs struct {
 	l5, l7 float64
 	r5, r7 int
+	cum    float64 // local burn so far (every window), 5-hour points
 }
 
 type simAcc struct {
-	key       string
+	key, org  string
 	protected bool
+	loggedIn  bool
 	l5, l7    float64
 	r5, r7    int // the minute the window resets; r5 -1: not started
 	other     float64
+	cum       float64 // local burn so far
 	h         []simObs
 }
 
 type simResult struct {
-	StoppedMin, Hits, Moves, MoveCost, PingPong, ProtectedPts, WeeklyWaste, MidTurn, Waits, NoDest float64
-	ReReadMTok, resets7                                                                            float64
+	StoppedMin, IntStoppedMin, Hits, Moves, MidTurn, MidTurnMTok, ReReadMTok, Notices, WeeklyWaste, resets7 float64
+	NoDest, IntKilled, NotLoggedIn                                                                          float64
+	MaxProt5, MaxProt7                                                                                      float64 // sums over runs of the run's max
+	RunsOver80                                                                                              float64 // runs whose protected level went over 80
+	Over80Min, Over80Owner, Over80NoRoom, Over80Other                                                       float64 // protected minutes over 80, by cause
+	runs                                                                                                    float64
 }
 
 func (r *simResult) add(o simResult) {
 	r.StoppedMin += o.StoppedMin
+	r.IntStoppedMin += o.IntStoppedMin
 	r.Hits += o.Hits
 	r.Moves += o.Moves
-	r.MoveCost += o.MoveCost
-	r.PingPong += o.PingPong
-	r.ProtectedPts += o.ProtectedPts
-	r.WeeklyWaste += o.WeeklyWaste
 	r.MidTurn += o.MidTurn
-	r.Waits += o.Waits
-	r.NoDest += o.NoDest
+	r.MidTurnMTok += o.MidTurnMTok
 	r.ReReadMTok += o.ReReadMTok
+	r.Notices += o.Notices
+	r.WeeklyWaste += o.WeeklyWaste
 	r.resets7 += o.resets7
+	r.NoDest += o.NoDest
+	r.IntKilled += o.IntKilled
+	r.NotLoggedIn += o.NotLoggedIn
+	r.MaxProt5 += o.MaxProt5
+	r.MaxProt7 += o.MaxProt7
+	r.RunsOver80 += o.RunsOver80
+	r.Over80Min += o.Over80Min
+	r.Over80Owner += o.Over80Owner
+	r.Over80NoRoom += o.Over80NoRoom
+	r.Over80Other += o.Over80Other
+	r.runs += o.runs
 }
+
+// simStrat is one strategy: no moves, the shipped M5 or v2 with params, and the picker's
+// forward 5-hour hold for new lanes (hold: the projected level that holds a lane off; 0 none).
+type simStrat struct {
+	name string
+	off  bool
+	m5   bool
+	p    Params
+	hold float64
+	orgs bool // only on the patterns with two organisations
+}
+
+func v2(name string, f func(p *Params)) simStrat {
+	p := DefaultParams
+	p.Name = name
+	if f != nil {
+		f(&p)
+	}
+	return simStrat{name: name, p: p, hold: 100}
+}
+
+var simStrategies = func() []simStrat {
+	pickB := v2("V2 + picker (b) no 5h hold", nil)
+	pickB.hold = 0
+	pickC := v2("V2 + picker (c) 5h hold at 110", nil)
+	pickC.hold = 110
+	same1 := v2("V2 move_orgs same-first", func(p *Params) { p.Orgs = OrgsSameFirst })
+	same1.orgs = true
+	same := v2("V2 move_orgs same", func(p *Params) { p.Orgs = OrgsSame })
+	same.orgs = true
+	return []simStrat{
+		{name: "M0 no moves", off: true, hold: 100},
+		{name: "M5 shipped (1.3.3-pre)", m5: true, hold: 100},
+		v2("V2 default", nil),
+		v2("V2 caps 98", func(p *Params) { p.Cap5 = 98 }),
+		v2("V2 caps 92", func(p *Params) { p.Cap5 = 92 }),
+		v2("V2 no spike filter", func(p *Params) { p.SpikePasses = 0 }),
+		v2("V2 idle moves too", func(p *Params) { p.IdleMoves = true }),
+		pickB, pickC, same1, same,
+	}
+}()
 
 var simT0 = time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
 
 func simAt(m int) time.Time { return simT0.Add(time.Duration(m) * time.Minute) }
 
-// simulate runs one seeded workload under p. check, when set, sees every pass's input and plan.
-func simulate(p Params, pat simPattern, seed uint64, check func(Input, []Move)) simResult {
+func simKey(i int, org string) string { return fmt.Sprintf("acct:claude-%d/%s", i+1, org) }
+
+// simCheck sees every v2 pass's input and result.
+type simCheck func(in Input, r Result)
+
+// simulate runs one seeded workload under st.
+func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResult {
 	gen := rand.New(rand.NewPCG(seed, 1))
 	specs := pat.lanes(gen)
 	ar := rand.New(rand.NewPCG(seed, 2))
 	obsR := rand.New(rand.NewPCG(seed, 3))
-	var res simResult
-	accs := make([]*simAcc, 7)
+	res := simResult{runs: 1}
+	accs := make([]*simAcc, simAccounts)
 	for i := range accs {
-		a := &simAcc{key: fmt.Sprintf("claude-%d", i+1), protected: i == 0, r5: -1, l7: uniform(ar, 10, 70),
-			r7: ar.IntN(7 * 1440)}
-		if ar.Float64() < 0.2 {
+		a := &simAcc{org: "oA", protected: simProtected(i), loggedIn: true, r5: -1, l7: uniform(ar, 10, 70), r7: ar.IntN(7 * 1440)}
+		if !a.protected && ar.Float64() < 0.2 {
 			a.l7 = uniform(ar, 80, 94)
 		}
 		if ar.Float64() < 0.3 {
@@ -183,11 +296,16 @@ func simulate(p Params, pat simPattern, seed uint64, check func(Input, []Move)) 
 		}
 		accs[i] = a
 	}
+	if pat.setup != nil {
+		pat.setup(ar, accs)
+	}
+	for i, a := range accs {
+		a.key = simKey(i, a.org)
+	}
 	lanes := make([]*simLane, len(specs))
 	byID := map[string]*simLane{}
 	for i, s := range specs {
-		l := &simLane{laneSpec: s, id: fmt.Sprintf("s%03d", i), r: rand.New(rand.NewPCG(s.seed, 4)), movedFrm: -1,
-			ctx: 30_000}
+		l := &simLane{laneSpec: s, id: fmt.Sprintf("s%03d", i), r: rand.New(rand.NewPCG(s.seed, 4)), movedFrm: -1, ctx: 30_000}
 		lanes[i], byID[l.id] = l, l
 	}
 	accIdx := map[string]int{}
@@ -195,27 +313,62 @@ func simulate(p Params, pat simPattern, seed uint64, check func(Input, []Move)) 
 		accIdx[a.key] = i
 	}
 	atLimit := func(a *simAcc) bool { return a.l5 >= 100 || a.l7 >= 100 }
-	burnAcc := func(a *simAcc, pts float64, m int) {
+	burnAcc := func(a *simAcc, pts float64, m int, local bool) {
 		if a.r5 < 0 {
 			a.r5 = m + 300
 		}
 		a.l5 += pts
 		a.l7 += pts / simRatio
-		if a.protected {
-			res.ProtectedPts += pts
+		if local {
+			a.cum += pts
 		}
 	}
-	// place is the picker's choice for a new lane: the lowest 5-hour reading among the
-	// aggressive accounts with room, else the protected one.
-	// It holds new lanes off an account whose running lanes plus the new one would reach the
-	// limit before the reset (the 1.3.2 picker's forward-burn check): lever 1, for every strategy.
-	place := func(m int, rate float64) int {
+	// holds: the picker's forward 5-hour check: the running lanes (their estimate while young,
+	// then their measured burn) and the new lane for up to 2 hours reach st.hold before the reset.
+	holds := func(i, m int, est float64) bool {
+		a := accs[i]
+		if st.hold <= 0 || a.r5 < 0 {
+			return false
+		}
+		T := float64(a.r5-m) / 60
+		lv := a.l5 + a.other*T + est*0.8*math.Min(2, T)
+		for _, l := range lanes {
+			if l.on && !l.done && !l.stopped && l.acc == i {
+				r := l.est * 0.8
+				if l.age >= 10 {
+					r = l.rate10()
+				}
+				lv += r * math.Min(float64(l.work)/60, T)
+			}
+		}
+		return lv >= st.hold
+	}
+	// place: the picker's choice for a new lane, among the accounts logged in here: the lowest
+	// 5-hour reading among the aggressive ones with room, else a protected one under its gate
+	// (5h < 60, 7d < 70), else the least-used aggressive one.
+	place := func(m int, est float64) int {
 		best := -1
 		for i, a := range accs {
-			if a.protected || a.l5 >= 90 || a.l7 >= 95 || (!looseFloor(p) && simHolds(accs, lanes, i, m, rate)) {
+			if !a.loggedIn || a.protected || a.l5 >= 90 || a.l7 >= 95 || holds(i, m, est) {
 				continue
 			}
 			if best < 0 || a.l5 < accs[best].l5 {
+				best = i
+			}
+		}
+		if best >= 0 {
+			return best
+		}
+		for i, a := range accs {
+			if a.loggedIn && a.protected && a.l5 < 60 && a.l7 < 70 && (best < 0 || a.l5 < accs[best].l5) {
+				best = i
+			}
+		}
+		if best >= 0 {
+			return best
+		}
+		for i, a := range accs {
+			if a.loggedIn && !a.protected && (best < 0 || a.l5 < accs[best].l5) {
 				best = i
 			}
 		}
@@ -224,9 +377,40 @@ func simulate(p Params, pat simPattern, seed uint64, check func(Input, []Move)) 
 		}
 		return best
 	}
+	// expiring: a pile-up lands on the aggressive logged-in account whose 5-hour window resets
+	// soonest (the picker drains expiring room first).
+	expiring := func(m int) int {
+		best := -1
+		for i, a := range accs {
+			if !a.loggedIn || a.protected || a.l7 >= 95 {
+				continue
+			}
+			if best < 0 || (a.r5 >= 0 && (accs[best].r5 < 0 || a.r5 < accs[best].r5)) {
+				best = i
+			}
+		}
+		if best < 0 {
+			return place(m, 10)
+		}
+		return best
+	}
+	ownerAcc := 0
+	for i, a := range accs {
+		if a.protected && a.loggedIn {
+			ownerAcc = i
+			break
+		}
+	}
 	groups := map[int]int{}
 	var recs []Record
+	var m5recs []m5.Record
+	streak := map[string]int{}
+	noticed := map[string]NoticeRecord{}
 	alpha := 1 - math.Exp(-1.0/10)
+	pass := 1
+	if st.m5 {
+		pass = 2
+	}
 	for m := 0; m < simDays*1440; m++ {
 		for _, a := range accs {
 			if a.r5 >= 0 && m >= a.r5 {
@@ -239,19 +423,22 @@ func simulate(p Params, pat simPattern, seed uint64, check func(Input, []Move)) 
 				}
 				a.l7, a.r7 = 0, a.r7+7*1440
 			}
-			if a.other > 0 {
-				burnAcc(a, a.other/60, m)
+			if a.other > 0 && !atLimit(a) { // other machines' sessions stop at the limit too
+				burnAcc(a, a.other/60, m, false)
 			}
 		}
 		for _, l := range lanes {
 			if l.start == m {
-				if l.group > 0 {
+				switch {
+				case l.owner:
+					l.acc = ownerAcc
+				case l.group > 0:
 					if _, ok := groups[l.group]; !ok {
-						groups[l.group] = place(m, 0) // a pile-up: the batch lands on one account
+						groups[l.group] = expiring(m)
 					}
 					l.acc = groups[l.group]
-				} else {
-					l.acc = place(m, l.rate*0.8)
+				default:
+					l.acc = place(m, l.est)
 				}
 				l.on, l.busy = true, 4+l.r.IntN(20)
 			}
@@ -266,6 +453,9 @@ func simulate(p Params, pat simPattern, seed uint64, check func(Input, []Move)) 
 				l.restart--
 			case l.stopped && atLimit(a):
 				res.StoppedMin++
+				if l.owner {
+					res.IntStoppedMin++
+				}
 			default:
 				l.stopped = false
 				if l.busy == 0 {
@@ -284,16 +474,19 @@ func simulate(p Params, pat simPattern, seed uint64, check func(Input, []Move)) 
 					l.stopped = true
 					res.Hits++
 					res.StoppedMin++
+					if l.owner {
+						res.IntStoppedMin++
+					}
 					break
 				}
-				rate := l.rate * uniform(l.r, 0.8, 1.2)
+				rate := l.est * l.mult * uniform(l.r, 0.8, 1.2)
 				if l.burst > 0 {
 					rate += l.burstRate
 					l.burst--
 				}
 				b = rate / 60
 				l.turnAge++
-				burnAcc(a, b, m)
+				burnAcc(a, b, m, true)
 				l.ctx += 6000
 				if l.ctx > 800_000 {
 					l.ctx = 200_000
@@ -304,8 +497,8 @@ func simulate(p Params, pat simPattern, seed uint64, check func(Input, []Move)) 
 					l.done = true
 				} else if l.busy == 0 {
 					l.idle = 1 + l.r.IntN(6)
-					if l.r.Float64() < 0.15 {
-						l.idle = 8 + l.r.IntN(53) // waits for the owner: its cache goes cold
+					if l.owner || l.r.Float64() < 0.15 {
+						l.idle = 8 + l.r.IntN(53) // waits for the owner: its cache may go cold
 					}
 				}
 			}
@@ -314,91 +507,209 @@ func simulate(p Params, pat simPattern, seed uint64, check func(Input, []Move)) 
 				ob = math.Max(0, ob*(1+pat.rateNoise*obsR.NormFloat64()))
 			}
 			l.ewma += (ob - l.ewma) * alpha
+			copy(l.obs[:], l.obs[1:])
+			l.obs[9] = ob
 			copy(l.last5[:], l.last5[1:])
 			l.last5[4] = ob
 		}
-		for _, a := range accs {
-			a.h = append(a.h, simObs{a.l5, a.l7, a.r5, a.r7})
+		ownerBurning := map[int]bool{}
+		for _, l := range lanes {
+			if l.owner && l.on && !l.done && l.busy > 0 {
+				ownerBurning[l.acc] = true
+			}
 		}
-		if p.Off || m%simPass != 0 {
+		noRoom := true
+		for _, a := range accs {
+			if a.loggedIn && !a.protected && a.l5 < 85 && a.l7 < 93 {
+				noRoom = false
+			}
+		}
+		for i, a := range accs {
+			a.h = append(a.h, simObs{a.l5, a.l7, a.r5, a.r7, a.cum})
+			if a.protected {
+				res.MaxProt5 = math.Max(res.MaxProt5, a.l5)
+				res.MaxProt7 = math.Max(res.MaxProt7, a.l7)
+				if a.l5 > 80 || a.l7 > 80 {
+					res.Over80Min++
+					switch {
+					case ownerBurning[i]:
+						res.Over80Owner++
+					case noRoom:
+						res.Over80NoRoom++
+					default:
+						res.Over80Other++
+					}
+				}
+			}
+		}
+		if st.off || m%pass != 0 {
 			continue
 		}
 		lag := pat.lag[0] + obsR.IntN(pat.lag[1]-pat.lag[0]+1)
-		in := Input{Now: simAt(m), Params: p, Recent: recs}
-		for _, a := range accs {
+		// What the machine reads: the lagged reading plus the local meter since it.
+		type seen struct {
+			l5, l7 float64
+			r5, r7 int
+			rate   float64
+			note   string
+		}
+		view := make([]seen, len(accs))
+		for i, a := range accs {
 			o := a.h[max(0, len(a.h)-1-lag)]
-			acc := Account{Key: a.key, Label: a.key, Protected: a.protected, Ratio: simRatio, Other: a.other}
-			if o.r5 > m {
-				acc.W5 = Window{Level: clamp(o.l5 + pat.noise*obsR.NormFloat64()), Reset: simAt(o.r5)}
+			since := a.cum - o.cum
+			v := seen{r5: a.r5, r7: a.r7}
+			if a.r5 >= 0 {
+				if o.r5 == a.r5 {
+					v.l5 = o.l5 + since
+				} else {
+					v.l5 = a.l5 // a new window since the reading: the meter has all of it (approximately)
+				}
+				v.l5 = clamp(v.l5 + pat.noise*obsR.NormFloat64())
 			}
-			if o.r7 > m {
-				acc.W7 = Window{Level: clamp(o.l7 + pat.noise*obsR.NormFloat64()/2), Reset: simAt(o.r7)}
+			if o.r7 == a.r7 {
+				v.l7 = o.l7 + since/simRatio
 			} else {
-				acc.W7 = Window{Reset: simAt(a.r7)}
+				v.l7 = a.l7
 			}
+			v.l7 = clamp(v.l7 + pat.noise*obsR.NormFloat64()/2)
+			// R5: the local meter over 10 min, cross-checked with the reading delta.
+			meter := 0.0
+			for _, l := range lanes {
+				if l.on && !l.done && l.acc == i {
+					meter += l.rate10()
+				}
+			}
+			v.rate = meter
+			if j := len(a.h) - 1 - lag - 10; j >= 0 {
+				o1 := a.h[j]
+				if o1.r5 == o.r5 && o.r5 >= 0 {
+					if d := (o.l5 - o1.l5 + pat.noise*obsR.NormFloat64()) * 6; d > 2*meter && d > 1 {
+						v.rate, v.note = d, "reading delta"
+					}
+				}
+			}
+			view[i] = v
+		}
+		if st.m5 {
+			in := m5.Input{Now: simAt(m), Params: m5.M5, Recent: m5recs}
+			for i, a := range accs {
+				v := view[i]
+				acc := m5.Account{Key: a.key, Label: a.key, Protected: a.protected, Ratio: simRatio, Other: a.other, Excluded: !a.loggedIn}
+				if v.r5 > m {
+					acc.W5 = m5.Window{Level: v.l5, Reset: simAt(v.r5)}
+				}
+				acc.W7 = m5.Window{Level: v.l7, Reset: simAt(v.r7)}
+				in.Accounts = append(in.Accounts, acc)
+			}
+			for _, l := range lanes {
+				if !l.on || l.done {
+					continue
+				}
+				s := m5.Session{ID: l.id, Account: accs[l.acc].key, Rate: l.ewma, Age: time.Duration(l.age) * time.Minute,
+					Idle: (l.busy == 0 || l.restart > 0) && !l.stopped, Stopped: l.stopped, Context: l.ctx, Movable: true,
+					IdleFor: time.Duration(l.idleFor) * time.Minute, Attended: l.owner && l.busy > 0 && l.turnAge < 3, Model: "opus"}
+				if l.burst > 0 {
+					avg := 0.0
+					for _, x := range l.last5 {
+						avg += x / 5
+					}
+					s.Burst = math.Max(0, avg-l.ewma)
+				}
+				if l.movedFrm >= 0 {
+					s.MovedAt, s.MovedFrom = simAt(l.movedAt), accs[l.movedFrm].key
+				}
+				in.Sessions = append(in.Sessions, s)
+			}
+			for _, mv := range m5.Plan(in) {
+				if mv.To == "" {
+					res.NoDest++
+					continue
+				}
+				if mv.Wait {
+					continue
+				}
+				m5recs = append(m5recs, m5.Record{Session: mv.Session, From: mv.From, To: mv.To, At: simAt(m)})
+				execMove(&res, byID[mv.Session], accs, accIdx[mv.To], m, burnAcc)
+			}
+			continue
+		}
+		in := Input{Now: simAt(m), Params: st.p, Recent: recs, Streak: streak, Noticed: noticed}
+		for i, a := range accs {
+			v := view[i]
+			acc := Account{Key: a.key, Label: a.key, Protected: a.protected, Ratio: simRatio, Rate: v.rate, RateNote: v.note, LoggedIn: a.loggedIn}
+			if v.r5 > m {
+				acc.W5 = Window{Level: v.l5, Reset: simAt(v.r5)}
+			}
+			acc.W7 = Window{Level: v.l7, Reset: simAt(v.r7)}
 			in.Accounts = append(in.Accounts, acc)
 		}
 		for _, l := range lanes {
 			if !l.on || l.done {
 				continue
 			}
-			s := Session{ID: l.id, Account: accs[l.acc].key, Rate: l.ewma, Age: time.Duration(l.age) * time.Minute,
-				Idle: (l.busy == 0 || l.restart > 0) && !l.stopped, Stopped: l.stopped, Context: l.ctx, Movable: true,
-				IdleFor: time.Duration(l.idleFor) * time.Minute, Attended: l.attended && l.busy > 0 && l.turnAge < 3, Model: "opus"}
-			if l.burst > 0 {
-				avg := 0.0
-				for _, x := range l.last5 {
-					avg += x / 5
-				}
-				s.Burst = math.Max(0, avg-l.ewma)
-			}
+			s := Session{ID: l.id, Account: accs[l.acc].key, Rate: l.rate10(), Busy: l.busy > 0 && l.restart == 0 && !l.stopped,
+				Stopped: l.stopped, Interactive: l.owner, Movable: true, Context: l.ctx}
 			if l.movedFrm >= 0 {
 				s.MovedAt, s.MovedFrom = simAt(l.movedAt), accs[l.movedFrm].key
 			}
 			in.Sessions = append(in.Sessions, s)
 		}
-		moves := Plan(in)
+		r := Plan(in)
 		if check != nil {
-			check(in, moves)
+			check(in, r)
 		}
-		for _, mv := range moves {
+		streak = r.Streak
+		for _, n := range r.Notices {
+			noticed[n.Session] = NoticeRecord{At: in.Now, P: n.P}
+			res.Notices++
+		}
+		for _, mv := range r.Moves {
 			if mv.To == "" {
 				res.NoDest++
 				continue
 			}
-			if mv.Wait {
-				res.Waits++
-				continue
-			}
-			l, to := byID[mv.Session], accIdx[mv.To]
-			if l.busy > 0 && !l.stopped {
-				res.MidTurn++
-				l.work += simMidTurn
-			}
-			if l.movedFrm == to && m-l.movedAt < 120 {
-				res.PingPong++
-			}
-			l.movedFrm, l.movedAt = l.acc, m
-			recs = append(recs, Record{Session: l.id, From: accs[l.acc].key, To: mv.To, At: simAt(m)})
-			// The re-read: the whole context uncached, unless its cache is already cold (idle
-			// past the 5-minute TTL), when staying would have re-read it too.
-			cost := simCostFixed
-			if !(l.busy == 0 && l.idleFor >= simCacheTTL) {
-				cost += simCostMTok * l.ctx / 1e6
-				res.ReReadMTok += l.ctx / 1e6
-			}
-			burnAcc(accs[to], cost, m)
-			res.MoveCost += cost
-			l.acc, l.stopped, l.restart = to, false, 1
-			res.Moves++
+			recs = append(recs, Record{Session: mv.Session, From: mv.From, To: mv.To, At: in.Now})
+			execMove(&res, byID[mv.Session], accs, accIdx[mv.To], m, burnAcc)
 		}
+		if len(recs) > 400 {
+			recs = recs[len(recs)-200:]
+		}
+	}
+	if res.MaxProt5 > 80 || res.MaxProt7 > 80 {
+		res.RunsOver80 = 1
 	}
 	return res
 }
 
-// looseFloor: the picker variant that skips its forward-burn hold when the mover is on (a
-// variant of the optimization pass, never the default).
-func looseFloor(p Params) bool { return strings.Contains(p.Name, "loose picker") && !p.Off }
+// execMove carries out one move in the simulator: a lane killed mid-turn redoes its step and
+// loses its helpers; the re-read of its context (uncached unless its cache went cold) is
+// burnt on the destination.
+func execMove(res *simResult, l *simLane, accs []*simAcc, to, m int, burnAcc func(*simAcc, float64, int, bool)) {
+	if l.owner {
+		res.IntKilled++
+	}
+	if !accs[to].loggedIn {
+		res.NotLoggedIn++
+	}
+	mid := l.busy > 0 && !l.stopped && l.restart == 0
+	cost := simCostFixed
+	if !(l.busy == 0 && l.idleFor >= simCacheTTL) {
+		cost += simCostMTok * l.ctx / 1e6
+		res.ReReadMTok += l.ctx / 1e6
+		if mid {
+			res.MidTurnMTok += l.ctx / 1e6
+		}
+	}
+	if mid {
+		res.MidTurn++
+		l.work += simMidTurn
+		l.burst = 0
+	}
+	l.movedFrm, l.movedAt = l.acc, m
+	burnAcc(accs[to], cost, m, true)
+	l.acc, l.stopped, l.restart = to, false, 1
+	res.Moves++
+}
 
 func clamp(x float64) float64 { return math.Min(100, math.Max(0, x)) }
 
@@ -409,72 +720,22 @@ func envInt(k string, def int) int {
 	return def
 }
 
-// SimVariants are the optimization pass's candidates (WY_SIM_VARIANTS=1).
-func SimVariants() []Params {
-	ttl := M4
-	ttl.Name, ttl.CacheTTL = "V1 M4, cache TTL 60 min", time.Hour
-	drain := M4
-	drain.Name, drain.DrainFirst = "V2 M4 + drain-first destination", true
-	loose := M4
-	loose.Name = "V3 M4 + loose picker floor"
-	both := ttl
-	both.Name, both.DrainFirst = "V4 V1 + drain-first", true
-	return []Params{ttl, drain, loose, both}
-}
+const simHeader = "| strategy | stopped | of which interactive | hits | moves | mid-turn | mid-turn Mtok | re-read Mtok | notices | prot 5h max | prot 7d max | runs prot>80 % | prot>80 min (owner/no room/other) | waste | interactive killed | to not logged in | no room |\n" +
+	"|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
 
-// TestSimulateStrategies compares M0-M4 on every pattern and writes the table to WY_SIM_OUT.
-func TestSimulateStrategies(t *testing.T) {
-	if testing.Short() {
-		t.Skip("simulator")
-	}
-	runs, par := envInt("WY_SIM_RUNS", 12), envInt("WY_SIM_PAR", 2)
-	var b strings.Builder
-	fmt.Fprintf(&b, "Mover simulator: %d seeded runs per pattern, %d days each, 7 accounts (claude-1 protected), pass every %d min.\n"+
-		"Per day per run: stopped = lane-minutes stopped at a limit (primary), hits = lanes stopped by a limit, cost = 5-hour points spent "+
-		"re-reading context after moves (a cold cache costs only the fixed part), re-read Mtok = context tokens re-read uncached by moves, protected = 5-hour points burnt on the protected account, waste = weekly percent unused at a weekly reset (per reset), mid-turn = lanes killed mid-turn, waits = planned waits.\n\n",
-		runs, simDays, simPass)
-	totals := map[string]simResult{}
-	strategies := Strategies
-	if os.Getenv("WY_SIM_VARIANTS") != "" {
-		strategies = append(append([]Params(nil), Strategies...), SimVariants()...)
-	}
-	for _, pat := range simPatterns {
-		fmt.Fprintf(&b, "### %s\n\n| strategy | stopped | hits | moves | cost | re-read Mtok | ping-pong | protected | waste | mid-turn | waits | no room |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n", pat.name)
-		for _, p := range strategies {
-			sum := runMany(p, pat, runs, par)
-			tot := totals[p.Name]
-			tot.add(sum)
-			totals[p.Name] = tot
-			writeRow(&b, p.Name, sum, float64(runs*simDays))
-		}
-		b.WriteString("\n")
-	}
-	fmt.Fprintf(&b, "### all patterns\n\n| strategy | stopped | hits | moves | cost | re-read Mtok | ping-pong | protected | waste | mid-turn | waits | no room |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n")
-	for _, p := range strategies {
-		writeRow(&b, p.Name, totals[p.Name], float64(runs*simDays*len(simPatterns)))
-	}
-	t.Log("\n" + b.String())
-	if out := os.Getenv("WY_SIM_OUT"); out != "" {
-		if err := os.WriteFile(out, []byte(b.String()), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if m0, m4 := totals[M0.Name], totals[DefaultParams.Name]; m4.StoppedMin >= m0.StoppedMin {
-		t.Errorf("the default stops lanes no less than no moves: %.0f >= %.0f", m4.StoppedMin, m0.StoppedMin)
-	}
-}
-
-func writeRow(b *strings.Builder, name string, s simResult, days float64) {
+func writeRow(b *strings.Builder, name string, s simResult) {
+	days := s.runs * simDays
 	waste := 0.0
 	if s.resets7 > 0 {
 		waste = s.WeeklyWaste / s.resets7
 	}
-	fmt.Fprintf(b, "| %s | %.1f | %.2f | %.2f | %.2f | %.2f | %.3f | %.1f | %.1f | %.2f | %.2f | %.2f |\n", name, s.StoppedMin/days,
-		s.Hits/days, s.Moves/days, s.MoveCost/days, s.ReReadMTok/days, s.PingPong/days, s.ProtectedPts/days, waste, s.MidTurn/days,
-		s.Waits/days, s.NoDest/days)
+	fmt.Fprintf(b, "| %s | %.1f | %.1f | %.2f | %.2f | %.2f | %.2f | %.2f | %.2f | %.1f | %.1f | %.1f | %.1f (%.1f/%.1f/%.1f) | %.1f | %.2f | %.2f | %.2f |\n", name,
+		s.StoppedMin/days, s.IntStoppedMin/days, s.Hits/days, s.Moves/days, s.MidTurn/days, s.MidTurnMTok/days, s.ReReadMTok/days, s.Notices/days,
+		s.MaxProt5/s.runs, s.MaxProt7/s.runs, 100*s.RunsOver80/s.runs, s.Over80Min/days, s.Over80Owner/days, s.Over80NoRoom/days,
+		s.Over80Other/days, waste, s.IntKilled/days, s.NotLoggedIn/days, s.NoDest/days)
 }
 
-func runMany(p Params, pat simPattern, runs, par int) simResult {
+func runMany(st simStrat, pat simPattern, runs, par int) simResult {
 	var mu sync.Mutex
 	var sum simResult
 	var wg sync.WaitGroup
@@ -484,7 +745,7 @@ func runMany(p Params, pat simPattern, runs, par int) simResult {
 		go func() {
 			defer wg.Done()
 			for i := range next {
-				r := simulate(p, pat, uint64(1000+i), nil)
+				r := simulate(st, pat, uint64(1000+i), nil)
 				mu.Lock()
 				sum.add(r)
 				mu.Unlock()
@@ -499,71 +760,214 @@ func runMany(p Params, pat simPattern, runs, par int) simResult {
 	return sum
 }
 
-// TestPlanInvariants checks every pass of the simulator: no destination whose forecast with
-// the moved sessions then hits before its reset (M2-M4), no mid-turn move unless a limit
-// stopped it and no session moved twice within the cooldown (M3, M4), and determinism.
-func TestPlanInvariants(t *testing.T) {
-	runs := envInt("WY_SIM_RUNS", 12)
+// TestSimulateStrategies compares the strategies on every pattern and writes the tables to
+// WY_SIM_OUT. Without WY_SIM_RUNS it runs 2 seeds per pattern (a smoke run).
+func TestSimulateStrategies(t *testing.T) {
 	if testing.Short() {
-		runs = 3
+		t.Skip("simulator")
 	}
-	for _, p := range []Params{M2, M3, M4, M5} {
-		for _, pat := range simPatterns {
+	runs, par := envInt("WY_SIM_RUNS", 2), envInt("WY_SIM_PAR", 2)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Mover simulator v2: %d seeded runs per pattern, %d days each, %d accounts (claude-1..3 protected). V2 passes every minute, M5 every 2.\n"+
+		"Per day per run: stopped = lane-minutes stopped at a limit (primary); hits = lanes stopped by a limit; mid-turn = moves that killed a turn; "+
+		"mid-turn Mtok = context re-read uncached by those; re-read Mtok = all uncached re-reads; notices = interactive notices; prot 5h/7d max = "+
+		"the run's highest protected level (mean over runs); runs prot>80 = share of runs where a protected level went over 80; prot>80 min = protected "+
+		"account-minutes over 80, split by cause (the owner's interactive session burning on it / no aggressive account here had room / other: "+
+		"other machines' burn or a lane the picker had to put there); waste = weekly percent unused at an aggressive account's weekly reset.\n\n",
+		runs, simDays, simAccounts)
+	totals := map[string]simResult{}
+	for _, pat := range simPatterns {
+		fmt.Fprintf(&b, "### %s\n\n%s", pat.name, simHeader)
+		for _, st := range simStrategies {
+			if st.orgs && !pat.orgs {
+				continue
+			}
+			sum := runMany(st, pat, runs, par)
+			if !st.orgs {
+				tot := totals[st.name]
+				tot.add(sum)
+				totals[st.name] = tot
+			}
+			writeRow(&b, st.name, sum)
+		}
+		b.WriteString("\n")
+	}
+	fmt.Fprintf(&b, "### all patterns\n\n%s", simHeader)
+	for _, st := range simStrategies {
+		if !st.orgs {
+			writeRow(&b, st.name, totals[st.name])
+		}
+	}
+	t.Log("\n" + b.String())
+	if out := os.Getenv("WY_SIM_OUT"); out != "" {
+		if err := os.WriteFile(out, []byte(b.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m0, v := totals["M0 no moves"], totals["V2 default"]
+	if v.StoppedMin >= m0.StoppedMin {
+		t.Errorf("V2 stops lanes no less than no moves: %.0f >= %.0f", v.StoppedMin, m0.StoppedMin)
+	}
+	for _, st := range simStrategies {
+		if st.m5 || st.off {
+			continue
+		}
+		if r := totals[st.name]; r.IntKilled > 0 || r.NotLoggedIn > 0 {
+			t.Errorf("%s: %v interactive killed, %v moves to a not-logged-in account", st.name, r.IntKilled, r.NotLoggedIn)
+		}
+	}
+}
+
+// TestPlanInvariants checks every v2 pass of the simulator (WY_SIM_RUNS seeds, 1 under
+// -short on a few patterns): no move to an account not logged in here, stale or its own; no
+// interactive session moved; no move of a session with no burn unless stopped (but with
+// IdleMoves); every destination's projection with all the burn planned onto it stays
+// Hysteresis under its caps; the cooldown, no return and the account rate limit hold; the
+// same seed gives the same result.
+func TestPlanInvariants(t *testing.T) {
+	runs := envInt("WY_SIM_RUNS", 2)
+	pats := simPatterns
+	if testing.Short() {
+		runs, pats = 1, []simPattern{simPatterns[0], simPatterns[4], simPatterns[7]}
+	}
+	var strats []simStrat
+	for _, st := range simStrategies {
+		if !st.off && !st.m5 {
+			strats = append(strats, st)
+		}
+	}
+	if testing.Short() {
+		strats = strats[:1]
+	}
+	type job struct {
+		st  simStrat
+		pat simPattern
+		i   int
+	}
+	var jobs []job
+	for _, st := range strats {
+		for _, pat := range pats {
+			if st.orgs && !pat.orgs {
+				continue
+			}
 			for i := range runs {
-				fails := 0
-				check := func(in Input, moves []Move) {
-					if fails > 3 {
-						return
-					}
-					after := append([]Session(nil), in.Sessions...)
-					dest := map[string]bool{}
-					for _, mv := range moves {
-						if mv.To == "" {
-							continue
-						}
-						dest[mv.To] = true
-						for j := range after {
-							if after[j].ID == mv.Session {
-								after[j].Account, after[j].Stopped = mv.To, false
-								s := after[j]
-								if mv.Wait {
-									continue
-								}
-								if p.Cooldown > 0 && !s.Idle && !in.Sessions[j].Stopped {
-									t.Errorf("%s %s run %d %s: %s moved mid-turn", p.Name, pat.name, i, in.Now.Format("15:04"), s.ID)
-									fails++
-								}
-								for _, r := range in.Recent {
-									if p.Cooldown > 0 && r.Session == s.ID && in.Now.Sub(r.At) < p.Cooldown {
-										t.Errorf("%s %s run %d: %s moved twice within %s", p.Name, pat.name, i, s.ID, p.Cooldown)
-										fails++
-									}
-								}
-							}
-						}
-					}
-					for _, a := range in.Accounts {
-						if !dest[a.Key] {
-							continue
-						}
-						var on []Session
-						for _, s := range after {
-							if s.Account == a.Key {
-								on = append(on, s)
-							}
-						}
-						if f, hits := p.Forecast(a, on, in.Now, 0).First(); hits {
-							t.Errorf("%s %s run %d %s: moved onto %s, whose %s then hits in %s before its reset in %s",
-								p.Name, pat.name, i, in.Now.Format("15:04"), a.Key, f.Window, f.HitIn, f.ResetIn)
-							fails++
-						}
-					}
+				jobs = append(jobs, job{st, pat, i})
+			}
+		}
+	}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	next := make(chan job)
+	for range envInt("WY_SIM_PAR", 2) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range next {
+				errs := invariantRun(j.st, j.pat, j.i)
+				mu.Lock()
+				for _, e := range errs {
+					t.Error(e)
 				}
-				r1 := simulate(p, pat, uint64(1000+i), check)
-				if r2 := simulate(p, pat, uint64(1000+i), nil); r1 != r2 {
-					t.Errorf("%s %s run %d: not deterministic: %+v != %+v", p.Name, pat.name, i, r1, r2)
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, j := range jobs {
+		next <- j
+	}
+	close(next)
+	wg.Wait()
+}
+
+func invariantRun(st simStrat, pat simPattern, i int) []string {
+	p := st.p
+	var errs []string
+	fail := func(in Input, f string, a ...any) {
+		if len(errs) < 4 {
+			errs = append(errs, fmt.Sprintf("%s %s seed %d %s: ", st.name, pat.name, 1000+i, in.Now.Format("01-02 15:04"))+fmt.Sprintf(f, a...))
+		}
+	}
+	check := func(in Input, r Result) {
+		accs := map[string]Account{}
+		for _, a := range in.Accounts {
+			accs[a.Key] = a
+		}
+		sess := map[string]Session{}
+		byAcc := map[string][]Session{}
+		for _, s := range in.Sessions {
+			sess[s.ID] = s
+			byAcc[s.Account] = append(byAcc[s.Account], s)
+		}
+		delta := map[string]float64{}
+		into := map[string]int{}
+		last := map[string]Record{}
+		for _, rc := range in.Recent {
+			if in.Now.Sub(rc.At) < p.AccountWindow {
+				into[rc.To]++
+			}
+			if l, ok := last[rc.Session]; !ok || rc.At.After(l.At) {
+				last[rc.Session] = rc
+			}
+		}
+		for _, mv := range r.Moves {
+			if mv.To == "" {
+				continue
+			}
+			s, a := sess[mv.Session], accs[mv.To]
+			switch {
+			case !a.LoggedIn || a.Stale || a.Excluded:
+				fail(in, "%s moved to %s, not logged in / stale", s.ID, mv.To)
+			case mv.To == s.Account:
+				fail(in, "%s moved to its own account", s.ID)
+			case s.Interactive:
+				fail(in, "interactive %s moved", s.ID)
+			case !s.Busy && s.Rate <= 0 && !s.Stopped && !p.IdleMoves:
+				fail(in, "%s moved with no burn", s.ID)
+			}
+			if l, ok := last[s.ID]; ok {
+				if in.Now.Sub(l.At) < p.Cooldown {
+					fail(in, "%s moved again %s after its last move", s.ID, in.Now.Sub(l.At))
+				}
+				if l.From == mv.To && in.Now.Sub(l.At) < p.NoReturn && !resetSince(a, l.At, in.Now) {
+					fail(in, "%s moved back to %s within %s", s.ID, mv.To, in.Now.Sub(l.At))
 				}
 			}
+			into[mv.To]++
+			if into[mv.To] > p.AccountMoves {
+				fail(in, "%d moves into %s within %s", into[mv.To], mv.To, p.AccountWindow)
+			}
+			delta[mv.To] += s.Rate
+			if !s.Stopped {
+				delta[mv.From] -= s.Rate
+			}
+		}
+		for key, d := range delta {
+			if d <= 0 {
+				continue
+			}
+			pr := p.Project(accs[key], byAcc[key], d, in.Now)
+			if pr.P5 > pr.Cap5-p.Hysteresis+1e-9 || pr.P7 > pr.Cap7-p.Hysteresis+1e-9 {
+				fail(in, "destination %s projects 5h %.1f / 7d %.1f with the moved burn (caps %v/%v)", key, pr.P5, pr.P7, pr.Cap5, pr.Cap7)
+			}
+		}
+	}
+	r1 := simulate(st, pat, uint64(1000+i), check)
+	if r2 := simulate(st, pat, uint64(1000+i), nil); r1 != r2 {
+		errs = append(errs, fmt.Sprintf("%s %s seed %d: not deterministic", st.name, pat.name, 1000+i))
+	}
+	return errs
+}
+
+// The patterns' names are unique (the tables key on them).
+func TestSimPatternsUnique(t *testing.T) {
+	var ns []string
+	for _, p := range simPatterns {
+		ns = append(ns, p.name)
+	}
+	sort.Strings(ns)
+	for i := 1; i < len(ns); i++ {
+		if ns[i] == ns[i-1] {
+			t.Fatalf("pattern %q twice", ns[i])
 		}
 	}
 }

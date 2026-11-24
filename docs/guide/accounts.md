@@ -178,6 +178,37 @@ each printed folder with `claude --session-id <its uuid>` (or one at a time with
 and when it exits 4 wait instead of starting the rest anyway. Exit 3 means a session id was
 already used: make new ones.
 
+## Moving running sessions (Smart Account Switch)
+
+Off by default. When it is on, `wy tick` checks every minute whether an account will reach its
+5-hour or weekly limit before that window resets at the current burn, and moves the sessions
+that are burning it to an account with room, so they never stall at the limit:
+
+```sh
+wy move --plan                         # each account's projection, the moves and notices a pass would make
+wy config set account.smart_switch on  # let it move sessions by itself (off: nothing moves)
+wy config set account.move_orgs same-first   # any (default) | same-first | same
+wy move <session> [<account>]          # move one by hand
+```
+
+What it does, in short:
+
+- It moves only sessions that burned in the last 10 minutes, the biggest burner first, and only
+  as many as bring the account back under its cap (95% of the 5-hour, 98% of the weekly window;
+  80/80 for a protected account). Idle sessions never move.
+- Background, headless and agent tmux sessions move even in the middle of a turn: Claude Code
+  stops and resumes under the new account with a note that tells the session what happened, and
+  it goes on by itself. Its peers handles keep working, and the session that started it is told.
+- Sessions you work in (a terminal, or a tmux pane you typed into or use with Remote Control)
+  are never killed: they get one notice with the command to continue elsewhere, and again only
+  when it gets worse, at most every 30 minutes.
+- Only accounts logged in on this machine are destinations, the session's organisation per
+  `account.move_orgs`, aggressive accounts first and protected ones last.
+- `--pin-account` on a session, or the peers tag `no-move`, keeps it where it is.
+
+Every number above is a setting (`wy config list | grep move_`); the full rules are in
+setup.md 8.6.
+
 ## Sharing
 
 The primary folder (`~/.claude` unless you choose another with `--primary`) holds the shared

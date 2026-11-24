@@ -144,6 +144,8 @@ func (h *fakeHost) Note(sid, text string) error { return h.rec("note " + sid) }
 func TestExecuteByKind(t *testing.T) {
 	defer func(d time.Duration) { Settle = d }(Settle)
 	Settle = 0
+	defer func(d time.Duration) { AfterWatch = d }(AfterWatch)
+	AfterWatch = 0
 	tg := Target{Key: "acct:b/o", Label: "claude-2", Dir: "/h/.claude-2"}
 	base := Launch{PID: 42, SessionID: "s1", Slot: "/h/.claude-4", CWD: "/w", Argv: []string{"--model", "opus"}, Pane: "%5", Wrapper: 40}
 	cmd := "env CLAUDE_CONFIG_DIR=/h/.claude-2 claude --model opus --resume s1"
@@ -243,6 +245,8 @@ func TestCleanEnv(t *testing.T) {
 func TestBackgroundMoveStopsOldCopy(t *testing.T) {
 	defer func(d time.Duration) { Settle = d }(Settle)
 	Settle = 300 * time.Millisecond
+	defer func(d time.Duration) { AfterWatch = d }(AfterWatch)
+	AfterWatch = 0
 	tg := Target{Key: "acct:b/o", Label: "claude-2", Dir: "/h/.claude-2"}
 	l := Launch{PID: 42, SessionID: "s1", Slot: "/h/.claude-4", CWD: "/w", Kind: KindBackground}
 	h := &fakeHost{copyUntil: 2}
@@ -250,14 +254,14 @@ func TestBackgroundMoveStopsOldCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(h.calls, "|")
-	if !strings.HasPrefix(got, "stop s1 in /h/.claude-4|stop s1 in /h/.claude-4|carry s1") || !strings.Contains(got, "|start /w:") {
+	if !strings.HasPrefix(got, "stop s1 in /h/.claude-4|stop s1 in /h/.claude-4|stop s1 in /h/.claude-4|carry s1") || !strings.Contains(got, "|start /w:") {
 		t.Fatalf("steps %s", got)
 	}
 	// claude stop that does not end it: killed after StopWait.
 	defer func(d time.Duration) { StopWait = d }(StopWait)
 	StopWait = 50 * time.Millisecond
 	h = &fakeHost{stopIgnored: true}
-	if _, err := Execute(h, l, tg, "", "N", ""); err != nil || !strings.HasPrefix(strings.Join(h.calls, "|"), "stop s1 in /h/.claude-4|kill 42|carry") {
+	if _, err := Execute(h, l, tg, "", "N", ""); err != nil || !strings.HasPrefix(strings.Join(h.calls, "|"), "stop s1 in /h/.claude-4|kill 42|stop s1 in /h/.claude-4|carry") {
 		t.Fatalf("stop ignored: %v %q", err, h.calls)
 	}
 	h = &fakeHost{copyUntil: 99}
@@ -285,5 +289,39 @@ func TestHasPrompt(t *testing.T) {
 		if got := HasPrompt(strings.Fields(argv)); got != want {
 			t.Errorf("%q: %v, want %v", argv, got, want)
 		}
+	}
+}
+
+// e2e v2: the old account's supervisor restarted a job killed mid-turn after the move's watch
+// ended. Each later pass stops such a copy for ReapWindow after the latest background move.
+func TestReapStopsLateCopies(t *testing.T) {
+	st := State{Dir: t.TempDir()}
+	now := time.Now()
+	_ = st.Append(LogEntry{At: now.Add(-5 * time.Minute), SessionID: "s1", From: "a", To: "b", FromDir: "/h/.claude-4", ToDir: "/h/.claude-2", Kind: KindBackground})
+	_ = st.Append(LogEntry{At: now.Add(-5 * time.Minute), SessionID: "s2", From: "a", To: "b", FromDir: "/h/.claude-4", ToDir: "/h/.claude-2", Kind: KindTmux})
+	_ = st.Append(LogEntry{At: now.Add(-time.Hour), SessionID: "s3", From: "a", To: "b", FromDir: "/h/.claude-4", ToDir: "/h/.claude-2", Kind: KindBackground})
+	h := &fakeHost{copyUntil: 1}
+	got := Reap(h, st, now)
+	if len(got) != 1 || got[0].SessionID != "s1" {
+		t.Fatalf("reaped %+v", got)
+	}
+	if c := strings.Join(h.calls, "|"); !strings.HasPrefix(c, "stop s1 in /h/.claude-4") {
+		t.Errorf("calls %s", c)
+	}
+	// No copy: nothing to do.
+	h = &fakeHost{}
+	if got := Reap(h, st, now); len(got) != 0 || len(h.calls) != 0 {
+		t.Errorf("no copy: %+v %v", got, h.calls)
+	}
+}
+
+// A copy that the old account's supervisor restarts after the resume is stopped too.
+func TestWatchOldStopsCopyAfterResume(t *testing.T) {
+	defer func(d time.Duration) { AfterWatch = d }(AfterWatch)
+	AfterWatch = 1500 * time.Millisecond
+	h := &fakeHost{copyUntil: 1}
+	watchOld(h, Launch{PID: 42, SessionID: "s1", Slot: "/h/.claude-4", Kind: KindBackground})
+	if c := strings.Join(h.calls, "|"); c != "stop s1 in /h/.claude-4" {
+		t.Errorf("calls %s", c)
 	}
 }

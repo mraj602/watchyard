@@ -39,6 +39,25 @@ type Host interface {
 // restarted before it resumes the session elsewhere.
 var Settle = 5 * time.Second
 
+// AfterWatch is how long a background move goes on watching the old account once the session
+// runs on the new one: its supervisor restarted a job killed mid-turn 6 s after the resume
+// (e2e v2). Reap covers a copy that comes back later still.
+var AfterWatch = 20 * time.Second
+
+// watchOld stops, for AfterWatch, any copy of l that the old account's supervisor restarts.
+func watchOld(h Host, l Launch) {
+	for deadline := time.Now().Add(AfterWatch); time.Now().Before(deadline); time.Sleep(time.Second) {
+		if len(h.Copies(l.Slot, l.SessionID, l.PID)) == 0 {
+			continue
+		}
+		_ = h.StopJob(l.Slot, l.SessionID)
+		time.Sleep(time.Second)
+		for _, pid := range h.Copies(l.Slot, l.SessionID, l.PID) {
+			_ = h.Kill(pid)
+		}
+	}
+}
+
 // RunOrder is what a `wy run` wrapper reads after its claude ended: start this instead of
 // exiting.
 type RunOrder struct {
@@ -121,6 +140,9 @@ func Execute(h Host, l Launch, t Target, template, note, log string) ([]string, 
 		if err := h.Start(l.CWD, argv, lg); err != nil {
 			return argv, fmt.Errorf("start: %w (start it by hand: cd %s && %s)", err, Shell([]string{l.CWD}), Shell(argv))
 		}
+		if l.Kind == KindBackground {
+			watchOld(h, l)
+		}
 	}
 	return argv, nil
 }
@@ -140,10 +162,13 @@ func stopOld(h Host, l Launch) error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if h.Alive(l) {
+		// Mid-turn, claude stop does not end the job at once (e2e v2): kill it, then stop the
+		// job again, so its supervisor marks it stopped instead of restarting it.
 		if err := h.Kill(l.PID); err != nil {
 			return err
 		}
 		gone(h, l)
+		_ = h.StopJob(l.Slot, l.SessionID)
 	}
 	deadline := time.Now().Add(Settle)
 	for {
@@ -153,6 +178,8 @@ func stopOld(h Host, l Launch) error {
 			for _, pid := range h.Copies(l.Slot, l.SessionID, l.PID) {
 				_ = h.Kill(pid)
 			}
+			time.Sleep(500 * time.Millisecond)
+			_ = h.StopJob(l.Slot, l.SessionID)
 			time.Sleep(500 * time.Millisecond)
 			if cs := h.Copies(l.Slot, l.SessionID, l.PID); len(cs) > 0 {
 				return fmt.Errorf("the old account's supervisor keeps a copy running (pid %d); not resumed elsewhere: stop it with CLAUDE_CONFIG_DIR=%s claude stop %s", cs[0], l.Slot, l.SessionID)
@@ -194,4 +221,38 @@ func Manual(l Launch, t Target, template, note string) []string {
 			"cd " + Shell([]string{l.CWD}) + " && " + Shell(argv)}
 	}
 	return []string{"kill -9 " + strconv.Itoa(l.PID), "cd " + Shell([]string{l.CWD}) + " && " + Shell(argv)}
+}
+
+// ReapWindow is how long after a background move each Smart Account Switch pass still looks
+// for a copy of the session on the old account. The old account's supervisor restarted a job
+// killed mid-turn after the move's own watch (Settle) had ended (e2e v2), so the watch goes on
+// from pass to pass.
+var ReapWindow = 30 * time.Minute
+
+// Reap stops copies of background sessions that moved in the last ReapWindow and that the old
+// account's supervisor brought back there: claude stop in the old folder, then a kill of any
+// copy still running. Only the latest move of each session counts (its from folder is where a
+// stray copy would run). It returns the moves whose copy it stopped.
+func Reap(h Host, st State, now time.Time) []LogEntry {
+	last := map[string]LogEntry{}
+	for _, e := range st.Log(now.Add(-ReapWindow)) {
+		if e.Kind == KindBackground && e.FromDir != "" && e.FromDir != e.ToDir {
+			last[e.SessionID] = e
+		} else {
+			delete(last, e.SessionID)
+		}
+	}
+	var out []LogEntry
+	for _, e := range last {
+		if len(h.Copies(e.FromDir, e.SessionID, 0)) == 0 {
+			continue
+		}
+		_ = h.StopJob(e.FromDir, e.SessionID)
+		time.Sleep(time.Second)
+		for _, pid := range h.Copies(e.FromDir, e.SessionID, 0) {
+			_ = h.Kill(pid)
+		}
+		out = append(out, e)
+	}
+	return out
 }

@@ -9,25 +9,30 @@ All notable changes to Watchyard are recorded here. The format follows
 ### Added
 
 - **Smart Account Switch** (`wy move`, setup.md 8.6), off by default (`wy config set
-  account.smart_switch on`). It moves a running session to another account only when its account
-  would reach its 5-hour or weekly limit before that window resets at the current burn, not at a
-  fixed percentage. Cheapest levers first: the picker already holds new lanes off such an account;
-  moves come only when that is not enough. Moves follow token-saving rules: only at a turn boundary
-  (or once a limit has stopped the session), sessions with a cold prompt cache and small contexts
-  first, never one the owner is typing into or one expected to finish before the hit, at most once
-  per 5-hour window, only when the stall saved outweighs the context re-read, to an account with
-  room for the session's expected life (protected accounts last), with a cooldown and no
-  ping-pong. A session is stopped with SIGKILL (its background shells keep running) and resumed
-  with its own flags under the new account: in its tmux pane, in its terminal under the new
-  `wy run` wrapper (or the opt-in `claude` shim, `wy run --install-shim`), as a background
-  session (`--resume <id> --bg`), or headless (`-p --resume`); plain terminals get the steps. The
-  moved session gets one line on resume and nothing else changes for other sessions. `wy move
-  --plan` shows the forecast and the moves; `wy move <session> [<account>]` moves one by hand;
-  `--pin-account` or the peers tag `no-move` opts a session out. In the simulator (300 runs per
-  pattern) the default cuts lane-minutes stopped at a limit from 4,210 to 538 a day, about as
-  few as a fixed 92% threshold (540) with under half its limit hits, moves and token cost, no
-  session killed mid-turn and no ping-pong. Destinations: the session's own organisation first,
-  then the account whose 5-hour room expires soonest.
+  account.smart_switch on`). Every minute it projects each account's 5-hour and weekly level at
+  the reset from the last 10 minutes of burn (P5 = level + burn × hours to the 5-hour reset; P7
+  the same over at most 5 hours), and when an account will pass its cap (95/98, protected 80/80)
+  it moves the sessions that burn it, the biggest burner first, until the account is back under
+  its cap − 5. Background, headless and agent tmux sessions move even mid-turn: stopped with
+  SIGKILL (background shells keep running) and resumed under the new account with a note as the
+  prompt, so they carry on by themselves (in their tmux pane, in their terminal under `wy run`,
+  as a background session `--resume <id> --bg`, or headless `-p --resume`). Interactive
+  sessions are never killed: they get one Watchyard notice with the command to continue
+  elsewhere, again only when the projection got worse and at most every 30 minutes. Idle
+  sessions never move. A spike filter (two passes in a row, unless the hit is within 30 minutes
+  or the account is already at its cap), a 20-minute cooldown, no return within 60 minutes and at
+  most 3 moves into one account per 15 minutes stop churn. Destinations are only accounts logged
+  in on this machine with room for the moved burn until their resets: draining accounts first,
+  then the soonest 5-hour reset, protected accounts last. `account.move_orgs` (`any`,
+  `same-first`, `same`) decides whether a session may move to another organisation (a
+  cross-organisation resume drops only the other organisation's thinking blocks). Every number
+  is a setting (`account.move_*`). `wy move --plan` shows each account's projection, the moves
+  and the notices; `wy move <session> [<account>]` moves one by hand; `--pin-account` or the
+  peers tag `no-move` opts a session out. In the simulator (9 patterns, 300 runs each) it cuts
+  limit hits from 7.3 to 3.9 a day against the decision this release had before (M5), keeps
+  protected accounts lower and kills no interactive session, for about 3x the moves and context
+  re-read; stopped lane-minutes 466 against M5's 381, most of the difference the owner's own
+  interactive sessions, which v2 only tells.
 - Everyone involved learns about a move. The moved session's note carries its whole path of
   accounts once it has moved more than once. The session that started a lane through `wy
   account next --exec` (recorded as the lease's `parent`, or `--parent <id>`) gets one short
@@ -41,6 +46,10 @@ All notable changes to Watchyard are recorded here. The format follows
   when the 5-hour window hits) and per live session (burn per minute, account, name, kind,
   state, helper agents, calls per model, folder). The mover's forecast uses the same numbers.
 - `wy move --plan` says, for each session on an account that hits, why it stays.
+- A background session moved mid-turn is not left running twice: after the resume the move
+  watches the old account for 20 s, and every pass for 30 minutes after, and stops a copy the
+  old account's supervisor restarted (found in end-to-end tests: one came back 6 s after the
+  resume).
 
 ### Fixed
 

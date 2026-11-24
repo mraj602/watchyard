@@ -82,6 +82,8 @@ func (h *recHost) Note(sid, text string) error {
 func moveFixture(t *testing.T, five float64, status string) (*nextFixture, *recHost, func(args ...string) (string, string, int)) {
 	defer func(d time.Duration) { t.Cleanup(func() { mover.Settle = d }) }(mover.Settle)
 	mover.Settle = 0
+	defer func(d time.Duration) { t.Cleanup(func() { mover.AfterWatch = d }) }(mover.AfterWatch)
+	mover.AfterWatch = 0
 	f := newNextFixture(t)
 	f.usage = true
 	f.machineToken()
