@@ -13,6 +13,7 @@ import (
 // setup.md 8.6: the timer's service must leave the detached switch pass alive
 // (KillMode=process) and, with the switch on, find claude.
 func TestTimerUnitChecks(t *testing.T) {
+	linuxTimer(t)
 	home := t.TempDir()
 	svc := filepath.Join(home, ".config", "systemd", "user", "watchyard-flush.service")
 	o := Options{Home: home}
@@ -82,6 +83,7 @@ func TestTimerUnitChecks(t *testing.T) {
 
 // setup.md 8.6: account.move_launch's program must resolve from the timer's PATH.
 func TestTimerMoveLaunchCheck(t *testing.T) {
+	linuxTimer(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	svc := filepath.Join(home, ".config", "systemd", "user", "watchyard-flush.service")
@@ -156,4 +158,11 @@ func TestMoverHooksCheck(t *testing.T) {
 	if c := run(plug, true); len(c) != 0 {
 		t.Fatalf("plugin: %+v", c)
 	}
+}
+
+// linuxTimer makes the checks read the systemd unit whatever the OS running the test.
+func linuxTimer(t *testing.T) {
+	g := timerGOOS
+	timerGOOS = "linux"
+	t.Cleanup(func() { timerGOOS = g })
 }
