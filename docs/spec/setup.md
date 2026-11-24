@@ -2152,10 +2152,33 @@ candidate), and the rule settings `cooldown_min`, `no_return_min`, `account_wind
 `account_moves`, `owner_grace_min`, `spike_passes`. Injected accounts are never stale.
 `wy move --plan` warns while it is set.
 
+**Notices and digest.** Each automatic move is pushed to the owner's phone: one line, "<session
+name or short id> <from> -> <to>: <reason>". The push goes out through direct push (push.md 7,
+machines.md 5; the hub only makes alerts from session records, so a move has no other way out):
+it needs `wy direct-push on` and a topic, and in private mode it says only how many sessions
+moved. A machine pushes at most once per 5 minutes; moves inside that window wait in
+`<state>/move/notify.json` and go out as one push ("3 moves: a x->y; b ..."). A move that could
+not be pushed for an hour is dropped. `wy tick` does this, so a move is pushed within a minute of
+its pass. `account.move_notify` (default `on`) turns it off; moves made while it is off are never
+pushed later. `wy move --digest [--since 24h] [--json]` prints a digest of the period: the moves,
+the limit hits (sessions stopped by a `StopFailure` `rate_limit` hook event), each account's
+projected weekly room at its reset, the minutes each protected account was projected over its
+cap, and the moves that may not have been needed (the plan used the readings over the meter, or
+the source was back under its cap within 15 minutes with its burn not lower). The last three come
+from `<state>/move/passes.jsonl`, one line per auto pass (trimmed to 3 days); without it the
+digest says so. `wy tick` pushes the digest once a day from 09:00 local (missed: until 12:00),
+when `account.move_digest` (default `on`) is on and the switch is on or moved something in the
+last 24 hours.
+
 **Records.** `<state>/move/alerts.json`: the pin alerts (`at`, `session`, `name`, `account`,
 `window`, `hit_at`, `reset_at`, `rate`, `command`), each kept until its window resets.
 `<state>/move/moves.jsonl`: `{"at", "session_id", "from", "to", "from_dir", "to_dir",
-"kind", "auto", "reason", "argv", "error"}` per move (failed ones with `error`). The lease
+"kind", "auto", "reason", "argv", "error"}` per move (failed ones with `error`; `name` is the
+session's name when it has one). `<state>/move/notify.json`: the push cursor and the moves waiting
+for the next push. `<state>/move/digest.stamp`: the day the digest was last sent.
+`<state>/move/passes.jsonl`: each auto pass's projections per account (`at`, `accounts`: `key`,
+`label`, `protected`, `l5`, `l7`, `p5`, `p7`, `cap5`, `cap7`, `r5`, `reset7_s`, `window`,
+`note`). The lease
 ledger (8.5): an `ended` line for the session's lease, then a `lease` line on the new account
 with `strategy` `move` and `moved_from` (the old account's label), and `launched`. The hub and
 `wy status` follow the session to the new account from its next hook event (identity.md 5.3).
@@ -2173,6 +2196,7 @@ prefix of at least 4 characters or name; the account by label, folder or number,
 decision's destination); a session in the middle of a turn is refused without `--now`, an
 account at 98% or more of a window without `--force`, a session outside the scope always. `wy move --auto`: one pass, only when
 `account.smart_switch` is on. `wy move --list [--json]`: the last day's moves (accounts by label).
+`wy move --digest [--since 24h] [--json]`: the digest of the period (see Notices and digest).
 
 **`wy burn [--minutes N] [--json] [--no-hub]`: who is burning.** Per account: its 5-hour and
 weekly levels (as the picker reads them), its 5-hour burn in points per hour and in token units
@@ -2221,6 +2245,8 @@ colours = { "~/.claude-2" = "#f59e0b" }
 smart_switch = false        # on: wy tick moves sessions predicted to hit a limit before its reset
 move_launch = ""            # command a moved session starts with ({dir}, {n}, {label}); "": env CLAUDE_CONFIG_DIR={dir} claude
                             # {launcher-config}: the launcher adds the config flags; the session's are left out
+move_notify = true          # push each automatic move to the phone, at most one push per 5 minutes (8.6)
+move_digest = true          # push a daily digest at 09:00 local (8.6)
 move_orgs = "any"           # any | same-first | same: may a session move to another organisation
 move_cap_5h = 95            # every number of the decision (8.6, "Decision table") is a key:
 move_cap_7d = 98            #   move_cap_5h_protected 80, move_cap_7d_protected 80, move_hysteresis 5,

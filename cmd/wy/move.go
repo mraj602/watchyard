@@ -48,6 +48,9 @@ func moveUsage(w io.Writer) {
   wy move --pin-account <session>        never move this session (--unpin to undo; the peers tag
                                          no-move does the same)
   wy move --list [--json]                the moves of the last day
+  wy move --digest [--since 24h] [--json]
+                                         moves, limit hits, weekly room, protected time over cap and
+                                         suspect moves of the period
 
 Smart Account Switch moves the sessions that are burning (mid-turn too) off an account whose
 5-hour or weekly level, projected at its current burn, goes over its cap (setup.md 8.6).
@@ -84,6 +87,8 @@ func moveCmd(e moveEnv, args []string) error {
 	now := fs.Bool("now", false, "move a session that is in the middle of a turn (its turn is lost)")
 	asJSON := fs.Bool("json", false, "print JSON")
 	list := fs.Bool("list", false, "the moves of the last day")
+	digest := fs.Bool("digest", false, "the digest of the period (--since)")
+	since := fs.String("since", "24h", "the period of --digest (24h, 7d)")
 	noHub := fs.Bool("no-hub", false, "use only this machine's data")
 	force := fs.Bool("force", false, "move to the named account even when its limit is (nearly) reached")
 	pin := fs.String("pin-account", "", "never move this session")
@@ -102,7 +107,7 @@ func moveCmd(e moveEnv, args []string) error {
 	}
 	st := mover.NewState(e.dirs.State.Path)
 	modes := 0
-	for _, b := range []bool{*plan, *auto, *list, *pin != "", *unpin != "", len(pos) > 0} {
+	for _, b := range []bool{*plan, *auto, *list, *digest, *pin != "", *unpin != "", len(pos) > 0} {
 		if b {
 			modes++
 		}
@@ -112,6 +117,8 @@ func moveCmd(e moveEnv, args []string) error {
 		return errUsage
 	}
 	switch {
+	case *digest:
+		return e.printDigest(*since, *asJSON)
 	case *pin != "" || *unpin != "":
 		id, on := *pin, true
 		if id == "" {
@@ -926,6 +933,7 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State) error
 		told = append(told, n)
 	}
 	w.pinAlerts(e.stdout, st, r, e.now())
+	w.recordPass(st, r, e.now())
 	w.sw.At, w.sw.Streak = e.now(), r.Streak
 	if err := st.SaveSwitch(w.sw); err != nil && first == nil {
 		first = err
@@ -984,7 +992,7 @@ func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mov
 	log := filepath.Join(st.Dir, "logs", l.SessionID+".log")
 	argv, err := mover.Execute(host, l, t, cfg.Account.MoveLaunch, note, log)
 	from := w.labelOfDir[l.Slot]
-	entry := mover.LogEntry{At: e.now(), SessionID: l.SessionID, From: w.keyOfDir[l.Slot], To: t.Key, FromDir: l.Slot, ToDir: t.Dir,
+	entry := mover.LogEntry{At: e.now(), SessionID: l.SessionID, Name: l.Name, From: w.keyOfDir[l.Slot], To: t.Key, FromDir: l.Slot, ToDir: t.Dir,
 		Kind: l.Kind, Auto: auto, Reason: reason, Argv: argv}
 	if err != nil {
 		entry.Error = err.Error()

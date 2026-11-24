@@ -102,6 +102,7 @@ func runTick(args []string, stdout, stderr io.Writer) error {
 		keep("smart account switch", tickMove(out, errw))
 	}
 	keep("direct push", tickDirectPush(ctx, d, cfg, errw))
+	keep("move notices", moveNotices(ctx, d, cfg, time.Now()))
 	keep("title files", tickPruneTitles(d.State.Path, time.Now()))
 	peerspkg.PruneSessionFiles(d.State.Path, time.Now())
 	return quietErr(*quiet, first)

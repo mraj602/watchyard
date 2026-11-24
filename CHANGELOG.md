@@ -8,6 +8,13 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Added
 
+- **Move notices and digest** (setup.md 8.6). Each automatic move is pushed to the phone through
+  direct push ("<session> <from> -> <to>: <reason>"), at most once per 5 minutes per machine,
+  with moves inside the window batched into one push (`account.move_notify`, default on). `wy
+  move --digest [--since 24h] [--json]` prints the moves, limit hits, weekly room at each reset,
+  protected minutes over cap and moves that may not have been needed, and `wy tick` pushes it
+  once a day at 09:00 local (`account.move_digest`, default on). Each auto pass now also leaves
+  a line in `<state>/move/passes.jsonl`.
 - **Smart Account Switch** (`wy move`, setup.md 8.6), off by default (`wy config set
   account.smart_switch on`). Every minute it projects each account's 5-hour and weekly level at
   the reset from the last 10 minutes of burn (P5 = level + burn × hours to the 5-hour reset; P7

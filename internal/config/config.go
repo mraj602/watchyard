@@ -126,6 +126,11 @@ type Config struct {
 	Account struct {
 		SmartSwitch bool   `toml:"smart_switch"`
 		MoveLaunch  string `toml:"move_launch"`
+		// MoveNotify: push each automatic move to the owner's phone (batched, at most one push
+		// per 5 minutes). MoveDigest: one daily digest push at 09:00 (setup.md 8.6, Notices and
+		// digest). Both default on.
+		MoveNotify bool `toml:"move_notify"`
+		MoveDigest bool `toml:"move_digest"`
 		// SmartSwitchScope is which sessions the switch may move: all (the default), tag:<tag>
 		// (sessions with that peers tag) or sessions:<id>,<id> (ids or 8+ character prefixes).
 		SmartSwitchScope string `toml:"smart_switch_scope"`
@@ -224,6 +229,8 @@ func Defaults() Config {
 	c.Peers.HubMayWiden = true
 	c.Account.SmartSwitchScope = "all"
 	c.Account.MoveOrgs = "any"
+	c.Account.MoveNotify = true
+	c.Account.MoveDigest = true
 	for k, v := range moveDefaults {
 		*c.moveField(k) = v
 	}
@@ -290,6 +297,8 @@ var known = map[string]spec{
 	"account.move_launch":        {kind: kString, def: ""},
 	"account.smart_switch_scope": {kind: kString, def: "all"},
 	"account.move_orgs":          {kind: kString, def: "any"},
+	"account.move_notify":        {kind: kBool, def: true},
+	"account.move_digest":        {kind: kBool, def: true},
 	"next.strategy":              {kind: kString, def: NextStrategyLanes},
 	"next.model":                 {kind: kString, def: ""},
 	"next.session_5h":            {kind: kFloat, def: float64(15)},

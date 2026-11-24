@@ -23,6 +23,9 @@ import (
 //	pins.json              sessions the owner pinned to their account (no moves)
 //	moves.jsonl            every move (the cooldown, no ping-pong, wy status)
 //	alerts.json            pinned sessions that alone take their account to 100 (wy status)
+//	notify.json            moves waiting for the next push, and when the last one went (8.6, Notices)
+//	digest.stamp           the day the daily digest was last sent
+//	passes.jsonl           one line per auto pass: each account's projection (the digest)
 type State struct{ Dir string }
 
 // NewState is the mover state under the Watchyard state folder.
@@ -162,6 +165,7 @@ func (s State) SetPin(sessionID string, on bool) error {
 type LogEntry struct {
 	At        time.Time `json:"at"`
 	SessionID string    `json:"session_id"`
+	Name      string    `json:"name,omitempty"`
 	From      string    `json:"from"`
 	To        string    `json:"to"`
 	FromDir   string    `json:"from_dir,omitempty"`
