@@ -33,14 +33,22 @@ func (y Sys) Sessions(slots []identity.Slot) []Launch {
 		panes = y.Panes()
 	}
 	var out []Launch
-	seen := map[string]bool{}
+	seen := map[string]int{} // session id -> its index in out
 	for _, slot := range slots {
 		for _, e := range peers.ReadRegistry(y.FS, slot) {
-			if e.PID <= 0 || seen[e.SessionID] {
+			if e.PID <= 0 {
 				continue
 			}
 			live, err := y.Proc.StartTime(e.PID)
 			if err != nil || !peers.ProcStartMatches(e.ProcStartString(), live) {
+				continue
+			}
+			if i, ok := seen[e.SessionID]; ok {
+				if out[i].PID != e.PID {
+					// A second live process of the session (a resumed copy next to the old
+					// one): no move until one is stopped.
+					out[i].Copies = append(out[i].Copies, Copy{PID: e.PID, Slot: slot.Dir})
+				}
 				continue
 			}
 			d := DetectInput{PID: e.PID, ProcStart: live, SessionID: e.SessionID, Slot: slot.Dir, CWD: e.CWD, Name: e.Name,
@@ -76,7 +84,7 @@ func (y Sys) Sessions(slots []identity.Slot) []Launch {
 					break
 				}
 			}
-			seen[e.SessionID] = true
+			seen[e.SessionID] = len(out)
 			out = append(out, Detect(d))
 		}
 	}

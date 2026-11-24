@@ -251,7 +251,7 @@ func parseKeysFlags(fs *flag.FlagSet, args []string) ([]string, error) {
 			return nil, usageErr(err)
 		}
 		if fs.NArg() == 0 {
-			return pos, nil
+			return pos, flagLike(pos)
 		}
 		pos = append(pos, fs.Arg(0))
 		args = fs.Args()[1:]

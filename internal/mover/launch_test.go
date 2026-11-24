@@ -217,11 +217,8 @@ func TestStateFiles(t *testing.T) {
 	if st.WriteNote("../x", "x", now) == nil {
 		t.Error("bad session id written")
 	}
-	if err := st.SetPin("s1", true); err != nil || !st.Pins()["s1"] {
-		t.Error("pin")
-	}
-	if err := st.SetPin("s1", false); err != nil || st.Pins()["s1"] {
-		t.Error("unpin")
+	if err := os.WriteFile(st.path("pins.json"), []byte(`["s1"]`), 0o600); err != nil || !st.Pins()["s1"] {
+		t.Error("old pins file")
 	}
 	if err := st.WriteOrder(7, RunOrder{SessionID: "s1", Argv: []string{"claude"}}); err != nil {
 		t.Fatal(err)

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -42,12 +43,13 @@ func moveUsage(w io.Writer) {
   wy move --plan [--json]                what Smart Account Switch would do now (changes nothing)
   wy move <session> [<account>] [--dry-run] [--bg] [--now] [--force]
                                          move one session (its id, id prefix or name) to an account
-                                         (its label, folder or number), else to the best one
+                                         (its label, folder or number), else to the best one; a
+                                         session pinned in Claude Code needs --force
   wy move --auto                         one pass of Smart Account Switch (the timer runs it; does
                                          nothing unless account.smart_switch is on)
-  wy move --pin-account <session>        never move this session (--unpin to undo; the peers tag
-                                         no-move does the same)
-  wy move --list [--since 24h] [--json]  the moves of the last day (or 7d, 12h...), failed ones too
+  wy move --list [--since 24h] [--json]  the moves of the last day (or 7d, 12h...), failed ones too,
+                                         and the sessions pinned in Claude Code (the switch never
+                                         moves those)
   wy move --digest [--since 24h] [--json]
                                          moves, limit hits, weekly room, protected time over cap and
                                          suspect moves of the period
@@ -94,20 +96,14 @@ func moveCmd(e moveEnv, args []string) error {
 	since := fs.String("since", "24h", "the period of --digest and --list (24h, 7d)")
 	selftest := fs.Bool("selftest", false, "run --plan in the timer's own environment and report what it can find")
 	noHub := fs.Bool("no-hub", false, "use only this machine's data")
-	force := fs.Bool("force", false, "move to the named account even when its limit is (nearly) reached")
-	pin := fs.String("pin-account", "", "never move this session")
-	unpin := fs.String("unpin", "", "let Smart Account Switch move this session again")
-	var pos []string
-	rest := args
-	for {
-		if err := fs.Parse(rest); err != nil {
-			return usageErr(err)
-		}
-		if fs.NArg() == 0 {
-			break
-		}
-		pos = append(pos, fs.Arg(0))
-		rest = fs.Args()[1:]
+	force := fs.Bool("force", false, "move to the named account even when its limit is (nearly) reached, or a session pinned in Claude Code")
+	pin := fs.String("pin-account", "", "retired: pin the session in Claude Code")
+	unpin := fs.String("unpin", "", "retired: unpin the session in Claude Code")
+	// Flags anywhere: `wy move <id> <account> --dry-run` is a dry run (parseInterspersed); a
+	// flag-like word it could not read stops the command before anything happens.
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
 	}
 	st := mover.NewState(e.dirs.State.Path)
 	modes := 0
@@ -126,35 +122,19 @@ func moveCmd(e moveEnv, args []string) error {
 	case *selftest:
 		return moveSelftest(e)
 	case *pin != "" || *unpin != "":
-		id, on := *pin, true
-		if id == "" {
-			id, on = *unpin, false
-		}
-		w, err := e.world(*noHub)
-		if err != nil {
-			return err
-		}
-		l, err := w.find(id)
-		if err != nil {
-			return err
-		}
-		if err := st.SetPin(l.SessionID, on); err != nil {
-			return err
-		}
-		verb := "pinned to its account: Smart Account Switch will not move it"
-		if !on {
-			verb = "unpinned: Smart Account Switch may move it"
-		}
-		fmt.Fprintf(e.stdout, "%s %s\n", short(l.SessionID), verb)
-		return nil
+		return errors.New("wy move --pin-account and --unpin are gone: pin or unpin the session in Claude Code itself (its account's jobs/pins.json); Smart Account Switch reads those pins")
 	case *list:
 		span, err := parseDigestSpan(*since)
 		if err != nil {
 			return err
 		}
 		es := st.LogAll(e.now().Add(-span))
+		pins, warns := e.listPins(e.config())
 		if *asJSON {
-			return writeJSONOut(e.stdout, es)
+			if es == nil {
+				es = []mover.LogEntry{}
+			}
+			return writeJSONOut(e.stdout, map[string]any{"moves": es, "pins": pins, "warnings": warns})
 		}
 		labels := e.config().Slots.Labels
 		name := func(dir, key string) string {
@@ -175,6 +155,10 @@ func moveCmd(e moveEnv, args []string) error {
 		}
 		if len(es) == 0 {
 			fmt.Fprintf(e.stdout, "No moves in the last %s.\n", *since)
+		}
+		printPinRows(e.stdout, pins)
+		for _, x := range warns {
+			fmt.Fprintln(e.stdout, "warning: "+x)
 		}
 		return nil
 	}
@@ -211,12 +195,28 @@ func moveCmd(e moveEnv, args []string) error {
 			fmt.Fprintln(e.stdout, "Another Smart Account Switch pass is running (it may be waiting for a step to end).")
 			return nil
 		}
-		defer unlock()
-		return w.autoPass(e, cfg, st)
+		var once sync.Once
+		release := func() { once.Do(unlock) }
+		defer release()
+		return w.autoPass(e, cfg, st, release)
 	}
 	l, err := w.find(pos[0])
 	if err != nil {
 		return err
+	}
+	if w.pinSet.pinned(l) {
+		// Claude Code's own pin (setup.md 8.6, Pinned sessions): only with --force, and the pin
+		// stays on the old folder's list (Watchyard never writes Claude Code's pins.json).
+		acc := w.labelOfDir[l.Slot]
+		if acc == "" {
+			acc = "~/" + filepath.Base(l.Slot)
+		}
+		file := "~/" + filepath.Base(l.Slot) + "/jobs/pins.json"
+		if !*force {
+			return fmt.Errorf("%s is pinned to %s in Claude Code (%s): pass --force to move it anyway", short(l.SessionID), acc, file)
+		}
+		fmt.Fprintf(e.stderr, "wy move: %s is pinned to %s in Claude Code; moving it anyway (--force). The pin stays on %s's list (%s): unpin it there in Claude Code, Watchyard does not change that file.\n",
+			short(l.SessionID), acc, acc, file)
 	}
 	if w.outScope[l.SessionID] && !w.scope.all {
 		return fmt.Errorf("%s is outside account.smart_switch_scope (%s): it is not moved", short(l.SessionID), w.scope)
@@ -241,6 +241,25 @@ func moveCmd(e moveEnv, args []string) error {
 	if t.Dir == l.Slot {
 		return fmt.Errorf("%s already runs on %s", short(l.SessionID), t.Label)
 	}
+	// A move of it a moment ago may still be starting its resumed copy (a background session
+	// registers after its launch): a second move now would leave two copies.
+	for _, x := range st.Log(e.now().Add(-moveSettle)) {
+		if x.SessionID == l.SessionID && !*force {
+			return fmt.Errorf("%s was moved %s ago (%s -> %s): its resumed copy may still be starting; check `claude agents` there, or pass --force",
+				short(l.SessionID), e.now().Sub(x.At).Round(time.Second), w.slotLabel(x.FromDir), w.slotLabel(x.ToDir))
+		}
+	}
+	if !*dry {
+		// A switch pass may be waiting to move it: never both.
+		unlock, ok, err := st.SessionLock(l.SessionID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("a Smart Account Switch move of %s is under way (waiting for its step): nothing done", short(l.SessionID))
+		}
+		defer unlock()
+	}
 	if pr, ok := w.proj[w.keyOfDir[l.Slot]]; ok && pr.Window != "" {
 		mv = mover.Move{Window: pr.Window, P: pr.P5, ResetAt: e.now().Add(pr.Reset5), Stopped: w.byID[l.SessionID].Stopped}
 		if pr.Window == mover.Win7d {
@@ -256,7 +275,7 @@ func moveCmd(e moveEnv, args []string) error {
 	if *bg && (l.Kind == mover.KindTmux || l.Kind == mover.KindWrapped || l.Kind == mover.KindTerminal) {
 		l.Kind = mover.KindBackground
 	}
-	mv.ByHand = true
+	mv.ByHand, mv.Rate = true, w.byID[l.SessionID].Rate
 	if l.Status == "busy" && *now {
 		mv.MidTurn, l.MidTurn = true, true // it resumes with the note as its prompt
 		if !*dry {
@@ -287,6 +306,10 @@ func moveCmd(e moveEnv, args []string) error {
 	w.tell(e, []laneNotice{n})
 	return nil
 }
+
+// moveSettle is how long after a move a by-hand move of the same session waits (--force
+// overrides): its resumed copy may not be registered yet.
+const moveSettle = 5 * time.Minute
 
 func (e moveEnv) config() config.Config {
 	cfg := config.Defaults()
@@ -325,6 +348,10 @@ type moveWorld struct {
 	warnings []string
 	// pins are the live pinned sessions by account key (they hold its reserve).
 	pins map[string][]string
+	// pinSet are the pins (Claude Code's jobs/pins.json, the only source); pinWarns
+	// are the Claude Code pins files it could not read (the switch's log has each once).
+	pinSet   pinSet
+	pinWarns []string
 	// scope is account.smart_switch_scope; outScope the sessions it leaves out (they count in
 	// the forecasts but never move).
 	scope    switchScope
@@ -412,14 +439,25 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	}
 	w.launches = sys.Sessions(islots)
 	st := mover.NewState(e.dirs.State.Path)
-	pins := st.Pins()
 	var tags map[string][]string
 	if e.tags != nil {
 		tags = e.tags()
 	} else {
 		tags, w.handles = peersTags()
 	}
-	w.pins = livePins(w.launches, w.keyOfDir, pins, tags, now)
+	var dirs []string
+	for _, s := range slots {
+		dirs = append(dirs, s.Dir)
+	}
+	pins := loadPins(dirs, func(msg string) {
+		w.warnings = append(w.warnings, msg)
+		w.pinWarns = append(w.pinWarns, msg)
+	})
+	if x := ignoredPins(st); x != "" {
+		w.warnings = append(w.warnings, x)
+	}
+	w.pinSet = pins
+	w.pins = livePins(w.launches, w.keyOfDir, pins, now)
 	in.PinReserves = pinReserves(params, w.pins)
 	in.Mover = moverView(cfg, w.launches, w.keyOfDir, ob.Tokens, in.Candidates, now)
 	var lin *picker.LaneInput
@@ -559,11 +597,15 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		if p, ok := ctx[l.SessionID]; ok {
 			s.Context = p / 100 * 200_000
 		}
-		s.Pinned = pins[l.SessionID] || peerspkg.HasTag(tags[l.SessionID], peerspkg.NoMoveTag)
+		if pins.pinned(l) {
+			s.Pinned, s.PinFrom = true, "in Claude Code"
+		}
 		if !w.scope.in(l.SessionID, tags[l.SessionID]) {
 			s.Pinned, w.outScope[l.SessionID] = true, true
 		}
 		s.Movable = l.Kind != mover.KindCloud
+		s.Copies = len(l.Copies)
+		s.Moving = st.Moving(l.SessionID)
 		if x, ok := last[l.SessionID]; ok {
 			s.MovedAt, s.MovedFrom = x.At, x.From
 		}
@@ -708,7 +750,10 @@ func moveParams(cfg config.Config) mover.Params {
 	p.SpikePasses, p.SpikeNear = int(a.MoveSpikePasses), mins(a.MoveSpikeNearMin)
 	p.Cooldown, p.NoReturn = mins(a.MoveCooldownMin), mins(a.MoveNoReturnMin)
 	p.AccountMoves, p.AccountWindow = int(a.MoveAccountMoves), mins(a.MoveAccountWindowMin)
+	p.AccountBurn = math.Max(0, a.MoveAccountBurn)
+	p.ExpiringRoom = time.Duration(math.Max(0, a.MoveExpiringH) * float64(time.Hour))
 	p.StoppedWait, p.OwnerGrace, p.StepWait = mins(a.MoveStoppedWaitMin), mins(a.MoveOwnerGraceMin), mins(a.MoveStepWaitMin)
+	p.PassWait = time.Duration(math.Max(0, a.MovePassWaitS) * float64(time.Second))
 	p.PinReserve5, p.PinReserve7 = math.Max(0, a.PinReserve5h), math.Max(0, a.PinReserve7d)
 	if a.MoveOrgs != "" {
 		p.Orgs = a.MoveOrgs
@@ -735,9 +780,28 @@ func (w *moveWorld) find(q string) (mover.Launch, error) {
 	case 0:
 		return mover.Launch{}, fmt.Errorf("no running session %q on this machine", q)
 	case 1:
-		return hits[0], nil
+		l := hits[0]
+		if len(l.Copies) > 0 {
+			// Two processes of one session (a resumed copy next to the old one): moving
+			// either would make a third. Nothing moves until one is stopped.
+			where := []string{fmt.Sprintf("pid %d on %s", l.PID, w.slotLabel(l.Slot))}
+			for _, c := range l.Copies {
+				where = append(where, fmt.Sprintf("pid %d on %s", c.PID, w.slotLabel(c.Slot)))
+			}
+			return mover.Launch{}, fmt.Errorf("%d copies of %s are running (%s): stop the extra one first; nothing moved",
+				len(where), short(l.SessionID), strings.Join(where, ", "))
+		}
+		return l, nil
 	}
 	return mover.Launch{}, fmt.Errorf("%q matches %d sessions: give more of the id", q, len(hits))
+}
+
+// slotLabel is the label of config folder dir (~/.claude-3 when it has none).
+func (w *moveWorld) slotLabel(dir string) string {
+	if l := w.labelOfDir[dir]; l != "" {
+		return l
+	}
+	return "~/" + filepath.Base(dir)
 }
 
 // account resolves an account by label, folder (~/.claude-3) or number.
@@ -799,7 +863,8 @@ func (w *moveWorld) planDoc(r mover.Result) map[string]any {
 		alerts = append(alerts, map[string]any{"session": a.Session, "account": a.Account, "window": a.Window, "projected": a.P,
 			"rate": a.Rate, "hit_at": a.HitAt, "reset_at": a.ResetAt, "command": w.pinCommand(a.Session)})
 	}
-	return map[string]any{"accounts": r.Accounts, "moves": ms, "alerts": alerts, "warnings": w.warnings}
+	return map[string]any{"accounts": r.Accounts, "moves": ms, "alerts": alerts, "warnings": w.warnings,
+		"pins": pinRows(w.launches, w.labelOfDir, w.keyOfDir, w.pinSet, w.pins)}
 }
 
 // accLabel is the label of account key (the key when none is known here).
@@ -843,6 +908,12 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		if pr.Hit >= 0 {
 			state += fmt.Sprintf("; 100%% in %s", pr.Hit.Round(time.Minute))
 		}
+		if pr.Left != "" {
+			state += "; " + pr.Left
+		}
+		if pr.Expiring {
+			state += fmt.Sprintf("; expiring room: weekly cap %.0f%% until its weekly reset in %s", pr.Cap7+pr.Reserve7, pr.Reset7.Round(time.Minute))
+		}
 		if !loggedIn[pr.Key] {
 			state += "; not logged in here (never a destination)"
 		}
@@ -872,6 +943,7 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		fmt.Fprintf(out, "Each live pinned session keeps %.0f%% of its account's 5-hour window and %.0f%% of its week free (CAPS are less that).\n",
 			p.PinReserve5, p.PinReserve7)
 	}
+	printPinRows(out, pinRows(w.launches, w.labelOfDir, w.keyOfDir, w.pinSet, w.pins))
 	for _, a := range r.Alerts {
 		x := mover.PinAlert{At: w.input.Now, Session: a.Session, Name: w.byID[a.Session].Name, Account: w.accLabel(a.Account), Window: a.Window, HitAt: a.HitAt,
 			ResetAt: a.ResetAt, Rate: a.Rate, Command: w.pinCommand(a.Session)}
@@ -909,14 +981,17 @@ func (w *moveWorld) humanMessage(cfg config.Config, l mover.Launch, t mover.Targ
 		from = filepath.Base(l.Slot)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "[Watchyard] This session moved from %s to %s at %s", from, t.Label, at.Local().Format("15:04"))
+	if mv.ByHand {
+		fmt.Fprintf(&b, "[Watchyard] This session was moved by hand by the owner from %s to %s at %s", from, t.Label, at.Local().Format("15:04"))
+	} else {
+		fmt.Fprintf(&b, "[Watchyard] This session moved from %s to %s at %s", from, t.Label, at.Local().Format("15:04"))
+	}
 	switch {
+	case mv.ByHand:
 	case mv.Stopped && mv.Window != "":
 		fmt.Fprintf(&b, " (it was stopped at %s's %s limit)", from, mv.Window)
 	case mv.Window != "" && !mv.HitAt.IsZero():
 		fmt.Fprintf(&b, " (%s's %s would hit 100%% at %s)", from, mv.Window, mover.Clock(mv.HitAt, at))
-	case mv.ByHand:
-		b.WriteString(" (by hand, with wy move)")
 	}
 	if l.Kind == mover.KindTerminal {
 		agents := mover.Shell(mover.Command(cfg.Account.MoveLaunch, t, []string{"agents"}))
@@ -935,41 +1010,126 @@ func (w *moveWorld) humanMessage(cfg config.Config, l mover.Launch, t mover.Targ
 }
 
 // autoPass carries out the plan (the moves that have a destination) and keeps the switch
-// state for the next pass.
-func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State) error {
+// state for the next pass. The pass lock (release) is held only while it plans: each move holds
+// its session's lock instead, the mid-turn ones wait for their step side by side, at most
+// Params.PassWait in all, so the next pass is never blind behind a waiting move.
+func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State, release func()) error {
 	for _, x := range mover.Reap(moveHost(e, st), st, e.now()) {
 		fmt.Fprintf(e.stdout, "stopped a copy of %s that the supervisor of %s restarted after its move\n", short(x.SessionID), filepath.Base(x.FromDir))
 	}
+	if msg := strings.Join(w.pinWarns, "; "); st.Changed("pins-warned", msg) && msg != "" {
+		fmt.Fprintln(e.stdout, "warning: "+msg)
+	}
 	r := mover.Plan(w.input)
 	var first error
-	var told []laneNotice
+	type pick struct {
+		m      mover.Move
+		l      mover.Launch
+		unlock func()
+	}
+	var picks []pick
+	picked := map[string]bool{}
 	for _, m := range r.Moves {
 		l, ok := w.launch(m.Session)
 		if !ok || m.To == "" || !l.Kind.Movable() {
 			continue
 		}
-		l.MidTurn = m.MidTurn
-		if m.MidTurn {
-			w.betweenSteps(e, st, l, &m)
-		}
-		note := mover.Note(w.accLabel(m.From), w.targets[m.To].Label, e.now(), m, w.chainLabels(st, m.Session, e.now())...)
-		n, err := w.carryOut(e, cfg, st, l, w.targets[m.To], note, m.Reason, true, m)
-		if err != nil {
-			if first == nil {
-				first = err
-			}
+		unlock, ok, err := st.SessionLock(m.Session)
+		if err != nil || !ok {
+			fmt.Fprintf(e.stdout, "%s %s: a move of it is already under way\n", short(m.Session), l.Name)
 			continue
 		}
-		told = append(told, n)
+		l.MidTurn = m.MidTurn
+		picks = append(picks, pick{m, l, unlock})
+		picked[m.Session] = true
+	}
+	// A session that waited for its step in an earlier pass and is no longer picked waits no more.
+	for _, s := range w.input.Sessions {
+		if !picked[s.ID] && !s.Moving {
+			st.ClearWait(s.ID)
+		}
 	}
 	w.pinAlerts(e.stdout, st, r, e.now())
 	w.recordPass(st, r, e.now())
 	w.sw.At, w.sw.Streak = e.now(), r.Streak
-	if err := st.SaveSwitch(w.sw); err != nil && first == nil {
+	if err := st.SaveSwitch(w.sw); err != nil {
 		first = err
 	}
+	release() // planning done: the next pass may start while these moves wait
+
+	var mu sync.Mutex
+	var told []laneNotice
+	var wg sync.WaitGroup
+	for _, p := range picks {
+		wg.Add(1)
+		go func(p pick) {
+			defer wg.Done()
+			defer p.unlock()
+			m, l := p.m, p.l
+			if m.MidTurn && !w.waitStep(e, st, &mu, l, &m) {
+				return // still inside its step: the next pass waits on
+			}
+			// The waits run side by side; the moves themselves one at a time, each as soon as
+			// its session is at a step (the move log, the ledger and the output are shared).
+			mu.Lock()
+			defer mu.Unlock()
+			st.ClearWait(m.Session)
+			note := mover.Note(w.accLabel(m.From), w.targets[m.To].Label, e.now(), m, w.chainLabels(st, m.Session, e.now())...)
+			n, err := w.carryOut(e, cfg, st, l, w.targets[m.To], note, m.Reason, true, m)
+			if err != nil {
+				if first == nil {
+					first = err
+				}
+				return
+			}
+			told = append(told, n)
+		}(p)
+	}
+	wg.Wait()
 	w.tell(e, told) // one notice per parent for the whole pass
 	return first
+}
+
+// waitStep waits, within this pass's share (Params.PassWait), for mid-turn session l to be
+// between two tool calls, and records on mv what the note says. Its wait counts from its
+// first pass (State.WaitStarted): after Params.StepWait in all (or a minute before the
+// projected hit) it is moved inside the step; before that, a session still inside its step
+// when this pass's share runs out is left for the next pass (false).
+func (w *moveWorld) waitStep(e moveEnv, st mover.State, mu *sync.Mutex, l mover.Launch, mv *mover.Move) bool {
+	p := w.input.Params
+	now := time.Now() // wall time, as the wait itself (WaitStep)
+	began := st.WaitStarted(l.SessionID, now)
+	deadline := began.Add(p.StepWait)
+	if !mv.HitAt.IsZero() {
+		if hit := now.Add(mv.HitAt.Sub(e.now()) - time.Minute); hit.Before(deadline) {
+			deadline = hit
+		}
+	}
+	left := deadline.Sub(now)
+	if left < 0 {
+		left = 0
+	}
+	share := min(left, p.PassWait)
+	host := moveHost(e, st)
+	start := time.Now()
+	s, between := st.WaitStep(l.SessionID, share, func() bool { return host.Alive(l) })
+	mu.Lock()
+	defer mu.Unlock()
+	switch {
+	case between:
+		mv.StepEnded = true
+		if d := time.Since(start); d > time.Second {
+			fmt.Fprintf(e.stdout, "%s %s: waited %s for its step to end\n", short(l.SessionID), l.Name, d.Round(time.Second))
+		}
+	case s.In && share < left:
+		fmt.Fprintf(e.stdout, "%s %s: still inside a step (%s) after %s: the next pass waits on (up to %s in all)\n",
+			short(l.SessionID), l.Name, s.Tool, time.Since(start).Round(time.Second), p.StepWait)
+		return false
+	case s.In:
+		mv.StepTool, mv.StepCmd = s.Tool, s.Cmd
+		fmt.Fprintf(e.stdout, "%s %s: still inside a step (%s) after %s: moved anyway\n", short(l.SessionID), l.Name, s.Tool, (now.Sub(began) + time.Since(start)).Round(time.Second))
+	}
+	return true
 }
 
 // betweenSteps waits until session l is between two tool calls (setup.md 8.6, Between
@@ -1023,7 +1183,7 @@ func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mov
 	argv, err := mover.Execute(host, l, t, cfg.Account.MoveLaunch, note, log)
 	from := w.labelOfDir[l.Slot]
 	entry := mover.LogEntry{At: e.now(), SessionID: l.SessionID, Name: l.Name, From: w.keyOfDir[l.Slot], To: t.Key, FromDir: l.Slot, ToDir: t.Dir,
-		Kind: l.Kind, Auto: auto, Reason: reason, Argv: argv}
+		Kind: l.Kind, Auto: auto, Reason: reason, Argv: argv, Rate: mv.Rate, RateKnown: true}
 	if err != nil {
 		entry.Error = err.Error()
 		_ = st.Append(entry)

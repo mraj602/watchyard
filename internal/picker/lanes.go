@@ -374,17 +374,21 @@ type LaneRow struct {
 	// (already off the caps and limits).
 	Pins                     int
 	PinReserve5, PinReserve7 float64
-	SampleAgeMin             float64
-	SampleAt                 time.Time // zero: no reading time
-	FiveReset                time.Time
-	LastLease                time.Time
-	Stale                    bool
-	Unknown                  []string
-	SkipLevel                int // 0 burst cap only, 1 stale, 2 a protected rule, 3 a hard limit
-	Last                     bool
-	Expiring                 bool
-	Forced                   bool
-	ETA                      *time.Time
+	// ExpiringRoom: protected, within the switch's expiring window before its weekly reset:
+	// the weekly level it may be drained to then (the aggressive cap less the pin reserve; 0:
+	// not expiring; setup.md 8.6, Expiring room).
+	ExpiringRoom float64
+	SampleAgeMin float64
+	SampleAt     time.Time // zero: no reading time
+	FiveReset    time.Time
+	LastLease    time.Time
+	Stale        bool
+	Unknown      []string
+	SkipLevel    int // 0 burst cap only, 1 stale, 2 a protected rule, 3 a hard limit
+	Last         bool
+	Expiring     bool
+	Forced       bool
+	ETA          *time.Time
 	// Class (OrderDrain): drain, at_risk, aggressive, unknown or protected; Drain its drain rules.
 	Class string
 	Drain DrainInfo
@@ -820,7 +824,8 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 		// The switch's caps bound every limit of the account (LaneAccount.SwitchCap5/7).
 		accts := append([]LaneAccount(nil), in.Accounts...)
 		for i := range accts {
-			accts[i].SwitchCap5, accts[i].SwitchCap7 = in.Mover.caps(accts[i].Protected)
+			_, _, hrs := cleanLaneSample(accts[i].Sample, now).effective(now)
+			accts[i].SwitchCap5, accts[i].SwitchCap7 = in.Mover.caps(accts[i].Protected, hrs)
 		}
 		in.Accounts = accts
 	}
@@ -917,9 +922,13 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 				// 5-hour reset; and whether it would run past this account's weekly reset.
 				tl, _, lmed, r := p.laneStats(in.Stats)
 				tl = p.laneTail(in.Stats)
-				lr := r // the new lane's burn, points per hour
+				lr := r                // the new lane's burn, points per hour
+				var ldur time.Duration // its expected time (0: unknown)
 				if p.UseEstimate {
 					est := p.estimate(in.cur, acc, in.Stats)
+					if est.given {
+						ldur = hoursDur(est.dur)
+					}
 					if est.given && (!p.EstFloor || est.cost > tl) {
 						tl = est.cost
 					}
@@ -985,7 +994,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 					if in.Stats.Rate > lr {
 						lr = in.Stats.Rate
 					}
-					if why5 := moverOver(in.Mover, acc, v, lr, p, now); why5 != "" {
+					if why5 := moverOver(in.Mover, acc, v, lr, ldur, p, now); why5 != "" {
 						skip, why, level, capped, soft = true, why5, 3, false, false
 					}
 				}
@@ -1014,7 +1023,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 			row := LaneRow{Key: acc.Key, Protected: prot, Score: sc, Skip: skip, Reason: why, Weekly: v.w, WeeklyM: v.wM, FiveHour: v.h,
 				Reserve: v.wRes, HoursToReset: v.hrs, Leases: v.leaseN, Burst: v.capN, BurstCap: cp, Capped: capped,
 				Added5: v.add5, Meter5: v.m5, Meter7: v.m7, Margin5: v.g5, Margin7: v.g7, WeeklyCap: cap7, FiveHourCap: cap5, SampleAgeMin: v.ageMin, FiveReset: v.fiveRst,
-				Pins: acc.Pins, PinReserve5: acc.PinReserve5, PinReserve7: acc.PinReserve7,
+				Pins: acc.Pins, PinReserve5: acc.PinReserve5, PinReserve7: acc.PinReserve7, ExpiringRoom: expiringCap(in.Mover, acc, prot, v.hrs),
 				Stale: v.stale, Unknown: v.unknown, SkipLevel: level, Last: last, Expiring: expiring && !skip,
 				LeaseCharges: v.charges, Class: class, Drain: d, fwd5: fwdFree != nil, soft: soft}
 			if !v.noTS {
@@ -1267,21 +1276,30 @@ func cut(s string, n int) string {
 	return s
 }
 
-// caps are the switch's caps for an aggressive or a protected account (before the pin reserve).
-func (m *MoverView) caps(protected bool) (c5, c7 float64) {
+// caps are the switch's caps for an aggressive or a protected account (before the pin
+// reserve) whose week resets in hrs hours: a protected one's weekly cap is Cap7 within
+// ExpiringH of its reset (expiring room, setup.md 8.6).
+func (m *MoverView) caps(protected bool, hrs float64) (c5, c7 float64) {
 	if protected {
+		if m.expiring(protected, hrs) {
+			return m.Cap5Protected, math.Max(m.Cap7, m.Cap7Protected)
+		}
 		return m.Cap5Protected, m.Cap7Protected
 	}
 	return m.Cap5, m.Cap7
+}
+
+func (m *MoverView) expiring(protected bool, hrs float64) bool {
+	return m != nil && protected && m.ExpiringH > 0 && hrs > 0 && hrs <= m.ExpiringH
 }
 
 // moverOver is why Smart Account Switch would move a session off acc once a new lane burning
 // lr 5-hour points per hour runs there ("" when it would not): its projection at its measured
 // burn plus the lane (projection.Levels, the switch's own maths) over the switch's caps less
 // the pin reserve.
-func moverOver(m *MoverView, acc LaneAccount, v laneState, lr float64, p LaneParams, now time.Time) string {
+func moverOver(m *MoverView, acc LaneAccount, v laneState, lr float64, expect time.Duration, p LaneParams, now time.Time) string {
 	pa := p.account(acc)
-	c5, c7 := m.caps(acc.Protected)
+	c5, c7 := m.caps(acc.Protected, v.hrs)
 	if c5 <= 0 && c7 <= 0 {
 		return ""
 	}
@@ -1289,8 +1307,21 @@ func moverOver(m *MoverView, acc LaneAccount, v laneState, lr float64, p LanePar
 	if !v.fiveRst.IsZero() && v.fiveRst.After(now) {
 		h5 = v.fiveRst.Sub(now).Hours()
 	}
+	// The account's own burn to the resets, as the switch projects it; the new lane only for
+	// as long as it is expected to run (else DestHorizonH), at most to the 5-hour reset, at
+	// least DestFloorH, as the switch judges a destination: a short lane cannot burn 5 hours.
 	r := acc.MoveUnits*pa.F5 + math.Max(0, lr)
-	p5, p7 := projection.Levels(v.hM, v.wM, r, pa.ratio(), h5, v.hrs, m.WeekSpanH)
+	p5, p7 := projection.Levels(v.hM, v.wM, acc.MoveUnits*pa.F5, pa.ratio(), h5, v.hrs, m.WeekSpanH)
+	hl := h5
+	if m.DestHorizonH > 0 {
+		hl = m.DestHorizonH
+		if expect > 0 {
+			hl = expect.Hours()
+		}
+		hl = math.Max(math.Min(hl, h5), m.DestFloorH)
+	}
+	l5, l7 := projection.Levels(0, 0, math.Max(0, lr), pa.ratio(), math.Min(hl, h5), math.Min(hl, v.hrs), m.WeekSpanH)
+	p5, p7 = p5+l5, p7+l7
 	if !projection.Over(p5, p7, c5, c7, acc.PinReserve5, acc.PinReserve7, 0) {
 		return ""
 	}
@@ -1300,4 +1331,14 @@ func moverOver(m *MoverView, acc LaneAccount, v laneState, lr float64, p LanePar
 	}
 	return fmt.Sprintf("7d %s%%: at %s points/h with this lane the switch's projection is %s%%, over its cap %s%% (it would move a session off)",
 		f0(v.wM), f0(pyRound(r, 1)), f0(p7), f0(pinLess(c7, acc.PinReserve7)))
+}
+
+// expiringCap is the weekly level a protected account near its reset may be drained to (0: not
+// expiring room).
+func expiringCap(m *MoverView, acc LaneAccount, prot bool, hrs float64) float64 {
+	if !m.expiring(prot, hrs) {
+		return 0
+	}
+	_, c7 := m.caps(prot, hrs)
+	return pinLess(c7, acc.PinReserve7)
 }

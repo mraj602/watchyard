@@ -183,3 +183,29 @@ func StepCommand(toolInput json.RawMessage) string {
 	}
 	return ""
 }
+
+// WaitStarted is when a mid-turn move of the session began waiting for a step boundary,
+// across passes (<state>/move/waits/<session>): now on the first ask, or when the record is
+// over an hour old.
+func (s State) WaitStarted(sessionID string, now time.Time) time.Time {
+	if !sidRe.MatchString(sessionID) {
+		return now
+	}
+	p := s.path("waits", sessionID)
+	if b, err := os.ReadFile(p); err == nil {
+		if t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(b))); err == nil && now.Sub(t) < time.Hour && !t.After(now) {
+			return t
+		}
+	}
+	if os.MkdirAll(filepath.Dir(p), 0o700) == nil {
+		_ = os.WriteFile(p, []byte(now.UTC().Format(time.RFC3339Nano)), 0o600)
+	}
+	return now
+}
+
+// ClearWait drops the session's wait record (moved, or no longer picked).
+func (s State) ClearWait(sessionID string) {
+	if sidRe.MatchString(sessionID) {
+		_ = os.Remove(s.path("waits", sessionID))
+	}
+}

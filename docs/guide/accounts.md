@@ -130,7 +130,9 @@ short, up to 2 hours medium, longer long. A long session is kept off accounts wh
 before it would finish, so short ones use up the room that is about to expire. Without it, a
 session counts as your typical one. A
 protected account drains too, but only when its room would expire even at full speed, and only
-after every aggressive draining account. Then come aggressive accounts whose room is at risk,
+after every aggressive draining account; with Smart Account Switch on, in the last 3 hours before
+its weekly reset (`account.move_expiring_h`) it may be drained up to 98% of its week, its 5 hours
+still kept under 80%. Then come aggressive accounts whose room is at risk,
 then the other aggressive accounts in turn (one whose running sessions will use up its 5 hours
 waits for them), then those with an unknown weekly level, and protected accounts last, only when
 no aggressive account has room. Nothing waits while an account can take a session safely: the
@@ -210,7 +212,11 @@ What it does, in short:
   terminal gets the message with the commands to see it (`claude agents`) or attach it there.
 - Only accounts logged in on this machine are destinations, the session's organisation per
   `account.move_orgs`, aggressive accounts first and protected ones last.
-- `--pin-account` on a session, or the peers tag `no-move`, keeps it where it is. Pin the
+- A session you pin in Claude Code itself stays where it is: Watchyard reads the account's
+  `jobs/pins.json` (never writes it); there is no other way to pin (`wy move --pin-account` and
+  the peers tag `no-move` are retired). `wy move --plan` and `--list` list the pinned sessions,
+  and moving one by hand needs `--force` (its pin stays on the old account's list; its note says
+  you moved it, with no forecast). Pin the
   long-running sessions that burn little but must not stop (a Slack watcher, an orchestrator, a
   CI watcher): each live pinned session keeps 10% of its account's 5-hour window and 5% of
   its week free (`account.pin_reserve_5h`, `account.pin_reserve_7d`). The picker hands out new

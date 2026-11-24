@@ -130,7 +130,60 @@ All notable changes to Watchyard are recorded here. The format follows
   old account's supervisor restarted (found in end-to-end tests: one came back 6 s after the
   resume).
 
+### Removed
+
+- **Manual pinning** (owner decision: pins come from Claude Code only). `wy move --pin-account`
+  and `--unpin` only say to pin in Claude Code; `<state>/move/pins.json` is left in place and
+  not read (`--plan`/`--list` warn while it lists sessions); the peers tag `no-move` pins nothing
+  (still a marker tag).
+
 ### Fixed
+
+- **The switch moved a session pinned in Claude Code** (live: 2abbe6d1 was pinned in Claude
+  Code at 03:14 and moved at 03:20). Pins now come from Claude Code only: a session listed in its
+  config folder's `jobs/pins.json` (short ids, prefix match; read only, mtime-cached; missing or
+  unparsable is no pins, with a warning) is pinned for the switch, `--plan`, the picker's pin
+  reserve, `--explain`/`--json` and the pin alerts. `wy move --plan`/`--list` list the pinned
+  sessions; `wy move --list --json` is now an object (`moves`, `pins`, `warnings`). Moving such a
+  session by hand needs `--force` and warns that its pin stays on the old account's list.
+- **A by-hand move's note no longer gives the switch's reason.** It reads "This session was
+  moved by hand by the owner from claude-6 to claude-2 at 14:05" (path and organisation note as
+  before), with no projection ("would hit 100% ... P5 181%").
+
+- **Expiring protected room went unused** (live: protected claude-5 at 85% of its week, an hour
+  before its reset, 5 hours unused, took nothing: the switch's protected weekly cap 80 bounded its
+  drain). Within `account.move_expiring_h` (default 3) hours of a protected account's weekly reset
+  its weekly cap is the aggressive one (98) for the picker and the switch; its 5-hour cap stays
+  80. `--explain` and `--plan` say "expiring room".
+- **A short lane refused on an idle account** ("the switch's projection is 115%" for a 25-minute
+  lane at 23 points/h). The picker projects the new lane only over its expected time (else 90
+  minutes), at most to the 5-hour reset, at least an hour; the switch projects a running session
+  with an expected end only until then.
+- **Moves went to a protected account while an aggressive one had room** (live: claude-2 at
+  13%/18% had taken 3 moves in 15 minutes, two of them 0.2-0.5 points/h). The per-account limit
+  counts only moves at or over the burn floor, is 5 (`move_account_moves`), and a new
+  `move_account_burn` (40 points/h of moved burn per 15 minutes) limits burn; an aggressive
+  account with room takes a move over these limits before any protected account does. Moves
+  log the session's burn (`rate` in moves.jsonl).
+- **A pass blind for minutes behind its step waits** (live: three mid-turn moves waited in turn,
+  no pass for 6 minutes while claude-4 went from P5 76 to 155). The waits run side by side, at
+  most `account.move_pass_wait_s` (default 90) in a pass; a session still inside its step waits
+  on in the next pass, up to `move_step_wait_min` in all. The pass lock is held only while a pass
+  plans; each move holds its session's lock, so the next pass runs and leaves it alone.
+- **`passes.jsonl` shows the 5-hour level's parts** (`l5_read`, `l5_read_age_s`, `l5_meter`,
+  `l5_leases`): `--explain`'s 5-hour level is the switch's plus the lease charges of young lanes.
+- **The switch moved every unpinned session off an account already near its cap** (live:
+  claude-3 at 84.1% of its week, cap 88 with 2 pins, mostly pinned burn). Its target was cap − 5
+  = 83, under the level now, so no moves could meet it. When a window's level is already at or
+  over cap − 5 the moves aim for the cap itself; `--plan` says "only pinned burn left" when
+  nothing a move would lower is left.
+- **`wy move` never makes a second copy.** A session with two live processes (the old one and a
+  resumed copy) is refused by hand and skipped by the switch; a by-hand move of a session moved
+  in the last 5 minutes is refused without `--force`. Flags are read anywhere (`wy move <id>
+  <account> --dry-run` is a dry run, tested in every order); a flag-like word left unread after
+  `--` stops `wy move`, `wy connect`, `wy keys`, `wy peers` and `wy hub` commands before they act;
+  `wy config set` refuses a `--word` it does not know as a value; `wy outbox append` and `wy
+  machine list` refuse extra arguments.
 
 - **The switch moved a session that burned nothing** (live on pre5: a mid-turn lane at 0.0
   points/h moved with a 4.6 points/h one). A running session is a candidate only when its own

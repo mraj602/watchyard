@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"time"
 
@@ -129,7 +128,8 @@ func (s State) TakeOrder(pid int) (RunOrder, bool) {
 	return o, true
 }
 
-// Pins are the sessions pinned to their account.
+// Pins are the sessions in wy's old pins file (the retired wy move --pin-account): no longer
+// pins (setup.md 8.6, Pinned sessions); read only to say they are ignored.
 func (s State) Pins() map[string]bool {
 	out := map[string]bool{}
 	b, err := os.ReadFile(s.path("pins.json"))
@@ -145,20 +145,19 @@ func (s State) Pins() map[string]bool {
 	return out
 }
 
-// SetPin pins (on) or unpins a session.
-func (s State) SetPin(sessionID string, on bool) error {
-	ps := s.Pins()
-	if on {
-		ps[sessionID] = true
-	} else {
-		delete(ps, sessionID)
+// Changed records text under name (<state>/move/<name>) and says whether it differs from the
+// text recorded before: a warning goes to the switch's log once, not every pass.
+func (s State) Changed(name, text string) bool {
+	p := s.path(name)
+	if b, err := os.ReadFile(p); err == nil && string(b) == text {
+		return false
+	} else if err != nil && text == "" {
+		return false
 	}
-	ids := make([]string, 0, len(ps))
-	for id := range ps {
-		ids = append(ids, id)
+	if err := os.MkdirAll(s.Dir, 0o700); err == nil {
+		_ = os.WriteFile(p, []byte(text), 0o600)
 	}
-	sort.Strings(ids)
-	return s.write(s.path("pins.json"), ids)
+	return true
 }
 
 // HubSent is <state>/move/hub_sent.json: the high-water mark of the moves sent to the hub as
@@ -200,8 +199,12 @@ type LogEntry struct {
 	Kind      Kind      `json:"kind"`
 	Auto      bool      `json:"auto,omitempty"`
 	Reason    string    `json:"reason,omitempty"`
-	Argv      []string  `json:"argv,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	// Rate is the session's burn when it moved (5-hour points per hour; the destination's
+	// moved-burn limit counts it). RateKnown: recorded (a rate of 0 is known too).
+	Rate      float64  `json:"rate,omitempty"`
+	RateKnown bool     `json:"rate_known,omitempty"`
+	Argv      []string `json:"argv,omitempty"`
+	Error     string   `json:"error,omitempty"`
 }
 
 // Append adds a move to the log.
@@ -286,7 +289,7 @@ func (s State) PastSlots(sessionID string, since time.Time) []string {
 func Records(es []LogEntry) []Record {
 	out := make([]Record, 0, len(es))
 	for _, e := range es {
-		out = append(out, Record{Session: e.SessionID, From: e.From, To: e.To, At: e.At})
+		out = append(out, Record{Session: e.SessionID, From: e.From, To: e.To, At: e.At, Rate: e.Rate, RateKnown: e.Rate > 0 || e.RateKnown})
 	}
 	return out
 }

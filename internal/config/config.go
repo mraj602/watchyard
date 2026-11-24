@@ -137,26 +137,33 @@ type Config struct {
 		// MoveOrgs: the organisations a session may move to: any (the default), same-first or
 		// same. The Move* numbers are the decision rules of setup.md 8.6 (each key's default and
 		// reason are in its Decision table).
-		MoveOrgs             string  `toml:"move_orgs"`
-		MoveCap5h            float64 `toml:"move_cap_5h"`
-		MoveCap7d            float64 `toml:"move_cap_7d"`
-		MoveCap5hProtected   float64 `toml:"move_cap_5h_protected"`
-		MoveCap7dProtected   float64 `toml:"move_cap_7d_protected"`
-		MoveHysteresis       float64 `toml:"move_hysteresis"`
-		MoveBurnMin          float64 `toml:"move_burn_min"`
-		MoveWeekSpanH        float64 `toml:"move_week_span_h"`
-		MoveDestHorizonMin   float64 `toml:"move_dest_horizon_min"`
-		MoveYoungMin         float64 `toml:"move_young_min"`
-		MoveMinBurn          float64 `toml:"move_min_burn"`
-		MoveSpikePasses      float64 `toml:"move_spike_passes"`
-		MoveSpikeNearMin     float64 `toml:"move_spike_near_min"`
-		MoveCooldownMin      float64 `toml:"move_cooldown_min"`
-		MoveNoReturnMin      float64 `toml:"move_no_return_min"`
-		MoveAccountMoves     float64 `toml:"move_account_moves"`
+		MoveOrgs           string  `toml:"move_orgs"`
+		MoveCap5h          float64 `toml:"move_cap_5h"`
+		MoveCap7d          float64 `toml:"move_cap_7d"`
+		MoveCap5hProtected float64 `toml:"move_cap_5h_protected"`
+		MoveCap7dProtected float64 `toml:"move_cap_7d_protected"`
+		MoveHysteresis     float64 `toml:"move_hysteresis"`
+		MoveBurnMin        float64 `toml:"move_burn_min"`
+		MoveWeekSpanH      float64 `toml:"move_week_span_h"`
+		MoveDestHorizonMin float64 `toml:"move_dest_horizon_min"`
+		MoveYoungMin       float64 `toml:"move_young_min"`
+		MoveMinBurn        float64 `toml:"move_min_burn"`
+		MoveSpikePasses    float64 `toml:"move_spike_passes"`
+		MoveSpikeNearMin   float64 `toml:"move_spike_near_min"`
+		MoveCooldownMin    float64 `toml:"move_cooldown_min"`
+		MoveNoReturnMin    float64 `toml:"move_no_return_min"`
+		MoveAccountMoves   float64 `toml:"move_account_moves"`
+		MoveAccountBurn    float64 `toml:"move_account_burn"`
+		// MoveExpiringH: within this many hours of a protected account's weekly reset its weekly
+		// cap is the aggressive one (its room would expire unused); 0: never.
+		MoveExpiringH        float64 `toml:"move_expiring_h"`
 		MoveAccountWindowMin float64 `toml:"move_account_window_min"`
 		MoveStoppedWaitMin   float64 `toml:"move_stopped_wait_min"`
 		MoveOwnerGraceMin    float64 `toml:"move_owner_grace_min"`
 		MoveStepWaitMin      float64 `toml:"move_step_wait_min"`
+		// MovePassWaitS: a pass waits at most this long in all for mid-turn sessions to reach
+		// a step boundary (the waits run side by side); the rest wait on in the next pass.
+		MovePassWaitS float64 `toml:"move_pass_wait_s"`
 		// PinReserve5h and PinReserve7d: the points of an account's 5-hour and weekly windows
 		// kept free for each live pinned session on it (setup.md 8.6, Pinned sessions).
 		PinReserve5h float64 `toml:"pin_reserve_5h"`
@@ -315,8 +322,8 @@ var known = map[string]spec{
 var moveDefaults = map[string]float64{
 	"move_cap_5h": 95, "move_cap_7d": 98, "move_cap_5h_protected": 80, "move_cap_7d_protected": 80,
 	"move_hysteresis": 5, "move_burn_min": 10, "move_week_span_h": 5, "move_spike_passes": 2, "move_spike_near_min": 30,
-	"move_cooldown_min": 20, "move_no_return_min": 60, "move_account_moves": 3, "move_account_window_min": 15,
-	"move_stopped_wait_min": 20, "move_owner_grace_min": 0, "move_step_wait_min": 3,
+	"move_cooldown_min": 20, "move_no_return_min": 60, "move_account_moves": 5, "move_account_burn": 40, "move_expiring_h": 3, "move_account_window_min": 15,
+	"move_stopped_wait_min": 20, "move_owner_grace_min": 0, "move_step_wait_min": 3, "move_pass_wait_s": 90,
 	"pin_reserve_5h": 10, "pin_reserve_7d": 5, "move_dest_horizon_min": 90,
 	"move_young_min": 15, "move_min_burn": 1,
 }
@@ -361,6 +368,10 @@ func (c *Config) moveField(k string) *float64 {
 		return &a.MoveNoReturnMin
 	case "move_account_moves":
 		return &a.MoveAccountMoves
+	case "move_account_burn":
+		return &a.MoveAccountBurn
+	case "move_expiring_h":
+		return &a.MoveExpiringH
 	case "move_account_window_min":
 		return &a.MoveAccountWindowMin
 	case "move_stopped_wait_min":
@@ -369,6 +380,8 @@ func (c *Config) moveField(k string) *float64 {
 		return &a.MoveOwnerGraceMin
 	case "move_step_wait_min":
 		return &a.MoveStepWaitMin
+	case "move_pass_wait_s":
+		return &a.MovePassWaitS
 	case "pin_reserve_5h":
 		return &a.PinReserve5h
 	case "pin_reserve_7d":

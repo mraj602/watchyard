@@ -98,11 +98,22 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 			return nil, usageErr(err)
 		}
 		if fs.NArg() == 0 {
-			return pos, nil
+			return pos, flagLike(pos)
 		}
 		pos = append(pos, fs.Arg(0))
 		args = fs.Args()[1:]
 	}
+}
+
+// flagLike refuses a positional argument that looks like a long flag ("--dry-run" after a
+// "--"): a command must never act with a flag left unread.
+func flagLike(pos []string) error {
+	for _, a := range pos {
+		if len(a) > 2 && strings.HasPrefix(a, "--") {
+			return usageErr(fmt.Errorf("%q was not read as a flag (after --?): nothing done", a))
+		}
+	}
+	return nil
 }
 
 // connect implements `wy connect <url> [--token T | --token-stdin] [--insecure-lan] [--no-timer]`.

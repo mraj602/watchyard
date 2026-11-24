@@ -482,6 +482,10 @@ func machineList(ctx context.Context, e *machineEnv, args []string, stdout, stde
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "wy machine list: unexpected argument %q\n", fs.Arg(0))
+		return errUsage
+	}
 	me, err := manageEnv(e, stderr, *asJSON, stdout, *hubAdmin == "")
 	if err != nil {
 		return err

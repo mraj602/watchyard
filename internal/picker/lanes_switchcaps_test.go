@@ -162,8 +162,28 @@ func TestLiveIsPickerMeasuredLevel(t *testing.T) {
 		if !near1(a.WeeklyRead+a.WeeklyMeter, a.Weekly, 1e-9) {
 			t.Errorf("%s: parts %v + %v != %v", a.Key, a.WeeklyRead, a.WeeklyMeter, a.Weekly)
 		}
+		// The 5-hour level: the same reading; the picker's level (--explain) is the switch's
+		// plus the lease charges, logged as l5_leases.
+		if a.FiveReset.IsZero() {
+			continue
+		}
+		if !near1(a.FiveRead+a.FiveMeter, a.FiveHour, 1e-9) || !near1(a.FiveHour+a.FiveLeases, row.FiveHour, 1e-9) {
+			t.Errorf("%s: 5h parts %v + %v = %v, + leases %v vs picker %v", a.Key, a.FiveRead, a.FiveMeter, a.FiveHour, a.FiveLeases, row.FiveHour)
+		}
+	}
+	if a := liveOf(accs, "claude-2"); a.FiveLeases <= 0 {
+		t.Errorf("claude-2's young lease should show as l5_leases: %+v", a)
 	}
 	if row := rowOf(r, "claude-2"); row.Weekly <= row.WeeklyM {
 		t.Errorf("the lease's charge should be in the picker's weekly only: %v vs %v", row.Weekly, row.WeeklyM)
 	}
+}
+
+func liveOf(accs []LiveAccount, key string) LiveAccount {
+	for _, a := range accs {
+		if a.Key == key {
+			return a
+		}
+	}
+	return LiveAccount{}
 }

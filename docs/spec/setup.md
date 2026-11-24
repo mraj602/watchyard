@@ -1831,16 +1831,14 @@ It is off by default; `wy move` by hand works either way.
 
 **Setting.** `wy config set account.smart_switch on|off` (default `off`). Off: nothing moves by
 itself. On: `wy tick` (the timer, once a minute) runs one pass (`wy move --auto`) each tick. Per
-session opt-out: the peers tag `no-move` (`wy peers tag add no-move`) or `wy move --pin-account
-<session>` (`--unpin` undoes it; kept in `<state>/move/pins.json`). Every number below is a
-setting `account.move_*` with the default shown (`wy config set account.move_cap_5h 92`).
+session opt-out: pin the session in Claude Code itself (below, Pinned sessions); there is no other
+pin. Every number below is a setting `account.move_*` with the default shown (`wy config set account.move_cap_5h 92`).
 
 **Scope.** `wy config set account.smart_switch_scope <scope>` limits which sessions the switch
 (and `wy move` by hand) may move: `all` (the default), `tag:<tag>` (sessions with that peers
 tag; `[a-z0-9-]`, up to 40 characters) or `sessions:<id>,<id>...` (ids or prefixes of at least 8
 characters). Every other session counts in the projections but is pinned. For gradual rollout
-and for tests. The scope tag and `no-move` are marker tags: adding them sends no tag notice
-(peers.md 3.4). A `claude -p` session has no inbox, so it cannot carry a tag: `sessions:` is the
+and for tests. The scope tag is a marker tag: adding it sends no tag notice (peers.md 3.4). A `claude -p` session has no inbox, so it cannot carry a tag: `sessions:` is the
 only scope that reaches it. Planned, not in this version: the board's Settings toggle and the
 phone toggle, through an owner-scope hub field `account.smart_switch` (boolean) that machines
 copy into their `config.toml`.
@@ -1888,6 +1886,13 @@ environment of another process is never read (keys.md 8).
   5) (the burn of the next few hours says little about later days).
 - Caps: aggressive `move_cap_5h` = 95 and `move_cap_7d` = 98; protected `move_cap_5h_protected` =
   80 and `move_cap_7d_protected` = 80.
+- **Expiring room.** Within `move_expiring_h` (3) hours of a protected account's weekly reset its
+  weekly cap is `move_cap_7d` (98): the room left would expire unused. Its 5-hour cap stays 80.
+  This holds for the switch (trigger, destinations) and the picker (its drain may use the room;
+  `--explain` prints "Expiring room claude-5: protected, its week resets in 1.1 h: it may be
+  drained to 98% of its week until then", `--json` `expiring_room_cap_7d`; `--plan` says
+  "expiring room"). After the reset the protected caps hold again (live: protected claude-5 at
+  85% an hour before its reset took nothing, its protected cap 80 bounding its drain).
 
 **Decision (the defaults).** An account **triggers** when P5 is over its 5-hour cap or P7 over its
 weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
@@ -1903,21 +1908,39 @@ weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
 | Spike filter | a trigger must hold on `move_spike_passes` = 2 passes in a row, counted per account and window (a 5-hour trigger and a weekly one are two streaks), unless the projected hit of 100 is within `move_spike_near_min` = 30 min or it is hard now | one hot minute (a helper panel) should not move anything; a near hit cannot wait a minute |
 | Readings only | a trigger that only the readings' slope makes (at the measured burn the account is under its caps, and it is not hard now) must hold on 3 passes, near hit or not | readings are whole percents and lag; the measured burn is exact |
 | Candidates | every session on a triggered account that **burned** in the burn window (busy, or tokens in it), whatever its turn state: **mid-turn moves are allowed** | owner: "we move the agent that is working, not the agent that is paused"; moving an idle session frees nothing |
-| Never moved | idle sessions with no burn; pinned (`no-move`, `--pin-account`) or outside the scope; claude.ai `--sdk-url` sessions | |
+| Never moved | idle sessions with no burn; pinned in Claude Code or outside the scope; claude.ai `--sdk-url` sessions | |
 | Pin reserve | `pin_reserve_5h` 10 and `pin_reserve_7d` 5 points per live pinned session: the account's caps for every other session (trigger, enough, destination) are its caps less pins × these | long-running pinned sessions (a Slack watcher, an orchestrator) must not stop; the simulator's best row (below) |
 | Stopped by a limit | a session whose last turn a limit ended (`StopFailure` `rate_limit`) is a candidate too, whatever its burn (it wants to burn): moved when that window resets `move_stopped_wait_min` = 20 min or more from now, else it waits for the reset | a move takes a minute or two and re-reads the context; a near reset is cheaper |
 | Choice | greedy, recomputed after each pick: first a session whose move alone brings both projections under cap − hysteresis (the fewest moves); among those, the most points freed per re-read (burn ÷ (context, at least 20k tokens, × model factor: opus 5, sonnet 3, haiku 1, else 3)), then the highest burn, then the youngest; among the others the highest burn, then the smaller context, then the longest expected remaining time | the highest burner frees the most; when several would each do, the cheapest re-read (simulator: small gain, below) |
-| Enough | stop when P5 and P7 of the source are at most cap − `move_hysteresis` (5) | hysteresis: no move back and forth around the cap |
+| Enough | stop when P5 and P7 of the source are at most cap − `move_hysteresis` (5); for a window whose level now is already at or over cap − 5, at most the cap (no move takes a projection under the level now; live: claude-3 at 84.1 of cap 88 had every unpinned session moved off, down to 0.2 points/h). Still over with nothing left a move would lower: `--plan` says "only pinned burn left (x points/h pinned, y unpinned)" | hysteresis: no move back and forth around the cap; a target that can be met |
 | Destination | logged in on this machine (never an account only another machine has); not its own, not stale, not excluded; organisation per `move_orgs`; an aggressive account: its P5 and P7 (with the moves already planned in this pass) plus this session's burn for h stay at most its caps − 5, h = min(the session's expected remaining time, else `move_dest_horizon_min` = 90 min; the time to that account's 5-hour reset), at least 60 min; a protected account: the full rule, its P5 and P7 with this session's burn added until its resets at most its caps − 5, and only when no aggressive account fits; order: aggressive accounts first, draining ones (the picker's `drain` class: room that expires unused) first, then the soonest 5-hour reset, then the most room; protected accounts last and only within their 80/80 caps | the session must be able to run there; room that expires is worth most |
 | No account fits | no move; `--plan` says why ("no logged-in account on this machine has room for its burn", "no account of its organisation has room (account.move_orgs = same)", "account rate limit") | |
 | Cooldown | `move_cooldown_min` 20 min per session | |
 | No return | never back to the account it left within `move_no_return_min` 60 min, unless that account's 5-hour window reset since | no ping-pong |
-| Account rate limit | at most `move_account_moves` 3 moves into one account per `move_account_window_min` 15 min | a burst of moves must not overfill one account |
+| Account rate limit | at most `move_account_moves` 5 moves of sessions burning at least the burn floor, and at most `move_account_burn` 40 points/h of moved burn (one move always fits), into one account per `move_account_window_min` 15 min. Soft for aggressive accounts: an aggressive account with room that only these limits hold back takes the move before any protected account does (live: claude-2 at 13%/18% had taken 3 moves, two of them 0.2-0.5 points/h, and the next went to protected claude-7, projected 74% against its cap 60) | a burst of moves must not overfill one account; the destination's projection check is the real guard |
 | Once per window | none: a long session may move many times | owner: long sessions may need several moves |
-| Between steps | a mid-turn session is stopped once no step runs, waiting up to `move_step_wait_min` 3 min, never past one minute before the hit | a step stopped half-way is often run again after the resume |
+| Between steps | a mid-turn session is stopped once no step runs, waiting up to `move_step_wait_min` 3 min in all, never past one minute before the hit; a pass's waits run side by side, at most `move_pass_wait_s` 90 s, the rest wait on in the next pass | a step stopped half-way is often run again after the resume |
 | Owner grace | `move_owner_grace_min`, default 0 (off): an interactive session the owner typed into within it stays | the simulator shows no clear gain (below); off |
 
-**Pinned sessions.** A pinned session (`--pin-account`, the peers tag `no-move`) never moves.
+**Pinned sessions.** A pinned session never moves. Pins come from Claude Code only (the owner's
+decision: no manual pinning in Watchyard). The account's config folder holds `jobs/pins.json`, a
+JSON array of short session ids (`["48d8d877","2abbe6d1"]`) that Claude Code keeps; an entry pins
+the session of that folder whose id starts with it. Watchyard only reads the file (each pass, read
+again when its modification time or size changes) and never writes it. A missing file is no pins;
+one that cannot be read or parsed is no pins and a warning (`--plan`, `--list`; the switch's log
+has it once, until it changes). A pin counts only for the folder whose list has it: after a move
+the session is not pinned on its new account until it is pinned there.
+
+Retired: `wy move --pin-account` and `--unpin` (they print where to pin instead and change
+nothing), wy's own `<state>/move/pins.json` (left in place, not read; `--plan` and `--list` warn
+while it lists sessions) and the peers tag `no-move` as a pin (it pins nothing; it stays a marker
+tag, so adding it notifies no holder).
+
+`wy move --plan` and `wy move --list` print one line per pinned session (`pinned: 2abbe6d1 planner
+on claude-3 (in Claude Code; holds a reserve)`); `--json` adds `pins` (`session`, `name`,
+`account`, `from` = `claude`, `live`; `--list --json` is `{"moves": [...], "pins": [...],
+"warnings": [...]}`). A skip says `pinned (in Claude Code)`. A by-hand `wy move` of a pinned
+session needs `--force` and warns that the pin stays on the old account's Claude Code list.
 Pin the long-running sessions that burn little but must not stop: a Slack watcher, an
 orchestrator, a CI watcher. Each *live* pinned session (running, and not idle for 6 hours) keeps a
 reserve free on its account: `account.pin_reserve_5h` (default 10) points of the 5-hour window
@@ -1939,7 +1962,7 @@ A pinned session that alone (its own burn, nothing else) takes its account's 5-h
 level to 100% within 2 hours, before that window resets, is not moved: the pass records one alert
 per session and window until the reset (`<state>/move/alerts.json`), printed in the switch's log
 and by `wy status` ("alert: pinned session ... alone takes claude-2's 5h window to 100% at 14:20
-(...): move it by hand: wy move 5e55a0b0 claude-3"), the command naming the account the switch
+(...): move it by hand: wy move 5e55a0b0 claude-3 --force"), the command naming the account the switch
 would pick for it.
 
 Simulator (`internal/mover/pins_sim_test.go`; 5 coordinators on every pattern of 8.6 placed like
@@ -1975,11 +1998,19 @@ burn now (this machine's sessions and other machines' sessions the hub measured,
 the new lane's burn, against the switch's caps less the pin reserve. The new lane's burn is the
 larger of its estimate's (cost over wall time, or `r`) and the measured lane burn `R` (8.5 Lane
 statistics): a size class sets how long a lane runs, not how fast it burns (live: a "medium"
-lane counted as 4 points per hour while Opus lanes here burn 12-26). The switch reads the
+lane counted as 4 points per hour while Opus lanes here burn 12-26). The account's own burn is
+projected to the resets; the new lane only over its expected time (`--expect`; else
+`move_dest_horizon_min`, 90 min), at most to the 5-hour reset, at least an hour, as the switch
+judges a destination: a short lane cannot burn 5 hours (live: an idle account refused a 25-minute
+lane at 23 points/h, "projection 115%"). The switch projects a running session with an expected
+end (its lease's) the same way: only until then; unknown or overrun, to the resets. The switch reads the
 accounts from the same readings and effective state as the picker (8.5, Effective state; the
 picker's measured level, without lease charges, is `--json` `weekly_measured_pct`), and each
 pass logs the weekly reading and what the meter adds to it in `passes.jsonl` (`l7_read`,
-`l7_read_age_s`, `l7_meter`). Such an account is skipped like a hard limit ("the switch's projection is 97%, over
+`l7_read_age_s`, `l7_meter`), and the same for the 5-hour level from the same reading (`l5_read`,
+`l5_read_age_s`, `l5_meter`; `l5 = l5_read + l5_meter`) with `l5_leases`, the lease charges the
+picker adds on top: `--explain`'s 5-hour level is `l5 + l5_leases` (live: claude-4 at 35.3 for the
+switch and 47 in `--explain`, the difference its young lanes' charges). Such an account is skipped like a hard limit ("the switch's projection is 97%, over
 its cap 95% (it would move a session off)" in `--explain`). Off, the picker is as before.
 
 **Simulator, 1.3.3-pre3 against this release** (`internal/mover/sim_v3_test.go`; every pattern
@@ -2152,8 +2183,11 @@ resume drops the other organisation's thinking blocks and goes on). A session mo
 `<state>/move/notes/<session>.json` exists (written before the kill, dropped after an hour), with
 peers on or off; it ends "Background shells started before keep running (Claude Code lists them
 as stopped; they are not) but are no longer tracked here: check their output files." (A session
-a limit stopped: "(stopped at the 5h limit, which resets at 13:59)"; by hand without a forecast:
-"(by hand, with wy move)".) A stopped background or headless session gets it as its prompt, ending
+a limit stopped: "(stopped at the 5h limit, which resets at 13:59)".) A move by hand (`wy move
+<session>`) is the owner's call and makes no projection claim: its note starts "This session was
+moved by hand by the owner from claude-6 to claude-2 at 14:05", with the path and the
+organisation note as above, and its pane or terminal message "[Watchyard] This session was moved
+by hand by the owner from ...". The hook treats both starts as a move note, not the owner typing. A stopped background or headless session gets it as its prompt, ending
 "Nothing to do about the move: carry on with your task, or stay idle if it was done.". From its
 second move in 7 days the line carries the whole path once, "(move 3: claude-6 → claude-2 →
 claude-5 → claude-3)", so the latest note alone tells the history and nothing stacks. Nothing
@@ -2165,14 +2199,22 @@ The plugin's step hooks (`wy hook --step` on `PreToolUse`, `PostToolUse` and
 `<state>/move/steps/<session>/<tool_use_id>`; a call started with `run_in_background` is not a
 step (its shell keeps running after a move). Before it stops a mid-turn session, the pass waits
 until no step is running, up to `move_step_wait_min` (default 3 min) or until one minute before
-the projected hit, whichever is sooner, then stops it at once. The note then says "Your last step
+the projected hit, whichever is sooner, then stops it at once. The waits of one pass run side by
+side and the moves follow one at a time, each as soon as its session is between steps; a pass
+waits at most `move_pass_wait_s` (default 90 s) in all, and a session still inside its step then
+is left for the next pass, which waits on (the wait counts from its first pass,
+`<state>/move/waits/<session>`) until the 3 minutes in all are up (live: three moves waited in
+turn and no pass ran for 6 minutes while another account went from P5 76 to 155). The note then says "Your last step
 finished before the move."; a session still inside a step when the wait runs out is stopped
 anyway, and its note names the step, "It was stopped inside a step (Bash: npm test) that may
 still be running: check its result before redoing it." (the tool's command, path or pattern,
 at most 80 characters, left out when the secret filter of peers.md matches it). A session with
 no step hooks (an older plugin) is stopped as before, with "Your last step may not have finished:
-check its result before redoing it." The wait runs in the pass, which `wy tick` starts detached
-(one pass at a time: `<state>/move/pass.lock`), so the tick is never held up. The timer's
+check its result before redoing it." The wait runs in the pass, which `wy tick` starts detached, so
+the tick is never held up. `<state>/move/pass.lock` is held only while a pass plans (one plans at
+a time); each move holds its session's lock (`<state>/move/locks/<session>.lock`) while it waits
+and runs, so the next pass runs and leaves that session alone ("a move of it is under way"), and
+`wy move` by hand refuses it. The timer's
 systemd service has `KillMode=process`: with the default (`control-group`) systemd kills the
 detached pass when `wy tick` exits, and no timer pass ever finishes (live run, 1.3.3-pre3). A
 unit an older wy wrote is rewritten by the next `wy update`; `wy doctor` warns about one without
@@ -2291,7 +2333,13 @@ goes on as a background session; its terminal gets a message"). `wy move <sessio
 [<account>] [--dry-run] [--bg] [--now] [--force]`: one move by hand (the session by id, id
 prefix of at least 4 characters or name; the account by label, folder or number, else the
 decision's destination); a session in the middle of a turn is refused without `--now`, an
-account at 98% or more of a window without `--force`, a session outside the scope always. `wy move --auto`: one pass, only when
+account at 98% or more of a window or a session pinned in Claude Code without `--force`, a
+session outside the scope always. Flags may stand anywhere (`wy move 2abbe6d1 claude-3
+--dry-run` is a dry run); a flag-like word left unread (after `--`) or an unknown flag stops the
+command before anything happens. Never a second copy: a session with two live processes (the old
+one and a resumed copy) is refused, by hand and by the switch ("2 copies of it are running: stop
+the extra one first"), and so is a by-hand move of a session moved in the last 5 minutes (its
+resumed copy may not be registered yet; `--force` overrides). `wy move --auto`: one pass, only when
 `account.smart_switch` is on. `wy move --list [--since 24h] [--json]`: the moves of the last day, or of `--since` (a duration such as `12h` or whole days such as `7d`), failed ones marked `FAILED: <error>` (accounts by label), read from this machine's `moves.jsonl`.
 `wy move --digest [--since 24h] [--json]`: the digest of the period (see Notices and digest).
 `wy move --selftest`: the self-test, below.
@@ -2368,10 +2416,11 @@ move_cap_5h = 95            # every number of the decision (8.6, "Decision table
 move_cap_7d = 98            #   move_cap_5h_protected 80, move_cap_7d_protected 80, move_hysteresis 5,
                             #   move_burn_min 10, move_week_span_h 5, move_spike_passes 2,
                             #   move_spike_near_min 30, move_cooldown_min 20, move_no_return_min 60,
-                            #   move_account_moves 3, move_account_window_min 15,
+                            #   move_account_moves 5, move_account_burn 40, move_account_window_min 15,
                             #   move_stopped_wait_min 20, move_owner_grace_min 0,
-                            #   move_step_wait_min 3
+                            #   move_step_wait_min 3, move_pass_wait_s 90
 move_dest_horizon_min = 90  # an aggressive destination must fit the session this long (its expected time first); 0: until the resets
+move_expiring_h = 3         # within this many hours of a protected account's weekly reset its weekly cap is move_cap_7d (expiring room); 0: never
 move_young_min = 15         # a session's burn counts for the switch once it is this old (its first minutes burn hot); 0: at once
 move_min_burn = 1           # a session is moved only when its own burn is at least this many points/h (busy alone is not enough)
 pin_reserve_5h = 10         # points of the 5-hour window kept free per live pinned session (8.6)
