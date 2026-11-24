@@ -147,7 +147,7 @@ type Config struct {
 		MoveAccountMoves     float64 `toml:"move_account_moves"`
 		MoveAccountWindowMin float64 `toml:"move_account_window_min"`
 		MoveStoppedWaitMin   float64 `toml:"move_stopped_wait_min"`
-		MoveNoticeMin        float64 `toml:"move_notice_min"`
+		MoveOwnerGraceMin    float64 `toml:"move_owner_grace_min"`
 	} `toml:"account"`
 }
 
@@ -299,7 +299,7 @@ var moveDefaults = map[string]float64{
 	"move_cap_5h": 95, "move_cap_7d": 98, "move_cap_5h_protected": 80, "move_cap_7d_protected": 80,
 	"move_hysteresis": 5, "move_burn_min": 10, "move_week_span_h": 5, "move_spike_passes": 2, "move_spike_near_min": 30,
 	"move_cooldown_min": 20, "move_no_return_min": 60, "move_account_moves": 3, "move_account_window_min": 15,
-	"move_stopped_wait_min": 20, "move_notice_min": 30,
+	"move_stopped_wait_min": 20, "move_owner_grace_min": 0,
 }
 
 func init() {
@@ -340,8 +340,8 @@ func (c *Config) moveField(k string) *float64 {
 		return &a.MoveAccountWindowMin
 	case "move_stopped_wait_min":
 		return &a.MoveStoppedWaitMin
-	case "move_notice_min":
-		return &a.MoveNoticeMin
+	case "move_owner_grace_min":
+		return &a.MoveOwnerGraceMin
 	}
 	panic("config: unknown move key " + k)
 }

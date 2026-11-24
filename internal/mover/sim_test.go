@@ -163,6 +163,7 @@ type simLane struct {
 	obs                    [10]float64 // the observed burn of the last 10 minutes, points per hour
 	last5                  [5]float64
 	age, movedAt, movedFrm int
+	typed                  int // the minute the owner last typed into it (-1: never)
 	idleFor, turnAge       int
 }
 
@@ -193,12 +194,12 @@ type simAcc struct {
 }
 
 type simResult struct {
-	StoppedMin, IntStoppedMin, Hits, Moves, MidTurn, MidTurnMTok, ReReadMTok, Notices, WeeklyWaste, resets7 float64
-	NoDest, IntKilled, NotLoggedIn                                                                          float64
-	MaxProt5, MaxProt7                                                                                      float64 // sums over runs of the run's max
-	RunsOver80                                                                                              float64 // runs whose protected level went over 80
-	Over80Min, Over80Owner, Over80NoRoom, Over80Other                                                       float64 // protected minutes over 80, by cause
-	runs                                                                                                    float64
+	StoppedMin, IntStoppedMin, Hits, Moves, MidTurn, MidTurnMTok, ReReadMTok, WeeklyWaste, resets7 float64
+	NoDest, IntMoved, IntDelivered, NotLoggedIn                                                    float64
+	MaxProt5, MaxProt7                                                                             float64 // sums over runs of the run's max
+	RunsOver80                                                                                     float64 // runs whose protected level went over 80
+	Over80Min, Over80Owner, Over80NoRoom, Over80Other                                              float64 // protected minutes over 80, by cause
+	runs                                                                                           float64
 }
 
 func (r *simResult) add(o simResult) {
@@ -209,11 +210,11 @@ func (r *simResult) add(o simResult) {
 	r.MidTurn += o.MidTurn
 	r.MidTurnMTok += o.MidTurnMTok
 	r.ReReadMTok += o.ReReadMTok
-	r.Notices += o.Notices
 	r.WeeklyWaste += o.WeeklyWaste
 	r.resets7 += o.resets7
 	r.NoDest += o.NoDest
-	r.IntKilled += o.IntKilled
+	r.IntMoved += o.IntMoved
+	r.IntDelivered += o.IntDelivered
 	r.NotLoggedIn += o.NotLoggedIn
 	r.MaxProt5 += o.MaxProt5
 	r.MaxProt7 += o.MaxProt7
@@ -262,6 +263,7 @@ var simStrategies = func() []simStrat {
 		v2("V2 caps 92", func(p *Params) { p.Cap5 = 92 }),
 		v2("V2 no spike filter", func(p *Params) { p.SpikePasses = 0 }),
 		v2("V2 idle moves too", func(p *Params) { p.IdleMoves = true }),
+		v2("V2 + 2-min owner grace", func(p *Params) { p.OwnerGrace = 2 * time.Minute }),
 		pickB, pickC, same1, same,
 	}
 }()
@@ -305,7 +307,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 	lanes := make([]*simLane, len(specs))
 	byID := map[string]*simLane{}
 	for i, s := range specs {
-		l := &simLane{laneSpec: s, id: fmt.Sprintf("s%03d", i), r: rand.New(rand.NewPCG(s.seed, 4)), movedFrm: -1, ctx: 30_000}
+		l := &simLane{laneSpec: s, id: fmt.Sprintf("s%03d", i), r: rand.New(rand.NewPCG(s.seed, 4)), movedFrm: -1, typed: -1, ctx: 30_000}
 		lanes[i], byID[l.id] = l, l
 	}
 	accIdx := map[string]int{}
@@ -405,7 +407,6 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 	var recs []Record
 	var m5recs []m5.Record
 	streak := map[string]int{}
-	noticed := map[string]NoticeRecord{}
 	alpha := 1 - math.Exp(-1.0/10)
 	pass := 1
 	if st.m5 {
@@ -441,6 +442,9 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 					l.acc = place(m, l.est)
 				}
 				l.on, l.busy = true, 4+l.r.IntN(20)
+				if l.owner {
+					l.typed = m // the owner starts it with a prompt
+				}
 			}
 			if !l.on || l.done {
 				continue
@@ -463,6 +467,9 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 					l.idleFor++
 					if l.idle <= 0 {
 						l.idleFor, l.turnAge = 0, 0
+						if l.owner {
+							l.typed = m // every owner turn starts with the owner typing
+						}
 						l.busy = 4 + l.r.IntN(20)
 						if l.r.Float64() < l.burstP {
 							l.burst, l.burstRate = 10+l.r.IntN(20), uniform(l.r, 20, 45)
@@ -633,7 +640,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			}
 			continue
 		}
-		in := Input{Now: simAt(m), Params: st.p, Recent: recs, Streak: streak, Noticed: noticed}
+		in := Input{Now: simAt(m), Params: st.p, Recent: recs, Streak: streak}
 		for i, a := range accs {
 			v := view[i]
 			acc := Account{Key: a.key, Label: a.key, Protected: a.protected, Ratio: simRatio, Rate: v.rate, RateNote: v.note, LoggedIn: a.loggedIn}
@@ -649,6 +656,9 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			}
 			s := Session{ID: l.id, Account: accs[l.acc].key, Rate: l.rate10(), Busy: l.busy > 0 && l.restart == 0 && !l.stopped,
 				Stopped: l.stopped, Interactive: l.owner, Movable: true, Context: l.ctx}
+			if l.typed >= 0 {
+				s.Typed = simAt(l.typed)
+			}
 			if l.movedFrm >= 0 {
 				s.MovedAt, s.MovedFrom = simAt(l.movedAt), accs[l.movedFrm].key
 			}
@@ -659,10 +669,6 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			check(in, r)
 		}
 		streak = r.Streak
-		for _, n := range r.Notices {
-			noticed[n.Session] = NoticeRecord{At: in.Now, P: n.P}
-			res.Notices++
-		}
 		for _, mv := range r.Moves {
 			if mv.To == "" {
 				res.NoDest++
@@ -683,10 +689,16 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 
 // execMove carries out one move in the simulator: a lane killed mid-turn redoes its step and
 // loses its helpers; the re-read of its context (uncached unless its cache went cold) is
-// burnt on the destination.
+// burnt on the destination. An interactive (owner) session is moved the same way and its
+// owner gets the message in its pane; it then runs on the destination, not stopped.
 func execMove(res *simResult, l *simLane, accs []*simAcc, to, m int, burnAcc func(*simAcc, float64, int, bool)) {
 	if l.owner {
-		res.IntKilled++
+		res.IntMoved++
+		defer func() {
+			if l.acc == to && !l.stopped {
+				res.IntDelivered++ // the message is delivered and it runs on the new account
+			}
+		}()
 	}
 	if !accs[to].loggedIn {
 		res.NotLoggedIn++
@@ -720,8 +732,8 @@ func envInt(k string, def int) int {
 	return def
 }
 
-const simHeader = "| strategy | stopped | of which interactive | hits | moves | mid-turn | mid-turn Mtok | re-read Mtok | notices | prot 5h max | prot 7d max | runs prot>80 % | prot>80 min (owner/no room/other) | waste | interactive killed | to not logged in | no room |\n" +
-	"|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+const simHeader = "| strategy | stopped | of which interactive | hits | moves | mid-turn | mid-turn Mtok | re-read Mtok | prot 5h max | prot 7d max | runs prot>80 % | prot>80 min (owner/no room/other) | waste | interactive moved | to not logged in | no room |\n" +
+	"|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
 
 func writeRow(b *strings.Builder, name string, s simResult) {
 	days := s.runs * simDays
@@ -729,10 +741,10 @@ func writeRow(b *strings.Builder, name string, s simResult) {
 	if s.resets7 > 0 {
 		waste = s.WeeklyWaste / s.resets7
 	}
-	fmt.Fprintf(b, "| %s | %.1f | %.1f | %.2f | %.2f | %.2f | %.2f | %.2f | %.2f | %.1f | %.1f | %.1f | %.1f (%.1f/%.1f/%.1f) | %.1f | %.2f | %.2f | %.2f |\n", name,
-		s.StoppedMin/days, s.IntStoppedMin/days, s.Hits/days, s.Moves/days, s.MidTurn/days, s.MidTurnMTok/days, s.ReReadMTok/days, s.Notices/days,
+	fmt.Fprintf(b, "| %s | %.1f | %.1f | %.2f | %.2f | %.2f | %.2f | %.2f | %.1f | %.1f | %.1f | %.1f (%.1f/%.1f/%.1f) | %.1f | %.2f | %.2f | %.2f |\n", name,
+		s.StoppedMin/days, s.IntStoppedMin/days, s.Hits/days, s.Moves/days, s.MidTurn/days, s.MidTurnMTok/days, s.ReReadMTok/days,
 		s.MaxProt5/s.runs, s.MaxProt7/s.runs, 100*s.RunsOver80/s.runs, s.Over80Min/days, s.Over80Owner/days, s.Over80NoRoom/days,
-		s.Over80Other/days, waste, s.IntKilled/days, s.NotLoggedIn/days, s.NoDest/days)
+		s.Over80Other/days, waste, s.IntMoved/days, s.NotLoggedIn/days, s.NoDest/days)
 }
 
 func runMany(st simStrat, pat simPattern, runs, par int) simResult {
@@ -770,7 +782,7 @@ func TestSimulateStrategies(t *testing.T) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Mover simulator v2: %d seeded runs per pattern, %d days each, %d accounts (claude-1..3 protected). V2 passes every minute, M5 every 2.\n"+
 		"Per day per run: stopped = lane-minutes stopped at a limit (primary); hits = lanes stopped by a limit; mid-turn = moves that killed a turn; "+
-		"mid-turn Mtok = context re-read uncached by those; re-read Mtok = all uncached re-reads; notices = interactive notices; prot 5h/7d max = "+
+		"mid-turn Mtok = context re-read uncached by those; re-read Mtok = all uncached re-reads; interactive moved = the owner's sessions moved (each with its message delivered); prot 5h/7d max = "+
 		"the run's highest protected level (mean over runs); runs prot>80 = share of runs where a protected level went over 80; prot>80 min = protected "+
 		"account-minutes over 80, split by cause (the owner's interactive session burning on it / no aggressive account here had room / other: "+
 		"other machines' burn or a lane the picker had to put there); waste = weekly percent unused at an aggressive account's weekly reset.\n\n",
@@ -812,16 +824,17 @@ func TestSimulateStrategies(t *testing.T) {
 		if st.m5 || st.off {
 			continue
 		}
-		if r := totals[st.name]; r.IntKilled > 0 || r.NotLoggedIn > 0 {
-			t.Errorf("%s: %v interactive killed, %v moves to a not-logged-in account", st.name, r.IntKilled, r.NotLoggedIn)
+		if r := totals[st.name]; r.IntDelivered != r.IntMoved || r.NotLoggedIn > 0 {
+			t.Errorf("%s: %v of %v interactive moves delivered, %v moves to a not-logged-in account", st.name, r.IntDelivered, r.IntMoved, r.NotLoggedIn)
 		}
 	}
 }
 
 // TestPlanInvariants checks every v2 pass of the simulator (WY_SIM_RUNS seeds, 1 under
-// -short on a few patterns): no move to an account not logged in here, stale or its own; no
-// interactive session moved; no move of a session with no burn unless stopped (but with
-// IdleMoves); every destination's projection with all the burn planned onto it stays
+// -short on a few patterns): no move to an account not logged in here, stale or its own;
+// with OwnerGrace, no interactive session the owner typed into within the grace moved; every
+// moved interactive session gets its message and runs on the new account (not stopped); no
+// move of a session with no burn unless stopped (but with IdleMoves); every destination's projection with all the burn planned onto it stays
 // Hysteresis under its caps; the cooldown, no return and the account rate limit hold; the
 // same seed gives the same result.
 func TestPlanInvariants(t *testing.T) {
@@ -919,8 +932,8 @@ func invariantRun(st simStrat, pat simPattern, i int) []string {
 				fail(in, "%s moved to %s, not logged in / stale", s.ID, mv.To)
 			case mv.To == s.Account:
 				fail(in, "%s moved to its own account", s.ID)
-			case s.Interactive:
-				fail(in, "interactive %s moved", s.ID)
+			case p.OwnerGrace > 0 && s.Interactive && !s.Typed.IsZero() && in.Now.Sub(s.Typed) < p.OwnerGrace:
+				fail(in, "interactive %s moved %s after the owner typed (grace %s)", s.ID, in.Now.Sub(s.Typed), p.OwnerGrace)
 			case !s.Busy && s.Rate <= 0 && !s.Stopped && !p.IdleMoves:
 				fail(in, "%s moved with no burn", s.ID)
 			}
@@ -952,6 +965,9 @@ func invariantRun(st simStrat, pat simPattern, i int) []string {
 		}
 	}
 	r1 := simulate(st, pat, uint64(1000+i), check)
+	if r1.IntDelivered != r1.IntMoved {
+		errs = append(errs, fmt.Sprintf("%s %s seed %d: %v of %v moved interactive sessions run on the new account", st.name, pat.name, 1000+i, r1.IntDelivered, r1.IntMoved))
+	}
 	if r2 := simulate(st, pat, uint64(1000+i), nil); r1 != r2 {
 		errs = append(errs, fmt.Sprintf("%s %s seed %d: not deterministic", st.name, pat.name, 1000+i))
 	}

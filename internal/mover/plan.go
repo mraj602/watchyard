@@ -44,9 +44,9 @@ type Params struct {
 	// StoppedWait: a session a limit stopped moves only when that window resets at least this
 	// far ahead (nearer, waiting costs less than a restart and a re-read).
 	StoppedWait time.Duration
-	// NoticeEvery: an interactive session is told again at most this often, and only when its
-	// account's projection got worse.
-	NoticeEvery time.Duration
+	// OwnerGrace: an interactive session the owner typed into this recently is left alone (0:
+	// off, the default; the simulator compares 2 minutes).
+	OwnerGrace time.Duration
 	// Orgs: which organisations a session may move to: any, same-first or same.
 	Orgs string
 	// IdleMoves: idle sessions with no burn are candidates too (a simulator variant only).
@@ -67,7 +67,7 @@ var DefaultParams = Params{
 	Hysteresis: 5, BurnWindow: 10 * time.Minute, Pass: time.Minute, WeekSpan: 5 * time.Hour,
 	SpikePasses: 2, SpikeNear: 30 * time.Minute,
 	Cooldown: 20 * time.Minute, NoReturn: time.Hour, AccountMoves: 3, AccountWindow: 15 * time.Minute,
-	StoppedWait: 20 * time.Minute, NoticeEvery: 30 * time.Minute, Orgs: OrgsAny,
+	StoppedWait: 20 * time.Minute, Orgs: OrgsAny,
 }
 
 // Window kinds.
@@ -123,9 +123,10 @@ type Session struct {
 	Busy bool
 	// Stopped: a limit ended its last turn (StopFailure rate_limit) and that window is full.
 	Stopped bool
-	// Interactive: a human-facing session (setup.md 8.6, Interactive): never stopped by the
-	// switch; it gets a notice instead.
+	// Interactive: a human-facing session (setup.md 8.6, Interactive): moved like any other,
+	// with a message in its pane or terminal; Typed is when the owner last typed into it.
 	Interactive bool
+	Typed       time.Time
 	// Pinned: the owner opted it out (no-move, --pin-account) or it is outside the scope.
 	Pinned bool
 	// Movable: its kind can be restarted (false for claude.ai --sdk-url sessions).
@@ -148,12 +149,6 @@ type Record struct {
 	At       time.Time
 }
 
-// NoticeRecord is the last notice an interactive session got: when and the projection then.
-type NoticeRecord struct {
-	At time.Time `json:"at"`
-	P  float64   `json:"p"`
-}
-
 // Input is one planning pass.
 type Input struct {
 	Now      time.Time
@@ -162,9 +157,8 @@ type Input struct {
 	Recent   []Record // moves of the last hours, any order
 	Params   Params
 	// Streak: per account, on how many consecutive passes before this one it triggered (the
-	// spike filter). Noticed: the last notice per interactive session.
-	Streak  map[string]int
-	Noticed map[string]NoticeRecord
+	// spike filter).
+	Streak map[string]int
 }
 
 // Projection is one account's projections at its burn now.
@@ -211,21 +205,10 @@ type Move struct {
 	ByHand bool
 	// OrgChanged: the destination is another organisation.
 	OrgChanged bool
-	Rate       float64
-	Reason     string
-}
-
-// Notice is a planned notice to an interactive session (never moved by the switch).
-type Notice struct {
-	Session string
-	From    string
-	To      string // the account with room ("" none)
-	Window  string
-	P       float64
-	HitAt   time.Time
-	ResetAt time.Time
-	Rate    float64
-	Reason  string
+	// Interactive: a human-facing session (it gets a message in its pane or terminal).
+	Interactive bool
+	Rate        float64
+	Reason      string
 }
 
 // Skip is a session on a triggered account the pass leaves where it is, and why.
@@ -238,7 +221,6 @@ type Skip struct {
 // Result is one pass: what to move, whom to tell, what is left and why, and the projections.
 type Result struct {
 	Moves    []Move
-	Notices  []Notice
 	Skips    []Skip
 	Accounts []Projection
 	// Streak is the spike filter's state after this pass (keep it for the next one).
@@ -316,11 +298,7 @@ func Plan(in Input) Result {
 				skip(s, fmt.Sprintf("stopped at the %s limit, which resets in %s: waiting costs less than a move", w, reset.Round(time.Minute)))
 				continue
 			}
-			mv := Move{Session: s.ID, From: a.Key, Window: w, P: pr.pOf(w), ResetAt: now.Add(reset), Stopped: true, Rate: s.Rate}
-			if s.Interactive {
-				res.addNotice(p, in, s, a, mv, st, now, skip)
-				continue
-			}
+			mv := Move{Session: s.ID, From: a.Key, Window: w, P: pr.pOf(w), ResetAt: now.Add(reset), Stopped: true, Rate: s.Rate, Interactive: s.Interactive}
 			p.place(in, &res, st, s, a, mv, delta, skip)
 		}
 		if !pr.Triggered {
@@ -333,9 +311,9 @@ func Plan(in Input) Result {
 			}
 			continue
 		}
-		// The burners: every session that burned in the burn window, any turn state. The
-		// interactive ones are told and stay (their burn still counts); the rest are moved,
-		// greedily, until both projections are Hysteresis under the caps.
+		// The burners: every session that burned in the burn window, any turn state,
+		// interactive ones too (they get a message in their pane or terminal), moved greedily
+		// until both projections are Hysteresis under the caps.
 		var cands []Session
 		for _, s := range ss {
 			if s.Stopped {
@@ -343,14 +321,6 @@ func Plan(in Input) Result {
 			}
 			if !s.burned() && !p.IdleMoves {
 				continue // idle with no burn: moving it frees nothing
-			}
-			if s.Interactive {
-				mv := Move{Session: s.ID, From: a.Key, Window: pr.Window, P: pr.pOf(pr.Window), ResetAt: now.Add(pr.resetOf(pr.Window)), Rate: s.Rate}
-				if pr.Hit >= 0 {
-					mv.HitAt = now.Add(pr.Hit)
-				}
-				res.addNotice(p, in, s, a, mv, st, now, skip)
-				continue
 			}
 			if why := p.excluded(s, st, now); why != "" {
 				skip(s, why)
@@ -386,7 +356,7 @@ func Plan(in Input) Result {
 			s := cands[0]
 			cands = cands[1:]
 			mv := Move{Session: s.ID, From: a.Key, Window: cur.Window, P: cur.pOf(cur.Window), ResetAt: now.Add(cur.resetOf(cur.Window)),
-				MidTurn: s.Busy, Rate: s.Rate}
+				MidTurn: s.Busy, Rate: s.Rate, Interactive: s.Interactive}
 			if mv.Window == "" {
 				mv.Window, mv.P, mv.ResetAt = pr.Window, pr.pOf(pr.Window), now.Add(pr.resetOf(pr.Window))
 			}
@@ -430,6 +400,9 @@ func (p Params) excluded(s Session, st *moveState, now time.Time) string {
 	case !s.Movable:
 		return "its kind cannot be restarted from this machine (claude.ai)"
 	}
+	if p.OwnerGrace > 0 && s.Interactive && !s.Typed.IsZero() && now.Sub(s.Typed) < p.OwnerGrace {
+		return "the owner typed into it " + now.Sub(s.Typed).Round(time.Second).String() + " ago (owner grace)"
+	}
 	if l, ok := st.last[s.ID]; ok && p.Cooldown > 0 && now.Sub(l.At) < p.Cooldown {
 		return "moved " + now.Sub(l.At).Round(time.Minute).String() + " ago (cooldown)"
 	}
@@ -450,27 +423,6 @@ func (p Params) place(in Input, res *Result, st *moveState, s Session, a Account
 	}
 	mv.Reason = p.reason(a, mv, why)
 	res.Moves = append(res.Moves, mv)
-}
-
-// addNotice plans a notice to interactive session s (at most every NoticeEvery, and only
-// when the projection got worse), with the account that would take it.
-func (r *Result) addNotice(p Params, in Input, s Session, a Account, mv Move, st *moveState, now time.Time, skip func(Session, string)) {
-	if s.Pinned {
-		skip(s, "pinned, or outside the scope")
-		return
-	}
-	if last, ok := in.Noticed[s.ID]; ok && (now.Sub(last.At) < p.NoticeEvery || mv.P <= last.P) {
-		skip(s, fmt.Sprintf("interactive: told %s ago (again after %s, if the projection gets worse)", now.Sub(last.At).Round(time.Minute), p.NoticeEvery))
-		return
-	}
-	to, why := p.destination(in, s, st, map[string]float64{})
-	n := Notice{Session: s.ID, From: a.Key, To: to, Window: mv.Window, P: mv.P, HitAt: mv.HitAt, ResetAt: mv.ResetAt, Rate: s.Rate}
-	n.Reason = "interactive: told, not moved"
-	if to == "" {
-		n.Reason += "; no account has room: " + why
-	}
-	r.Notices = append(r.Notices, n)
-	skip(s, n.Reason)
 }
 
 // overBy reports whether a projection is over its caps less m.

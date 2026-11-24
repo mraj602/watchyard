@@ -42,10 +42,8 @@ func TestDetectKinds(t *testing.T) {
 			t.Errorf("%+v: %s, want %s", c.d, got, c.want)
 		}
 	}
-	for _, k := range []Kind{KindTerminal, KindCloud} {
-		if k.Movable() {
-			t.Errorf("%s movable", k)
-		}
+	if KindCloud.Movable() || !KindTerminal.Movable() {
+		t.Error("movable: terminal yes, cloud no")
 	}
 }
 
@@ -132,6 +130,10 @@ func (h *fakeHost) Copies(dir, sid string, except int) []int {
 	}
 	return nil
 }
+func (h *fakeHost) TTY(pid int) string { return "/dev/pts/7" }
+func (h *fakeHost) WriteTTY(tty, text string) error {
+	return h.rec("tty " + tty + ": " + text)
+}
 func (h *fakeHost) Tmux(args ...string) error { return h.rec("tmux " + strings.Join(args, " ")) }
 func (h *fakeHost) Start(dir string, argv []string, log string) error {
 	return h.rec("start " + dir + ": " + strings.Join(argv, " ") + " > " + log)
@@ -158,6 +160,8 @@ func TestExecuteByKind(t *testing.T) {
 		{KindWrapped, []string{"note s1", "order 40: " + cmd, "kill 42"}},
 		{KindBackground, []string{"stop s1 in /h/.claude-4", "carry s1 /h/.claude-4 -> /h/.claude-2", "start /w: " + cmd + " --bg N" + PromptTail + " > "}},
 		{KindHeadless, []string{"kill 42", "carry s1 /h/.claude-4 -> /h/.claude-2", "start /w: env CLAUDE_CONFIG_DIR=/h/.claude-2 claude -p --model opus --resume s1 N" + PromptTail + " > /log"}},
+		// A plain terminal goes on as a background session; with no message nothing is written.
+		{KindTerminal, []string{"kill 42", "carry s1 /h/.claude-4 -> /h/.claude-2", "start /w: " + cmd + " --bg N" + PromptTail + " > "}},
 	} {
 		h := &fakeHost{}
 		l := base
@@ -169,9 +173,9 @@ func TestExecuteByKind(t *testing.T) {
 			t.Errorf("%s:\n got %q\nwant %q", c.kind, h.calls, c.want)
 		}
 	}
-	// Never stopped: a plain terminal, a claude.ai session, a pid that is another process now,
-	// and a wrapper order that could not be written.
-	for _, k := range []Kind{KindTerminal, KindCloud} {
+	// Never stopped: a claude.ai session, a pid that is another process now, and a wrapper
+	// order that could not be written.
+	for _, k := range []Kind{KindCloud} {
 		h := &fakeHost{}
 		l := base
 		l.Kind = k
@@ -325,3 +329,48 @@ func TestWatchOldStopsCopyAfterResume(t *testing.T) {
 		t.Errorf("calls %s", c)
 	}
 }
+
+// Owner correction to v2: an interactive session is moved, and the human sees a message where
+// it ran: above the resumed session in its tmux pane, printed by the wy run wrapper, or
+// written to its plain terminal, which the session leaves for a background session.
+func TestExecuteHumanMessage(t *testing.T) {
+	defer func(d time.Duration) { Settle = d }(Settle)
+	Settle = 0
+	tg := Target{Key: "acct:b/o", Label: "claude-2", Dir: "/h/.claude-2"}
+	l := Launch{PID: 42, SessionID: "s1", Slot: "/h/.claude-4", CWD: "/w", Pane: "%5", Wrapper: 40, MidTurn: true,
+		Message: "[Watchyard] This session moved"}
+	cmd := "env CLAUDE_CONFIG_DIR=/h/.claude-2 claude --resume s1 N"
+
+	l.Kind = KindTmux
+	h := &fakeHost{}
+	if _, err := Execute(h, l, tg, "", "N", ""); err != nil {
+		t.Fatal(err)
+	}
+	want := "tmux respawn-pane -k -t %5 -c /w bash -ic " + Shell([]string{"printf '\\n%s\\n\\n' " + Shell([]string{l.Message}) + "; sleep 4; " + cmd})
+	if !strings.Contains(strings.Join(h.calls, "|"), want) || strings.Contains(strings.Join(h.calls, "|"), "note s1") {
+		t.Errorf("tmux: %q\nwant %s (mid-turn: the note is the prompt, no SessionStart note)", h.calls, want)
+	}
+
+	l.Kind = KindTerminal
+	h = &fakeHost{}
+	if _, err := Execute(h, l, tg, "", "N", ""); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(h.calls, "|")
+	if !strings.HasSuffix(got, "|start /w: "+cmd[:len(cmd)-2]+" --bg N > |tty /dev/pts/7: "+l.Message) {
+		t.Errorf("terminal: %s", got)
+	}
+
+	l.Kind = KindWrapped
+	o := &orderHost{}
+	if _, err := Execute(o, l, tg, "", "N", ""); err != nil || o.order.Message != l.Message {
+		t.Errorf("wrapped: %v %+v", err, o.order)
+	}
+}
+
+type orderHost struct {
+	fakeHost
+	order RunOrder
+}
+
+func (h *orderHost) Order(pid int, o RunOrder) error { h.order = o; return nil }

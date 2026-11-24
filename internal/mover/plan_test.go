@@ -210,9 +210,10 @@ func TestPlanHardNowAndSpikeFilter(t *testing.T) {
 	}
 }
 
-// Interactive sessions are never moved: they get one notice, then again only after 30 min
-// and only when the projection got worse; their burn still counts, so another burner moves.
-func TestPlanInteractiveNotice(t *testing.T) {
+// Interactive sessions are moved like any other burner (owner correction to v2): the move
+// is marked Interactive (its pane or terminal gets a message). With the optional owner grace,
+// one the owner typed into within it stays and another burner moves.
+func TestPlanInteractiveMoves(t *testing.T) {
 	owner := lane("owner", "a", 15, true)
 	owner.Interactive = true
 	in := Input{
@@ -220,32 +221,38 @@ func TestPlanInteractiveNotice(t *testing.T) {
 		Sessions: []Session{owner, lane("bot", "a", 8, true)}, // 50 + 4×23 = 142
 	}
 	r := plan(in)
-	if got := moved(r); len(got) != 1 || got["bot"] != "b" {
+	if got := moved(r); len(got) != 1 || got["owner"] != "b" {
 		t.Fatalf("moves %v", got)
 	}
-	if len(r.Notices) != 1 || r.Notices[0].Session != "owner" || r.Notices[0].To != "b" {
-		t.Fatalf("notices %+v", r.Notices)
+	if !r.Moves[0].Interactive || !r.Moves[0].MidTurn {
+		t.Errorf("move %+v: want interactive, mid-turn", r.Moves[0])
 	}
-	p := r.Notices[0].P
-	in.Noticed = map[string]NoticeRecord{"owner": {At: t0.Add(-10 * time.Minute), P: p - 20}}
-	if r := plan(in); len(r.Notices) != 0 {
-		t.Fatal("told again within 30 min")
+	// Owner grace (off by default): typed 1 min ago, grace 2 min: the bot moves instead.
+	in.Sessions[0].Typed = t0.Add(-time.Minute)
+	if got := moved(plan(in)); got["owner"] != "b" {
+		t.Fatalf("grace off by default: %v", got)
 	}
-	in.Noticed["owner"] = NoticeRecord{At: t0.Add(-40 * time.Minute), P: p}
-	if r := plan(in); len(r.Notices) != 0 {
-		t.Fatal("told again with no worse projection")
+	in.Params = DefaultParams
+	in.Params.SpikePasses, in.Params.OwnerGrace = 0, 2*time.Minute
+	r = plan(in)
+	if got := moved(r); len(got) != 1 || got["bot"] != "b" {
+		t.Fatalf("owner grace: moves %v", got)
 	}
-	in.Noticed["owner"] = NoticeRecord{At: t0.Add(-40 * time.Minute), P: p - 1}
-	if r := plan(in); len(r.Notices) != 1 {
-		t.Fatal("not told again after 30 min with a worse projection")
+	if !hasSkip(r, "owner", "owner grace") {
+		t.Errorf("skips %+v", r.Skips)
 	}
-	// A stopped interactive session is told, not moved.
+	in.Sessions[0].Typed = t0.Add(-3 * time.Minute)
+	if got := moved(plan(in)); got["owner"] != "b" {
+		t.Fatalf("grace over: %v", got)
+	}
+	// A stopped interactive session moves too.
 	owner.Stopped, owner.Rate = true, 0
-	in.Sessions, in.Noticed = []Session{owner}, nil
+	in.Sessions = []Session{owner}
+	in.Params = Params{}
 	in.Accounts[0].W5.Level = 100
 	r = plan(in)
-	if len(r.Moves) != 0 || len(r.Notices) != 1 {
-		t.Fatalf("stopped interactive: moves %+v notices %+v", r.Moves, r.Notices)
+	if len(r.Moves) != 1 || !r.Moves[0].Stopped || !r.Moves[0].Interactive {
+		t.Fatalf("stopped interactive: moves %+v", r.Moves)
 	}
 }
 
@@ -438,4 +445,13 @@ func TestNoteText(t *testing.T) {
 	if got := Note("claude-4", "claude-2", at, Move{ByHand: true}); !strings.Contains(got, "(by hand, with wy move)") {
 		t.Errorf("by hand: %s", got)
 	}
+}
+
+func hasSkip(r Result, id, why string) bool {
+	for _, k := range r.Skips {
+		if k.Session == id && strings.Contains(k.Why, why) {
+			return true
+		}
+	}
+	return false
 }

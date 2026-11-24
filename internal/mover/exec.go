@@ -33,6 +33,10 @@ type Host interface {
 	// Copies are the pids of live processes of the session in config folder dir's registry,
 	// other than except.
 	Copies(dir, sessionID string, except int) []int
+	// TTY is the terminal device of pid ("" none).
+	TTY(pid int) string
+	// WriteTTY writes text to terminal device tty (only one of this user's).
+	WriteTTY(tty, text string) error
 }
 
 // Settle is how long a background move watches the old account for a copy its supervisor
@@ -67,6 +71,8 @@ type RunOrder struct {
 	// FromDir is the config folder the session ran in: the wrapper carries the transcript
 	// from it (CarryTranscript) before it relaunches.
 	FromDir string `json:"from_dir,omitempty"`
+	// Message: the wrapper prints it in its terminal before it relaunches.
+	Message string `json:"message,omitempty"`
 }
 
 // ErrNotMovable: the session's kind cannot be restarted by the mover (advise only).
@@ -105,16 +111,42 @@ func Execute(h Host, l Launch, t Target, template, note, log string) ([]string, 
 		if err := h.Carry(l, t.Dir); err != nil {
 			return argv, fmt.Errorf("transcript: %w (copy it into %s/projects by hand, then: cd %s && %s)", err, t.Dir, Shell([]string{l.CWD}), Shell(argv))
 		}
-		if err := h.Tmux("respawn-pane", "-k", "-t", l.Pane, "-c", l.CWD, "bash -ic "+Shell([]string{Shell(argv)})); err != nil {
+		cmd := Shell(argv)
+		if l.Message != "" {
+			// The human sees where it went in the same pane: for a few seconds before claude
+			// takes the screen (its alternate screen), and again when it ends.
+			cmd = "printf '\\n%s\\n\\n' " + Shell([]string{l.Message}) + "; sleep 4; " + cmd
+		}
+		if err := h.Tmux("respawn-pane", "-k", "-t", l.Pane, "-c", l.CWD, "bash -ic "+Shell([]string{cmd})); err != nil {
 			return argv, fmt.Errorf("tmux respawn-pane: %w (start it by hand: cd %s && %s)", err, Shell([]string{l.CWD}), Shell(argv))
 		}
 		_ = h.Tmux("set-option", "-p", "-u", "-t", l.Pane, "remain-on-exit")
 	case KindWrapped:
-		if err := h.Order(l.Wrapper, RunOrder{SessionID: l.SessionID, ConfigDir: t.Dir, Argv: argv, FromDir: l.Slot}); err != nil {
+		if err := h.Order(l.Wrapper, RunOrder{SessionID: l.SessionID, ConfigDir: t.Dir, Argv: argv, FromDir: l.Slot, Message: l.Message}); err != nil {
 			return nil, fmt.Errorf("wy run order: %w", err)
 		}
 		if err := h.Kill(l.PID); err != nil {
 			return nil, err
+		}
+	case KindTerminal:
+		// A plain terminal cannot get the session back: it goes on as a background session
+		// under the new account, and the terminal gets the message (where it went, how to
+		// attach it there).
+		tty := h.TTY(l.PID)
+		if err := h.Kill(l.PID); err != nil {
+			return nil, err
+		}
+		gone(h, l)
+		if err := h.Carry(l, t.Dir); err != nil {
+			return argv, fmt.Errorf("transcript: %w (copy it into %s/projects by hand, then: cd %s && %s)", err, t.Dir, Shell([]string{l.CWD}), Shell(argv))
+		}
+		if err := h.Start(l.CWD, argv, ""); err != nil {
+			return argv, fmt.Errorf("start: %w (start it by hand: cd %s && %s)", err, Shell([]string{l.CWD}), Shell(argv))
+		}
+		if tty != "" && l.Message != "" {
+			if err := h.WriteTTY(tty, l.Message); err != nil {
+				return argv, fmt.Errorf("moved, but its terminal %s was not told: %w", tty, err)
+			}
 		}
 	case KindBackground, KindHeadless:
 		if l.Kind == KindBackground {
@@ -210,9 +242,9 @@ func Manual(l Launch, t Target, template, note string) []string {
 		return []string{"This session runs on claude.ai (--sdk-url); it cannot be moved from this machine."}
 	case KindTerminal:
 		return []string{
-			"From another terminal: kill -9 " + strconv.Itoa(l.PID) + " (a clean exit would also stop the session's background shells),",
-			"then in the session's terminal: cd " + Shell([]string{l.CWD}) + " && " + Shell(argv),
-			"(Start sessions with `wy run claude ...` or the claude shim to let Watchyard do this.)",
+			"kill -9 " + strconv.Itoa(l.PID) + " (a clean exit would also stop the session's background shells),",
+			"then, as a background session: cd " + Shell([]string{l.CWD}) + " && " + Shell(argv),
+			"(its terminal gets a message; sessions started with `wy run claude ...` or the claude shim continue in their terminal instead.)",
 		}
 	}
 	if l.Kind == KindBackground {

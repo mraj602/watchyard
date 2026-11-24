@@ -109,3 +109,36 @@ func (h RealHost) Note(sessionID, text string) error {
 // CleanEnv is env without what belongs to the session that runs wy (SessionEnv): the moved
 // session gets the new account's from its launch command.
 func CleanEnv(env []string) []string { return peers.WithoutSessionEnv(env, true) }
+
+// TTY is the terminal pid's standard input, output or error is (a /dev/pts/N or /dev/ttyN).
+func (h RealHost) TTY(pid int) string {
+	for _, fd := range []string{"0", "1", "2"} {
+		t, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "fd", fd))
+		if err == nil && (strings.HasPrefix(t, "/dev/pts/") || strings.HasPrefix(t, "/dev/tty")) {
+			return t
+		}
+	}
+	return ""
+}
+
+// WriteTTY writes text to tty as lines of their own (the terminal may still be in the raw
+// mode claude left it in), only to a terminal device of this user.
+func (h RealHost) WriteTTY(tty, text string) error {
+	if !strings.HasPrefix(tty, "/dev/pts/") && !strings.HasPrefix(tty, "/dev/tty") {
+		return errors.New("not a terminal: " + tty)
+	}
+	fi, err := os.Stat(tty)
+	if err != nil {
+		return err
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != os.Getuid() || fi.Mode()&os.ModeCharDevice == 0 {
+		return errors.New(tty + " is not this user's terminal")
+	}
+	f, err := os.OpenFile(tty, os.O_WRONLY|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString("\r\n" + strings.ReplaceAll(text, "\n", "\r\n") + "\r\n")
+	return err
+}

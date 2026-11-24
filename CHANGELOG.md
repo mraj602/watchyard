@@ -17,9 +17,12 @@ All notable changes to Watchyard are recorded here. The format follows
   SIGKILL (background shells keep running) and resumed under the new account with a note as the
   prompt, so they carry on by themselves (in their tmux pane, in their terminal under `wy run`,
   as a background session `--resume <id> --bg`, or headless `-p --resume`). Interactive
-  sessions are never killed: they get one Watchyard notice with the command to continue
-  elsewhere, again only when the projection got worse and at most every 30 minutes. Idle
-  sessions never move. A spike filter (two passes in a row, unless the hit is within 30 minutes
+  sessions move the same way, and the person sees a message where the session ran: printed in
+  its tmux pane or `wy run` terminal above the resumed session, or, for a plain terminal, whose
+  session goes on as a background agent on the new account, written to that terminal with the
+  commands to see it or attach it there (and a word on turning Remote Control on again). An
+  optional owner grace (`account.move_owner_grace_min`, off) leaves a session alone for a while
+  after its owner typed into it. Idle sessions never move. A spike filter (two passes in a row, unless the hit is within 30 minutes
   or the account is already at its cap), a 20-minute cooldown, no return within 60 minutes and at
   most 3 moves into one account per 15 minutes stop churn. Destinations are only accounts logged
   in on this machine with room for the moved burn until their resets: draining accounts first,
@@ -29,10 +32,9 @@ All notable changes to Watchyard are recorded here. The format follows
   is a setting (`account.move_*`). `wy move --plan` shows each account's projection, the moves
   and the notices; `wy move <session> [<account>]` moves one by hand; `--pin-account` or the
   peers tag `no-move` opts a session out. In the simulator (9 patterns, 300 runs each) it cuts
-  limit hits from 7.3 to 3.9 a day against the decision this release had before (M5), keeps
-  protected accounts lower and kills no interactive session, for about 3x the moves and context
-  re-read; stopped lane-minutes 466 against M5's 381, most of the difference the owner's own
-  interactive sessions, which v2 only tells.
+  limit hits from 7.3 to 3.9 a day against the decision this release had before (M5) and keeps
+  protected accounts lower, for about 3x the moves and context re-read; stopped lane-minutes
+  443 against M5's 381 (the rest is accounts with no room for the moved burn).
 - Everyone involved learns about a move. The moved session's note carries its whole path of
   accounts once it has moved more than once. The session that started a lane through `wy
   account next --exec` (recorded as the lease's `parent`, or `--parent <id>`) gets one short

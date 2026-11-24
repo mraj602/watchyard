@@ -25,6 +25,8 @@ func (h RealHost) Note(string, string) error            { return errWindows }
 func (h RealHost) Carry(Launch, string) error           { return errWindows }
 func (h RealHost) StopJob(string, string) error         { return errWindows }
 func (h RealHost) Copies(string, string, int) []int     { return nil }
+func (h RealHost) TTY(int) string                       { return "" }
+func (h RealHost) WriteTTY(string, string) error        { return errWindows }
 
 // CleanEnv is env unchanged on Windows.
 func CleanEnv(env []string) []string { return env }

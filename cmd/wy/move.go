@@ -479,7 +479,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	}
 	w.sw = st.LoadSwitch(now, params.Pass)
 	w.input.Now, w.input.Params, w.input.Recent = now, params, mover.Records(log)
-	w.input.Streak, w.input.Noticed = w.sw.Streak, w.sw.Noticed
+	w.input.Streak = w.sw.Streak
 	for _, l := range w.launches {
 		key := w.keyOfDir[l.Slot]
 		if key == "" {
@@ -497,6 +497,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		// (a moved session's command line carries the move note instead: its own lease decides).
 		_, moved := last[l.SessionID]
 		s.Interactive = interactive(l, prompts[l.SessionID], leased[l.SessionID] || (!moved && mover.HasPrompt(l.Argv)))
+		s.Typed = lastOwnerPrompt(prompts[l.SessionID])
 		if p, ok := ctx[l.SessionID]; ok {
 			s.Context = p / 100 * 200_000
 		}
@@ -561,8 +562,8 @@ type promptSeen struct {
 	owner bool
 }
 
-// interactive reports whether session l is a human-facing session the switch never stops
-// (setup.md 8.6, Interactive): a plain terminal or `wy run` session; a tmux pane with Remote
+// interactive reports whether session l is a human-facing session (setup.md 8.6,
+// Interactive: moved like any other, with a message where the human sees it): a plain terminal or `wy run` session; a tmux pane with Remote
 // Control on or a prompt from the owner in its life. With task set, its first prompt was its
 // task (a lane leased by `wy account next`, or a session started with a prompt on its command
 // line), not the owner typing. Background and headless sessions are agents.
@@ -585,6 +586,27 @@ func interactive(l mover.Launch, ps []promptSeen, task bool) bool {
 		}
 	}
 	return false
+}
+
+// hasRemoteControlFlag reports whether argv turns Remote Control on (kept on resume).
+func hasRemoteControlFlag(argv []string) bool {
+	for _, a := range argv {
+		if a == "--remote-control" || strings.HasPrefix(a, "--remote-control=") {
+			return true
+		}
+	}
+	return false
+}
+
+// lastOwnerPrompt is when the owner last typed into the session (zero: never seen).
+func lastOwnerPrompt(ps []promptSeen) time.Time {
+	var t time.Time
+	for _, p := range ps {
+		if p.owner && p.at.After(t) {
+			t = p.at
+		}
+	}
+	return t
 }
 
 // readingRate is the rise of account key's 5-hour readings over the burn window, points per
@@ -637,7 +659,7 @@ func moveParams(cfg config.Config) mover.Params {
 	p.SpikePasses, p.SpikeNear = int(a.MoveSpikePasses), mins(a.MoveSpikeNearMin)
 	p.Cooldown, p.NoReturn = mins(a.MoveCooldownMin), mins(a.MoveNoReturnMin)
 	p.AccountMoves, p.AccountWindow = int(a.MoveAccountMoves), mins(a.MoveAccountWindowMin)
-	p.StoppedWait, p.NoticeEvery = mins(a.MoveStoppedWaitMin), mins(a.MoveNoticeMin)
+	p.StoppedWait, p.OwnerGrace = mins(a.MoveStoppedWaitMin), mins(a.MoveOwnerGraceMin)
 	if a.MoveOrgs != "" {
 		p.Orgs = a.MoveOrgs
 	}
@@ -722,7 +744,7 @@ func (w *moveWorld) planDoc(r mover.Result) map[string]any {
 		}
 		ms = append(ms, pm)
 	}
-	return map[string]any{"accounts": r.Accounts, "moves": ms, "notices": r.Notices, "warnings": w.warnings}
+	return map[string]any{"accounts": r.Accounts, "moves": ms, "warnings": w.warnings}
 }
 
 // accLabel is the label of account key (the key when none is known here).
@@ -783,7 +805,7 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		state = "on"
 	}
 	fmt.Fprintf(out, "\nSmart Account Switch is %s (organisations: %s).\n", state, w.input.Params.Orgs)
-	if len(r.Moves) == 0 && len(r.Notices) == 0 {
+	if len(r.Moves) == 0 {
 		fmt.Fprintln(out, "No session needs a move.")
 	}
 	for _, m := range r.Moves {
@@ -792,54 +814,56 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		if to == "" {
 			to = "(none)"
 		}
-		fmt.Fprintf(out, "%s %s (%s): %s -> %s: %s\n", short(m.Session), l.Name, l.Kind, w.accLabel(m.From), to, m.Reason)
-	}
-	for _, n := range r.Notices {
-		l, _ := w.launch(n.Session)
-		fmt.Fprintf(out, "%s %s (%s, interactive): told, not moved: %s\n", short(n.Session), l.Name, l.Kind, w.noticeText(n, cfg))
+		kind := string(l.Kind)
+		switch {
+		case l.Kind == mover.KindTerminal:
+			kind += ", interactive: goes on as a background session; its terminal gets a message"
+		case m.Interactive:
+			kind += ", interactive: goes on in place; it gets a message there"
+		}
+		fmt.Fprintf(out, "%s %s (%s): %s -> %s: %s\n", short(m.Session), l.Name, kind, w.accLabel(m.From), to, m.Reason)
 	}
 	for _, x := range w.warnings {
 		fmt.Fprintln(out, "warning: "+x)
 	}
 }
 
-// noticeText is the notice an interactive session gets instead of a move (setup.md 8.6,
-// Interactive): its account's projection, the account with room and the command to go on
-// there by hand.
-func (w *moveWorld) noticeText(n mover.Notice, cfg config.Config) string {
-	from := w.accLabel(n.From)
+// humanMessage is what the human sees where session l ran (setup.md 8.6, Interactive): in
+// its tmux pane or `wy run` terminal above the resumed session, or written to its plain
+// terminal, which the session leaves for a background session on t.
+func (w *moveWorld) humanMessage(cfg config.Config, l mover.Launch, t mover.Target, mv mover.Move, at time.Time) string {
+	from := w.labelOfDir[l.Slot]
+	if from == "" {
+		from = filepath.Base(l.Slot)
+	}
 	var b strings.Builder
-	b.WriteString("Watchyard: ")
+	fmt.Fprintf(&b, "[Watchyard] This session moved from %s to %s at %s", from, t.Label, at.Local().Format("15:04"))
 	switch {
-	case w.byID[n.Session].Stopped:
-		fmt.Fprintf(&b, "this session was stopped at %s's %s limit, which resets at %s.", from, n.Window, n.ResetAt.Local().Format("15:04"))
-	case !n.HitAt.IsZero():
-		fmt.Fprintf(&b, "%s's %s will hit 100%% at %s at the current burn (projected %.0f%% before its %s reset; this session burns %.1f points/h).",
-			from, n.Window, n.HitAt.Local().Format("15:04"), n.P, n.ResetAt.Local().Format("15:04"), n.Rate)
-	default:
-		fmt.Fprintf(&b, "%s's %s is projected at %.0f%% before its %s reset at the current burn (this session burns %.1f points/h).",
-			from, n.Window, n.P, n.ResetAt.Local().Format("15:04"), n.Rate)
+	case mv.Stopped && mv.Window != "":
+		fmt.Fprintf(&b, " (it was stopped at %s's %s limit)", from, mv.Window)
+	case mv.Window != "" && !mv.HitAt.IsZero():
+		fmt.Fprintf(&b, " (%s's %s would hit 100%% at %s)", from, mv.Window, mv.HitAt.Local().Format("15:04"))
+	case mv.ByHand:
+		b.WriteString(" (by hand, with wy move)")
 	}
-	if n.To == "" {
-		b.WriteString(" No account logged in on this machine has room for it now; you are told again if it gets worse.")
+	if l.Kind == mover.KindTerminal {
+		agents := mover.Shell(mover.Command(cfg.Account.MoveLaunch, t, []string{"agents"}))
+		attach := mover.Shell(mover.Command(cfg.Account.MoveLaunch, t, []string{"attach", short(l.SessionID)}))
+		fmt.Fprintf(&b, ". It continues as a background agent on %s. See it: %s. Continue it in this terminal: %s.", t.Label, agents, attach)
 	} else {
-		t := w.targets[n.To]
-		l, _ := w.launch(n.Session)
-		l.Kind = mover.KindTerminal
-		cmd := mover.Shell(mover.Command(cfg.Account.MoveLaunch, t, mover.ResumeArgs(l, "")))
-		fmt.Fprintf(&b, " %s has room. Watchyard does not restart interactive sessions: to continue there, /exit, then run: cd %s && %s",
-			t.Label, mover.Shell([]string{l.CWD}), cmd)
-		if n.From != "" && mover.Org(n.From) != mover.Org(n.To) {
-			b.WriteString(" (another organisation: earlier thinking blocks are dropped; the conversation is intact)")
-		}
-		b.WriteString(".")
+		fmt.Fprintf(&b, ". It continues here under %s.", t.Label)
 	}
-	b.WriteString(" Background agents on this account are moved automatically.")
+	switch {
+	case l.RemoteControl && hasRemoteControlFlag(l.Argv):
+		b.WriteString(" Remote Control comes back on by itself (it was started with --remote-control); if it does not, turn it on again with /remote-control.")
+	case l.RemoteControl:
+		fmt.Fprintf(&b, " Remote Control is off now: turn it on again with /remote-control (unless it comes on by itself under %s).", t.Label)
+	}
 	return b.String()
 }
 
-// autoPass carries out the plan: the moves that have a destination, the notices to the
-// interactive sessions, and keeps the switch state for the next pass.
+// autoPass carries out the plan (the moves that have a destination) and keeps the switch
+// state for the next pass.
 func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State) error {
 	for _, x := range mover.Reap(moveHost(e, st), st, e.now()) {
 		fmt.Fprintf(e.stdout, "stopped a copy of %s that the supervisor of %s restarted after its move\n", short(x.SessionID), filepath.Base(x.FromDir))
@@ -849,7 +873,7 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State) error
 	var told []laneNotice
 	for _, m := range r.Moves {
 		l, ok := w.launch(m.Session)
-		if !ok || m.To == "" || !l.Kind.Movable() || w.byID[m.Session].Interactive {
+		if !ok || m.To == "" || !l.Kind.Movable() {
 			continue
 		}
 		l.MidTurn = m.MidTurn
@@ -864,36 +888,11 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State) error
 		told = append(told, n)
 	}
 	w.sw.At, w.sw.Streak = e.now(), r.Streak
-	if len(r.Notices) > 0 {
-		w.notify(e, cfg, r.Notices)
-	}
 	if err := st.SaveSwitch(w.sw); err != nil && first == nil {
 		first = err
 	}
 	w.tell(e, told) // one notice per parent for the whole pass
 	return first
-}
-
-// notify sends each interactive session its notice (peers.md 8.7: a Watchyard notice, no
-// thread) and records it (the next one comes at most every NoticeEvery and only worse).
-func (w *moveWorld) notify(e moveEnv, cfg config.Config, ns []mover.Notice) {
-	pe, err := peersEnv()
-	if err != nil || !pe.Enabled {
-		for _, n := range ns {
-			fmt.Fprintf(e.stdout, "%s not told (peers are off): %s\n", short(n.Session), w.noticeText(n, cfg))
-		}
-		return
-	}
-	for _, n := range ns {
-		text := w.noticeText(n, cfg)
-		h, rf := pe.Notice(n.Session, text)
-		if rf != nil {
-			fmt.Fprintf(e.stdout, "%s not told: %s\n", short(n.Session), rf.Detail)
-			continue
-		}
-		w.sw.Noticed[n.Session] = mover.NoticeRecord{At: e.now(), P: n.P}
-		fmt.Fprintf(e.stdout, "told %s: %s\n", h, text)
-	}
 }
 
 // moveHost is the host that stops and starts sessions (tests set e.host).
@@ -908,6 +907,10 @@ func moveHost(e moveEnv, st mover.State) mover.Host {
 // a new one on t carries the session) and the note.
 func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mover.Launch, t mover.Target, note, reason string, auto bool, mv mover.Move) (laneNotice, error) {
 	host := moveHost(e, st)
+	switch l.Kind {
+	case mover.KindTmux, mover.KindWrapped, mover.KindTerminal:
+		l.Message = w.humanMessage(cfg, l, t, mv, e.now())
+	}
 	log := filepath.Join(st.Dir, "logs", l.SessionID+".log")
 	argv, err := mover.Execute(host, l, t, cfg.Account.MoveLaunch, note, log)
 	from := w.labelOfDir[l.Slot]

@@ -17,8 +17,8 @@ const (
 	// KindWrapped: an interactive session under `wy run` (or the claude shim): the wrapper
 	// starts it again in the same terminal.
 	KindWrapped Kind = "wy-run"
-	// KindTerminal: an interactive session in a plain terminal without the wrapper: advise
-	// only (the steps are printed; nothing is stopped).
+	// KindTerminal: an interactive session in a plain terminal without the wrapper: it goes
+	// on as a background session under the new account, and its terminal gets a message.
 	KindTerminal Kind = "terminal"
 	// KindBackground: a background session (claude agents, the daemon): resumed with --bg
 	// under the new account.
@@ -33,7 +33,7 @@ const (
 
 // Movable reports whether the mover can restart a session of kind k by itself.
 func (k Kind) Movable() bool {
-	return k == KindTmux || k == KindWrapped || k == KindBackground || k == KindHeadless
+	return k == KindTmux || k == KindWrapped || k == KindBackground || k == KindHeadless || k == KindTerminal
 }
 
 // Launch is what the mover knows about a running session: enough to stop it and start it
@@ -62,6 +62,9 @@ type Launch struct {
 	// MidTurn: the move stops it in the middle of a turn: it resumes with the note as its
 	// prompt (set by the caller for one move).
 	MidTurn bool
+	// Message is what the human sees where the session ran (its tmux pane, its terminal):
+	// where it went and how to reach it (set by the caller for one move; "" none).
+	Message string
 }
 
 // Inputs of Detect: what the registry file, /proc and tmux say about one process.
@@ -217,7 +220,7 @@ func ResumeArgs(l Launch, note string) []string {
 		prompt = note // the mid-turn note ends "Carry on with your task."
 	}
 	switch l.Kind {
-	case KindBackground:
+	case KindBackground, KindTerminal:
 		args = append(args, "--bg", prompt)
 	case KindHeadless:
 		if !hasFlag(args, "-p", "--print") {

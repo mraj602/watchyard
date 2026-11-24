@@ -95,7 +95,7 @@ type moveTest struct {
 	CooldownMin      *float64 `json:"cooldown_min"`
 	NoReturnMin      *float64 `json:"no_return_min"`
 	AccountWindowMin *float64 `json:"account_window_min"`
-	NoticeMin        *float64 `json:"notice_min"`
+	OwnerGraceMin    *float64 `json:"owner_grace_min"`
 	AccountMoves     *int     `json:"account_moves"`
 	SpikePasses      *int     `json:"spike_passes"`
 }
@@ -135,7 +135,7 @@ func (t *moveTest) applyParams(p *mover.Params) {
 	set(&p.Cooldown, t.CooldownMin)
 	set(&p.NoReturn, t.NoReturnMin)
 	set(&p.AccountWindow, t.AccountWindowMin)
-	set(&p.NoticeEvery, t.NoticeMin)
+	set(&p.OwnerGrace, t.OwnerGraceMin)
 	if t.AccountMoves != nil {
 		p.AccountMoves = *t.AccountMoves
 	}

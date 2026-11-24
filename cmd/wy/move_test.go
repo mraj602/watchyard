@@ -58,6 +58,11 @@ func (h *recHost) StopJob(dir, sid string) error {
 	return nil
 }
 func (h *recHost) Copies(string, string, int) []int { return nil }
+func (h *recHost) TTY(pid int) string               { return "/dev/pts/" + strconv.Itoa(pid%10) }
+func (h *recHost) WriteTTY(tty, text string) error {
+	h.calls = append(h.calls, "tty "+tty+": "+text)
+	return nil
+}
 func (h *recHost) Carry(l mover.Launch, to string) error {
 	h.calls = append(h.calls, "carry "+l.SessionID)
 	return nil
@@ -141,7 +146,9 @@ func TestMoveByHand(t *testing.T) {
 	}
 	dir2 := filepath.Join(f.home, ".claude-2")
 	cmd := "env CLAUDE_CONFIG_DIR=" + dir2 + " claude --model opus --resume 5e55a0a0-0000-4000-8000-000000000001"
-	want := []string{"tmux set-option -p -t %7 remain-on-exit on", "kill 100", "carry 5e55a0a0-0000-4000-8000-000000000001", "tmux respawn-pane -k -t %7 -c /work bash -ic '" + cmd + "'",
+	msg := "[Watchyard] This session moved from claude to claude-2 at " + nextNow.Local().Format("15:04") + " (by hand, with wy move). It continues here under claude-2."
+	want := []string{"tmux set-option -p -t %7 remain-on-exit on", "kill 100", "carry 5e55a0a0-0000-4000-8000-000000000001",
+		"tmux respawn-pane -k -t %7 -c /work bash -ic " + mover.Shell([]string{"printf '\\n%s\\n\\n' " + mover.Shell([]string{msg}) + "; sleep 4; " + cmd}),
 		"tmux set-option -p -u -t %7 remain-on-exit"}
 	if len(h.calls) != 6 || !strings.HasPrefix(h.calls[0], "note 5e55a0a0-0000-4000-8000-000000000001: Watchyard moved this session from claude to claude-2 at ") ||
 		strings.Join(h.calls[1:], "|") != strings.Join(want, "|") {
@@ -315,22 +322,25 @@ func TestMoveAutoBurnerMidTurn(t *testing.T) {
 	}
 }
 
-// An interactive session (the owner typed into it) is never stopped: it is told instead.
-func TestMoveAutoInteractiveNotice(t *testing.T) {
+// Owner correction to v2: an interactive tmux session the owner typed into is moved like
+// an agent, mid-turn, in its pane, with the message above the resumed session and the note
+// as its prompt.
+func TestMoveAutoInteractiveMoves(t *testing.T) {
 	const sid = "5e55a0a0-0000-4000-8000-000000000001"
 	f, h, run := moveFixture(t, 60, "busy")
 	f.hookEvents(sid, "UserPromptSubmit", "Stop", "UserPromptSubmit")
 	f.fiveReset(3 * time.Hour)
 	injectRates(t, f, `{"rates":{"5e55a0a0":20},"spike_passes":1}`)
 	out, _, _ := run("--plan")
-	if !strings.Contains(out, "(tmux, interactive): told, not moved") || !strings.Contains(out, "claude-2 has room") ||
-		!strings.Contains(out, "/exit, then run: cd /work && env CLAUDE_CONFIG_DIR=") || !strings.Contains(out, "--resume "+sid) {
+	if !strings.Contains(out, "(tmux, interactive: goes on in place; it gets a message there): claude -> claude-2") {
 		t.Fatalf("plan:\n%s", out)
 	}
 	f.set("account.smart_switch", "on")
 	out, _, code := run("--auto")
-	if code != 0 || strings.Contains(out, "moved 5e55") || len(h.calls) != 0 || !strings.Contains(out, "not told (peers are off)") {
-		t.Fatalf("auto: %q %q", out, h.calls)
+	got := strings.Join(h.calls, "\n")
+	if code != 0 || !strings.Contains(out, "moved 5e55") || !strings.Contains(got, "[Watchyard] This session moved from claude to claude-2") ||
+		!strings.Contains(got, "It continues here under claude-2.") || !strings.Contains(got, "mid-turn") || strings.Contains(got, "note "+sid) {
+		t.Fatalf("auto: %q\n%s", out, got)
 	}
 }
 

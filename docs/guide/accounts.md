@@ -199,9 +199,10 @@ What it does, in short:
 - Background, headless and agent tmux sessions move even in the middle of a turn: Claude Code
   stops and resumes under the new account with a note that tells the session what happened, and
   it goes on by itself. Its peers handles keep working, and the session that started it is told.
-- Sessions you work in (a terminal, or a tmux pane you typed into or use with Remote Control)
-  are never killed: they get one notice with the command to continue elsewhere, and again only
-  when it gets worse, at most every 30 minutes.
+- Sessions you work in move too, and you see a message where they ran: a tmux pane or a `wy run`
+  terminal gets the session back in place under the new account, with the message printed above
+  it; a plain terminal's session goes on as a background agent on the new account, and the
+  terminal gets the message with the commands to see it (`claude agents`) or attach it there.
 - Only accounts logged in on this machine are destinations, the session's organisation per
   `account.move_orgs`, aggressive accounts first and protected ones last.
 - `--pin-account` on a session, or the peers tag `no-move`, keeps it where it is.
