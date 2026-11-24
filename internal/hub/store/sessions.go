@@ -293,3 +293,14 @@ func (tx *Tx) SetSessionStart(id string, at int64) error {
 	_, err := tx.exec(`UPDATE session SET started_at = ? WHERE id = ?`, nullInt(at), id)
 	return err
 }
+
+// SessionLeftAccount reports whether the session ran under account (a seat's account uuid)
+// before a move (session_move or moved_from_seat): a sender whose directory has not seen the
+// move yet still names it there (peers.md 3.2).
+func (tx *Tx) SessionLeftAccount(id, account string) (bool, error) {
+	var n int
+	err := tx.queryRow(`SELECT count(*) FROM seat se WHERE se.account_uuid = ? AND (
+		se.id IN (SELECT from_seat FROM session_move WHERE session_id = ?) OR
+		se.id = (SELECT moved_from_seat FROM session WHERE id = ?))`, account, id, id).Scan(&n)
+	return n > 0, err
+}

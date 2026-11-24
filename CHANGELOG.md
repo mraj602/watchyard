@@ -44,6 +44,10 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- Peers: a session moved to another account by hand, without `wy move`, keeps its old handles
+  as aliases (found from the folders Claude Code keeps per session), and a message sent under
+  the account it left is delivered instead of refused with account_mismatch, by the hub and
+  by the receiving machine.
 - Moves: an idle session on an account at its limit is no longer planned as "stopped at the
   limit". Stopped now means a limit reply ended its last turn (a `StopFailure` for
   `rate_limit`); such a session moves only when the window resets 40 minutes or more from now,

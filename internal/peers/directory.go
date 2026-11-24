@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Session is one live session in the directory (peers.md 3.1): of this machine (the local
@@ -20,13 +21,16 @@ type Session struct {
 	// MovedFrom are the handles the session had under accounts it left (identity.md 5.3),
 	// newest first; they are in Aliases too. A send to one of them tells the sender the new
 	// handle (SendResult.Via).
-	MovedFrom   []string
-	Name        string
-	Project     string
-	Mode        Mode // from the session file; prompting when there is none
-	File        SessionFile
-	HasFile     bool
-	MachineName string
+	MovedFrom []string
+	// PastAccounts are the accounts the session left (local: its past slots; the hub's stale
+	// account for it): a message addressed to it under one of them is still its (Receive).
+	PastAccounts []string
+	Name         string
+	Project      string
+	Mode         Mode // from the session file; prompting when there is none
+	File         SessionFile
+	HasFile      bool
+	MachineName  string
 	// Remote: the session runs on another machine; Device is that machine's agent device
 	// ("" when it runs none, so it cannot be reached) and State the hub's session state.
 	Remote bool
@@ -206,18 +210,19 @@ func (e Env) nameLocal(out []Session, slots map[string]slotName) {
 		out[i].AccountLabel = label
 		out[i].Aliases = addAlias(nil, out[i].Handle, MakeHandle(out[i].Name, local, machine))
 		if n, ok := stale[i]; ok {
+			out[i].PastAccounts = append(out[i].PastAccounts, n.Account)
 			out[i].Aliases = addAlias(out[i].Aliases, out[i].Handle, append([]string{n.Handle}, n.Aliases...)...)
 			out[i].MovedFrom = addAlias(out[i].MovedFrom, out[i].Handle, append([]string{n.Handle}, n.MovedFrom...)...)
 		}
 	}
-	if e.PastSlots == nil {
-		return
-	}
 	for i := range out {
-		for _, dir := range e.PastSlots(out[i].Entry.SessionID) {
+		for _, dir := range e.pastSlots(out[i].Entry.SessionID, out[i].Entry.Slot.Dir, slots) {
 			sn, ok := slots[dir]
 			if !ok || dir == out[i].Entry.Slot.Dir {
 				continue
+			}
+			if sn.account != "" && sn.account != out[i].Account {
+				out[i].PastAccounts = append(out[i].PastAccounts, sn.account)
 			}
 			var old []string
 			if l, ok := hubLabel[sn.account]; ok && !mixed[sn.account] && sn.account != out[i].Account {
@@ -232,6 +237,62 @@ func (e Env) nameLocal(out []Session, slots map[string]slotName) {
 			}
 		}
 	}
+}
+
+// pastSlots are the slots of this machine the session ran in before its current one (cur),
+// newest first: those wy move recorded (Env.PastSlots) and those where Claude Code keeps a
+// folder of the session (session-env/<id>, file-history/<id>), which a move by hand, without
+// wy move, leaves behind as well (identity.md 5.3). A folder that is the current slot's own
+// (shared through a symlink) shows nothing. Only folder names are looked at.
+func (e Env) pastSlots(sid, cur string, slots map[string]slotName) []string {
+	var out []string
+	seen := map[string]bool{cur: true}
+	if e.PastSlots != nil {
+		for _, d := range e.PastSlots(sid) {
+			if !seen[d] {
+				seen[d] = true
+				out = append(out, d)
+			}
+		}
+	}
+	if sid == "" || filepath.Base(sid) != sid || strings.HasPrefix(sid, ".") {
+		return out
+	}
+	fsys := e.fs()
+	real := func(p string) string {
+		if r, err := fsys.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return p
+	}
+	type found struct {
+		dir string
+		at  time.Time
+	}
+	var traces []found
+	dirs := make([]string, 0, len(slots))
+	for d := range slots {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	for _, d := range dirs {
+		if seen[d] {
+			continue
+		}
+		for _, sub := range []string{"session-env", "file-history"} {
+			fi, err := fsys.Stat(filepath.Join(d, sub, sid))
+			if err != nil || !fi.IsDir() || real(filepath.Join(d, sub)) == real(filepath.Join(cur, sub)) {
+				continue
+			}
+			traces = append(traces, found{d, fi.ModTime()})
+			break
+		}
+	}
+	sort.SliceStable(traces, func(i, j int) bool { return traces[i].at.After(traces[j].at) })
+	for _, t := range traces {
+		out = append(out, t.dir)
+	}
+	return out
 }
 
 // addAlias appends each alias that differs from the handle and from the ones already there.

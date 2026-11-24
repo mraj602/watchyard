@@ -55,6 +55,22 @@ func TestSessionMovesToAnotherSlot(t *testing.T) {
 	if len(ps) != 1 || ps[0].Account != "acct-2" || ps[0].MovedFromAccount != "acct-4" || ps[0].SlotFolder != "~/.claude-2" {
 		t.Fatalf("peer sessions %+v", ps)
 	}
+	// The relay accepts a message addressed under the account it left (a sender whose
+	// directory has not seen the move), not under any other.
+	if err := f.st.Write(f.ctx, func(tx *store.Tx) error {
+		for acct, want := range map[string]bool{"acct-4": true, "acct-2": false, "acct-9": false} {
+			got, err := tx.SessionLeftAccount(xmSID, acct)
+			if err != nil {
+				return err
+			}
+			if got != want {
+				t.Errorf("left %s: %v", acct, got)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // setup.md 8.6: a long session moved three times (4 -> 2 -> 5 -> 4) keeps every seat it left

@@ -290,7 +290,15 @@ secret is in it. Sessions of the same account are not a reason to print it (nati
   Every account it left in the last 7 days (the hub's `session_move` rows, else this machine's
   move log) adds its handle there, unless another session holds that handle now; the list
   entry carries them as `moved_from` too (JSON), so a chain A → B → C → A leaves every old
-  handle reaching the session.
+  handle reaching the session. A move made by hand, without `wy move` (no move log), counts
+  the same: the hub moves the session on its first live record in the new folder, and its own
+  machine finds the folders it left by the per-session folders Claude Code keeps there
+  (`session-env/<id>`, `file-history/<id>`; folder names only, newest first; a folder that is
+  the current one's through a symlink is no evidence). A message addressed under an account the
+  session left (a sender whose directory has not seen the move yet) is its: the hub accepts it
+  when `session_move` or `moved_from_seat` has that account, and the receiving machine when
+  one of the folders the session left, or the hub's stale name for it, has that account;
+  otherwise it stays account_mismatch.
 - Same account on the same machine is listed too (`local: true`): it works through Watchyard
   as well, although Claude's native `/peers` already reaches it.
 - The trusted sender (4.1a) is not a session and is never listed: nothing can address it, so

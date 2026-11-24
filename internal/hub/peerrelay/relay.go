@@ -497,6 +497,18 @@ func (r *Relay) relay(ctx context.Context, device string, doc keys.Doc) (peers.P
 		}
 		// 3. accounts (the hub's view wins; a different claim is refused), matrix, loop
 		// guard, rates.
+		// A target named under an account it left (its sender's directory has not seen the
+		// move yet, whether wy move made it or not) is the same session: the hub's account
+		// is used from here on (peers.md 3.2).
+		if to.Account != "" && row.ToAcct != "" && row.ToAcct != to.Account {
+			left, err := tx.SessionLeftAccount(to.ID, row.ToAcct)
+			if err != nil {
+				return err
+			}
+			if left {
+				row.ToAcct = to.Account
+			}
+		}
 		for _, p := range []struct{ hub, claim *string }{{&from.Account, &row.FromAcct}, {&to.Account, &row.ToAcct}} {
 			switch {
 			case *p.hub == "":
