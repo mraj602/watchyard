@@ -104,6 +104,8 @@ func runTick(args []string, stdout, stderr io.Writer) error {
 	keep("direct push", tickDirectPush(ctx, d, cfg, errw))
 	queued, err := moveNotices(ctx, d, cfg, time.Now())
 	keep("move notices", err)
+	// Moves made before this machine sent switch_move records (and any not sent yet) go now.
+	queued = backfillSwitchMoves(d, cfg, time.Now()) || queued
 	if queued {
 		// A switch notice was queued for the hub (setup.md 8.6): send it now, not next tick.
 		keep("flush", runFlush(fa, out, errw))

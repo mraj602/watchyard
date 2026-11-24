@@ -165,3 +165,24 @@ func TestSwitchLogOwnSessionsOnly(t *testing.T) {
 		t.Fatalf("untyped records %d", n)
 	}
 }
+
+// A move sent live and again by the back-fill (another record, the same machine, session and
+// time) is one row; an old-format record without projections shows with null numbers.
+func TestSwitchLogBackfillDedupe(t *testing.T) {
+	h := startHub(t, "")
+	mt, rd := h.token("machine"), h.token("phone")
+	at := t0.Add(time.Hour)
+	h.ingest(mt, moveRecord(t, h.machine, at, nil))
+	h.ingest(mt, moveRecord(t, h.machine, at, nil)) // a new record id for the same move
+	h.ingest(mt, moveRecord(t, h.machine, at.Add(time.Hour), func(p *record.SwitchMovePayload) {
+		p.P5, p.Cap5, p.Reason, p.Window, p.Auto = nil, nil, "", "", false
+	}))
+	var got swPage
+	h.get("/v1/switches", rd, &got)
+	if len(got.Moves) != 2 || got.Summary.Moves != 2 {
+		t.Fatalf("moves %d summary %+v", len(got.Moves), got.Summary)
+	}
+	if old := got.Moves[0]; old.P5 != nil || old.Reason != "" || old.Result != "resumed" {
+		t.Fatalf("old-format move %+v", old.SwitchMove)
+	}
+}

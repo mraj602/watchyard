@@ -19,7 +19,8 @@ All notable changes to Watchyard are recorded here. The format follows
   (`claude-3 → claude-2 → claude-6` with times). Machines send each move, failed ones too, as a
   new `switch_move` record; hub schema v24 (migration 0024) adds `switch_move`;
   `GET /v1/switches` serves it. A machine that does not send the record keeps working and shows
-  nothing there. `wy move --list` takes `--since 7d` (default 1 day) and marks failed moves.
+  nothing there. On its first tick after the update a machine also sends its last 14 days of moves
+  (older lines show without projections), once. `wy move --list` takes `--since 7d` (default 1 day) and marks failed moves.
 - **The picker uses the switch's projection** (setup.md 8.6, The picker and the switch). While
   the switch is on, `wy account next` places no new lane where the switch's projection (one
   shared function, `internal/projection`) of the account's measured burn plus the new lane would

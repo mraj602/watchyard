@@ -2261,7 +2261,10 @@ how it ran, move number, reason, projections, result or error), and filters for 
 automatic or by hand, failed only and dates (last 24 hours, 7 days, 30 days, all, or from/to
 days), 25 rows a page. A session's page shows its path through accounts with the time of each
 move. A machine that does not send the record (older than this release) shows nothing there; its
-own log is `wy move --list`. Moves made before the machine was updated are not sent later.
+own log is `wy move --list`. On its first tick after the update the machine also sends the moves of the last 14 days from
+`moves.jsonl` (older lines have no projections, window or reason: the board shows them without
+those numbers); `<state>/move/hub_sent.json` is the high-water mark, so later ticks send only
+what is new, and the hub keeps one row per machine, session and time.
 
 **Records.** `<state>/move/alerts.json`: the pin alerts (`at`, `session`, `name`, `account`,
 `window`, `hit_at`, `reset_at`, `rate`, `command`), each kept until its window resets.

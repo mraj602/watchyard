@@ -68,8 +68,9 @@ one it left or the one it went to), automatic or by hand, failed only, and dates
 are in the address, so a filtered view can be bookmarked. A session's own page shows its path,
 for example `claude-3 → claude-2 (14:02) → claude-6 (16:40)`.
 
-Only moves made after a machine runs this version appear; before that, `wy move --list --since 7d`
-shows the machine's own file.
+A machine sends its last 14 days of moves the first time it runs this version (those older
+moves show without the projections); for anything earlier, `wy move --list --since 30d` shows the
+machine's own file.
 
 ## On a phone
 

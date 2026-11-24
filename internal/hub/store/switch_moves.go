@@ -57,11 +57,12 @@ func b2i(b bool) int {
 	return 0
 }
 
-// InsertSwitchMove stores a move once per record; a replayed record changes nothing.
+// InsertSwitchMove stores a move once per record and once per machine, session and time; a
+// replayed or back-filled record changes nothing.
 func (tx *Tx) InsertSwitchMove(m SwitchMoveInsert) error {
 	_, err := tx.exec(`INSERT INTO switch_move (record_id, machine_id, at, session_id, session_name, kind, interactive, from_label,
 		to_label, auto, reason, window, p5, p7, cap5, cap7, burn5, cross_org, error)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(record_id) DO NOTHING`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
 		m.RecordID, m.Machine, m.At, m.SessionID, nullStr(m.SessionName), m.Kind, b2i(m.Interactive), m.From, m.To, b2i(m.Auto),
 		nullStr(m.Reason), nullStr(m.Window), m.P5, m.P7, m.Cap5, m.Cap7, m.Burn5, b2i(m.CrossOrg), nullStr(m.Error))
 	return err

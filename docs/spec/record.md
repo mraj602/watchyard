@@ -630,10 +630,10 @@ another account (setup.md 8.6, Switch log): the Smart Account Switch's automatic
 by hand, interactive sessions included, and a move that failed (with its error). One record per
 move, written when the move ends and uploaded by the usual flush (no extra flush: the next tick
 sends it). No `seat` and no `slot`: it is the machine's. `ts` is when it was written. The hub
-keeps it in `switch_move` (one row per record id, so a replay makes no second row) for the
+keeps it in `switch_move` (one row per record id and per machine, session and `at`, so a replay or a back-fill of a move already sent makes no second row) for the
 board's Switches page (`GET /v1/switches`, api.yaml); it makes no alert. The hub works out the
 move's number in its session's path (the moves that worked, oldest first) when it reads. A
-machine that does not send the kind has no rows; a hub that does not know the kind stores it
+machine's first tick after the update also sends the moves of the last 14 days in its `moves.jsonl` that were not sent (a mark in `<state>/move/hub_sent.json`); a line from an older release lacks the projections, window and reason, and those fields are absent. A machine that does not send the kind has no rows; a hub that does not know the kind stores it
 untyped. A move of a session that another machine runs is stored with `typed = 0` and a
 `type_error` (section 5.1).
 

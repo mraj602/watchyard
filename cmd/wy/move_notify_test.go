@@ -13,6 +13,7 @@ import (
 
 	"github.com/mraj602/watchyard/internal/config"
 	"github.com/mraj602/watchyard/internal/mover"
+	"github.com/mraj602/watchyard/internal/paths"
 	"github.com/mraj602/watchyard/internal/record"
 )
 
@@ -322,5 +323,76 @@ func TestMoveOutForHubRecord(t *testing.T) {
 	}
 	if moveOutFor(f.dirs, config.Defaults(), now).ready() {
 		t.Fatal("ready without a hub or direct push")
+	}
+}
+
+func outboxMoves(t *testing.T, dirs paths.Dirs) []record.SwitchMovePayload {
+	t.Helper()
+	files, _ := filepath.Glob(filepath.Join(dirs.State.Path, "outbox", "*.jsonl"))
+	var out []record.SwitchMovePayload
+	for _, name := range files {
+		b, _ := os.ReadFile(name)
+		for _, line := range strings.Split(string(b), "\n") {
+			var r struct {
+				Kind    string                   `json:"kind"`
+				Payload record.SwitchMovePayload `json:"payload"`
+			}
+			if json.Unmarshal([]byte(line), &r) == nil && r.Kind == record.KindSwitchMove {
+				out = append(out, r.Payload)
+			}
+		}
+	}
+	return out
+}
+
+// The first tick after the update sends the last 14 days of moves.jsonl, old-format lines
+// included; a mark keeps the next tick from sending them again.
+func TestBackfillSwitchMoves(t *testing.T) {
+	f := newNextFixture(t)
+	cfg := config.Defaults()
+	cfg.Hub.URL = "https://hub.example"
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	st := mover.NewState(f.dirs.State.Path)
+	add := func(e mover.LogEntry) {
+		t.Helper()
+		if err := st.Append(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(mover.LogEntry{At: now.Add(-20 * 24 * time.Hour), SessionID: "s-old", From: "acct:a/o1", To: "acct:b/o1", Kind: mover.KindBackground}) // too old
+	// An old-format line: no name, no folders, no reason.
+	add(mover.LogEntry{At: now.Add(-5 * 24 * time.Hour), SessionID: "s1", From: "acct:a/o1", To: "acct:b/o2", Kind: mover.KindTmux, Auto: true})
+	add(mover.LogEntry{At: now.Add(-2 * time.Hour), SessionID: "s1", Name: "api", From: "k2", To: "k3", FromDir: "/h/.claude-2", ToDir: "/h/.claude-3",
+		Kind: mover.KindBackground, Auto: true, Reason: "5h 97% >= 95", Error: "claude not found"})
+	add(mover.LogEntry{At: now.Add(-time.Hour), SessionID: "", From: "x", To: "y", Kind: mover.KindBackground}) // no session: skipped
+	if _, ok := st.HubSentCursor(); ok {
+		t.Fatal("a mark before the first run")
+	}
+	if !backfillSwitchMoves(f.dirs, cfg, now) {
+		t.Fatal("nothing queued")
+	}
+	got := outboxMoves(t, f.dirs)
+	if len(got) != 2 || got[0].SessionID != "s1" || !got[0].Interactive || !got[0].CrossOrg || got[0].P5 != nil || got[0].Reason != "" || got[0].Window != "" {
+		t.Fatalf("old line %+v", got)
+	}
+	if got[1].Error != "claude not found" || got[1].SessionName != "api" || got[1].Reason == "" || got[1].From != "~/.claude-2" {
+		t.Fatalf("new line %+v", got[1])
+	}
+	cur, ok := st.HubSentCursor()
+	if !ok || !cur.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("mark %v %v", cur, ok)
+	}
+	// Idempotent: a second tick sends nothing; a new move after the mark is the only one sent.
+	if backfillSwitchMoves(f.dirs, cfg, now.Add(time.Minute)) || len(outboxMoves(t, f.dirs)) != 2 {
+		t.Fatal("sent again")
+	}
+	add(mover.LogEntry{At: now.Add(2 * time.Minute), SessionID: "s2", From: "k1", To: "k2", Kind: mover.KindHeadless})
+	if !backfillSwitchMoves(f.dirs, cfg, now.Add(3*time.Minute)) || len(outboxMoves(t, f.dirs)) != 3 {
+		t.Fatalf("new move: %d", len(outboxMoves(t, f.dirs)))
+	}
+	// No hub: nothing happens and no mark is made.
+	f2 := newNextFixture(t)
+	if backfillSwitchMoves(f2.dirs, config.Defaults(), now) {
+		t.Fatal("queued without a hub")
 	}
 }

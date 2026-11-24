@@ -161,6 +161,33 @@ func (s State) SetPin(sessionID string, on bool) error {
 	return s.write(s.path("pins.json"), ids)
 }
 
+// HubSent is <state>/move/hub_sent.json: the high-water mark of the moves sent to the hub as
+// switch_move records (setup.md 8.6, Switch log). No file: nothing was back-filled yet.
+type HubSent struct {
+	At time.Time `json:"at"`
+}
+
+// HubSentCursor returns the mark; ok is false before the first back-fill.
+func (s State) HubSentCursor() (time.Time, bool) {
+	b, err := os.ReadFile(s.path("hub_sent.json"))
+	if err != nil {
+		return time.Time{}, false
+	}
+	var h HubSent
+	if json.Unmarshal(b, &h) != nil {
+		return time.Time{}, false
+	}
+	return h.At, true
+}
+
+// SaveHubSentCursor moves the mark forward (never back).
+func (s State) SaveHubSentCursor(at time.Time) error {
+	if cur, ok := s.HubSentCursor(); ok && !at.After(cur) {
+		return nil
+	}
+	return s.write(s.path("hub_sent.json"), HubSent{At: at.UTC()})
+}
+
 // LogEntry is one line of moves.jsonl.
 type LogEntry struct {
 	At        time.Time `json:"at"`

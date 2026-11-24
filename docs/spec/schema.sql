@@ -356,6 +356,8 @@ CREATE TABLE switch_move (
   cross_org     INTEGER NOT NULL CHECK (cross_org IN (0, 1)),
   error         TEXT
 ) STRICT;
+-- One row per machine, session and second: a back-filled move that was also sent live is one row.
+CREATE UNIQUE INDEX switch_move_once ON switch_move(machine_id, session_id, at);
 CREATE INDEX switch_move_at ON switch_move(at DESC);
 CREATE INDEX switch_move_session ON switch_move(session_id, at);
 CREATE INDEX switch_move_machine ON switch_move(machine_id, at DESC);
