@@ -7,3 +7,4 @@ Type=oneshot
 ExecStart=/home/alice/.local/bin/wy tick --quiet
 Nice=10
 TimeoutStartSec=60
+KillMode=process

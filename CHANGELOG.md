@@ -58,6 +58,9 @@ All notable changes to Watchyard are recorded here. The format follows
   when the 5-hour window hits) and per live session (burn per minute, account, name, kind,
   state, helper agents, calls per model, folder). The mover's forecast uses the same numbers.
 - `wy move --plan` says, for each session on an account that hits, why it stays.
+- `account.move_launch` takes the token `{launcher-config}` for a launcher that adds its own
+  config flags: the moved session's `--settings`, `--mcp-config`, `--plugin-dir`... are left out
+  instead of passed twice. A leading `~/` or `$HOME/` in it is expanded.
 - Pinned sessions keep a reserve (setup.md 8.6, Pinned sessions). Each live pinned session
   (`--pin-account` or the peers tag `no-move`; idle 6 hours: released) keeps
   `account.pin_reserve_5h` (10) points of its account's 5-hour window and
@@ -76,6 +79,15 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- Smart Account Switch passes started by the timer were killed when `wy tick` exited (the
+  systemd service's default `KillMode=control-group`): the timer's service now has
+  `KillMode=process` (rewritten by `wy update`), and `wy doctor` warns about a unit without it.
+- The switch could not run claude from the timer (its PATH lacks `~/.local/bin`): `claude stop`
+  and the default resume command now use claude's full path when it is not on PATH
+  (`~/.local/bin/claude` and the usual places, then the session's own executable); with the
+  switch on, `wy doctor` warns when the timer cannot find it.
+- A moved session's flags repeated with the same values (a launcher adding its config flags on
+  an earlier move) are passed once.
 - Peers: a session moved to another account by hand, without `wy move`, keeps its old handles
   as aliases (found from the folders Claude Code keeps per session), and a message sent under
   the account it left is delivered instead of refused with account_mismatch, by the hub and

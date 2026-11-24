@@ -9,3 +9,4 @@ Environment=WY_STATE_DIR=/srv/state
 ExecStart="/opt/my tools/wy" tick --quiet
 Nice=10
 TimeoutStartSec=60
+KillMode=process

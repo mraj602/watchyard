@@ -104,6 +104,9 @@ func Execute(h Host, l Launch, t Target, template, note, log string) ([]string, 
 		return nil, fmt.Errorf("pid %d is no longer the session", l.PID)
 	}
 	argv := Command(template, t, ResumeArgs(l, note))
+	// What Start runs: claude by its full path when PATH lacks it (the timer's PATH);
+	// argv, returned and shown, keeps the plain name.
+	run := ClaudeArgv(argv, sessionExe(l.PID))
 	switch l.Kind {
 	case KindTmux, KindWrapped:
 		if l.MidTurn {
@@ -155,7 +158,7 @@ func Execute(h Host, l Launch, t Target, template, note, log string) ([]string, 
 		if err := h.Carry(l, t.Dir); err != nil {
 			return argv, fmt.Errorf("transcript: %w (copy it into %s/projects by hand, then: cd %s && %s)", err, t.Dir, Shell([]string{l.CWD}), Shell(argv))
 		}
-		if err := h.Start(l.CWD, argv, ""); err != nil {
+		if err := h.Start(l.CWD, run, ""); err != nil {
 			return argv, fmt.Errorf("start: %w (start it by hand: cd %s && %s)", err, Shell([]string{l.CWD}), Shell(argv))
 		}
 		if tty != "" && l.Message != "" {
@@ -184,7 +187,7 @@ func Execute(h Host, l Launch, t Target, template, note, log string) ([]string, 
 		if l.Kind == KindHeadless {
 			lg = log
 		}
-		if err := h.Start(l.CWD, argv, lg); err != nil {
+		if err := h.Start(l.CWD, run, lg); err != nil {
 			return argv, fmt.Errorf("start: %w (start it by hand: cd %s && %s)", err, Shell([]string{l.CWD}), Shell(argv))
 		}
 		if l.Kind == KindBackground {

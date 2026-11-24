@@ -2018,8 +2018,23 @@ the new folder's `.claude.json` (that one value, through the same JSON editor as
 Without it a resumed interactive session waits at "Do you trust this folder?" (default "No,
 exit") and `claude --bg` refuses with "Workspace not trusted" (e2e). The command is `account.move_launch` with `{dir}`,
 `{n}` (the N of `~/.claude-N`) and `{label}` filled and the arguments appended (e.g.
-`~/bin/claude-launch {n}`), else `env CLAUDE_CONFIG_DIR=<dir> claude`; started processes get
-this environment without `CLAUDE_CONFIG_DIR`, `CLAUDECODE` and `CLAUDE_CODE_*`.
+`~/bin/claude-launch {n}`; a leading `~/` or `$HOME/` is expanded), else `env
+CLAUDE_CONFIG_DIR=<dir> claude`; started processes get this environment without
+`CLAUDE_CONFIG_DIR`, `CLAUDECODE` and `CLAUDE_CODE_*`. The arguments are the session's own
+flags (all but the ones above: model, permission mode, `--settings`, `--mcp-config`,
+`--plugin-dir`... ; a flag repeated with the same values is passed once) and the resume, so a
+launcher that adds config flags of its own passes them twice. Such a launcher gets the token
+`{launcher-config}` in the template (`~/bin/claude-launch {n} {launcher-config}`): the
+session's `--settings`, `--mcp-config`, `--strict-mcp-config`, `--plugin-dir` and
+`--setting-sources` are then left out and the launcher's are the only ones.
+
+**Finding claude.** The timer runs with the service manager's PATH, which often lacks
+`~/.local/bin`. Every `claude` the switch runs (`claude stop`, `claude agents`, the default
+resume command) is `claude` when it is on PATH, else the first of `~/.local/bin/claude`,
+`~/.claude/local/claude`, `/usr/local/bin/claude`, `/opt/homebrew/bin/claude` and the session's
+own executable (a native install's `~/.local/share/claude/versions/<v>`; not node) that exists.
+A launcher from `move_launch` finds claude itself. With the switch on, `wy doctor` warns when
+the timer can find none of them.
 
 | Kind | Detected by | Restart |
 | --- | --- | --- |
@@ -2091,7 +2106,11 @@ still be running: check its result before redoing it." (the tool's command, path
 at most 80 characters, left out when the secret filter of peers.md matches it). A session with
 no step hooks (an older plugin) is stopped as before, with "Your last step may not have finished:
 check its result before redoing it." The wait runs in the pass, which `wy tick` starts detached
-(one pass at a time: `<state>/move/pass.lock`), so the tick is never held up.
+(one pass at a time: `<state>/move/pass.lock`), so the tick is never held up. The timer's
+systemd service has `KillMode=process`: with the default (`control-group`) systemd kills the
+detached pass when `wy tick` exits, and no timer pass ever finishes (live run, 1.3.3-pre3). A
+unit an older wy wrote is rewritten by the next `wy update`; `wy doctor` warns about one without
+it (a drop-in `watchyard-flush.service.d/*.conf` with `KillMode=process` counts).
 
 Why: SIGKILL ends claude, not the foreground command of its running tool call, which finishes
 on its own a little later; a resumed session that checks at once may not see its result and runs
@@ -2201,6 +2220,7 @@ colours = { "~/.claude-2" = "#f59e0b" }
 [account]                   # Smart Account Switch (8.6)
 smart_switch = false        # on: wy tick moves sessions predicted to hit a limit before its reset
 move_launch = ""            # command a moved session starts with ({dir}, {n}, {label}); "": env CLAUDE_CONFIG_DIR={dir} claude
+                            # {launcher-config}: the launcher adds the config flags; the session's are left out
 move_orgs = "any"           # any | same-first | same: may a session move to another organisation
 move_cap_5h = 95            # every number of the decision (8.6, "Decision table") is a key:
 move_cap_7d = 98            #   move_cap_5h_protected 80, move_cap_7d_protected 80, move_hysteresis 5,

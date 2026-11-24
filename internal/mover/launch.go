@@ -2,6 +2,7 @@ package mover
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -152,6 +153,7 @@ var dropFlags = map[string]bool{"--resume": true, "-r": true, "--continue": true
 // flags all stay.
 func KeptArgs(argv []string) []string {
 	var out []string
+	seen := map[string]bool{}
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
 		if a == "--" {
@@ -177,6 +179,13 @@ func KeptArgs(argv []string) []string {
 		if dropFlags[name] {
 			continue
 		}
+		// The same flag with the same values twice (a launcher that added its config flags to
+		// flags that already had them, on an earlier move) is kept once.
+		key := strings.Join(append([]string{a}, vals...), "\x00")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		out = append(out, a)
 		out = append(out, vals...)
 	}
@@ -257,18 +266,73 @@ func SlotNumber(dir string) string {
 }
 
 // Command is the command line that starts claude with args under t: the template
-// (account.move_launch) with {dir}, {n} and {label} filled and the arguments appended, else
-// `env CLAUDE_CONFIG_DIR=<dir> claude <args>`.
+// (account.move_launch) with {dir}, {n} and {label} filled, a leading ~/ or $HOME expanded,
+// and the arguments appended, else `env CLAUDE_CONFIG_DIR=<dir> claude <args>`.
+//
+// The arguments are the session's own flags (KeptArgs: model, permission mode, settings, MCP
+// and plugin flags...) and the resume. A launcher that adds config flags of its own (an
+// --plugin-dir/--settings/--mcp-config wrapper) would pass them twice: the token
+// {launcher-config} in the template drops the session's config flags (LauncherConfigFlags)
+// so the launcher's are the only ones.
 func Command(template string, t Target, args []string) []string {
 	if strings.TrimSpace(template) == "" {
 		return append([]string{"env", "CLAUDE_CONFIG_DIR=" + t.Dir, "claude"}, args...)
 	}
+	home, _ := os.UserHomeDir()
 	r := strings.NewReplacer("{dir}", t.Dir, "{n}", SlotNumber(t.Dir), "{label}", t.Label)
 	var out []string
 	for _, f := range strings.Fields(template) {
-		out = append(out, r.Replace(f))
+		if f == LauncherConfig {
+			args = withoutFlags(args, LauncherConfigFlags)
+			continue
+		}
+		f = r.Replace(f)
+		if home != "" {
+			switch {
+			case strings.HasPrefix(f, "~/"):
+				f = filepath.Join(home, f[2:])
+			case strings.HasPrefix(f, "$HOME/"), strings.HasPrefix(f, "${HOME}/"):
+				_, rest, _ := strings.Cut(f, "/")
+				f = filepath.Join(home, rest)
+			}
+		}
+		out = append(out, f)
 	}
 	return append(out, args...)
+}
+
+// LauncherConfig is the account.move_launch token that says the launcher adds the session's
+// config flags itself.
+const LauncherConfig = "{launcher-config}"
+
+// LauncherConfigFlags are the flags {launcher-config} drops from a moved session's own.
+var LauncherConfigFlags = map[string]bool{"--settings": true, "--mcp-config": true, "--strict-mcp-config": true,
+	"--plugin-dir": true, "--setting-sources": true}
+
+// withoutFlags is args without the flags in drop (with their values); "--" and what follows
+// stay as they are.
+func withoutFlags(args []string, drop map[string]bool) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return append(out, args[i:]...)
+		}
+		name, _, inline := strings.Cut(a, "=")
+		if !strings.HasPrefix(a, "-") || !drop[name] {
+			out = append(out, a)
+			continue
+		}
+		if valueFlags[name] && !inline {
+			for i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				if !variadic[name] {
+					break
+				}
+			}
+		}
+	}
+	return out
 }
 
 // Shell quotes argv for sh.

@@ -65,8 +65,9 @@ func (h RealHost) Start(dir string, argv []string, log string) error {
 }
 
 func (h RealHost) StopJob(dir, sid string) error {
+	bin := ClaudeBin(h.sessionExes(dir, sid)...)
 	run := func(args ...string) ([]byte, error) {
-		cmd := exec.Command("claude", args...)
+		cmd := exec.Command(bin, args...)
 		cmd.Env = append(CleanEnv(os.Environ()), "CLAUDE_CONFIG_DIR="+dir)
 		return cmd.CombinedOutput()
 	}
@@ -158,4 +159,18 @@ func (h RealHost) WriteTTY(tty, text string) error {
 	defer f.Close()
 	_, err = f.WriteString("\r\n" + strings.ReplaceAll(text, "\n", "\r\n") + "\r\n")
 	return err
+}
+
+// sessionExes are the claude executables of session sid's live processes in config folder
+// dir's registry (hints for ClaudeBin).
+func (h RealHost) sessionExes(dir, sid string) []string {
+	var out []string
+	for _, e := range peers.ReadRegistry(identity.OSFS{}, identity.Slot{Dir: dir}) {
+		if e.SessionID == sid {
+			if p := sessionExe(e.PID); p != "" {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }

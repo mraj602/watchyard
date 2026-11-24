@@ -2,6 +2,7 @@ package mover
 
 import (
 	"errors"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -81,8 +82,12 @@ func TestCommandTemplate(t *testing.T) {
 	if got := strings.Join(Command("", tg, []string{"--resume", "s"}), " "); got != "env CLAUDE_CONFIG_DIR=/home/u/.claude-2 claude --resume s" {
 		t.Errorf("default: %q", got)
 	}
-	if got := strings.Join(Command("~/bin/claude-launch {n}", tg, []string{"--resume", "s"}), " "); got != "~/bin/claude-launch 2 --resume s" {
-		t.Errorf("template: %q", got)
+	// A leading ~/ or $HOME is expanded: a detached start runs no shell to do it.
+	home, _ := os.UserHomeDir()
+	for _, tpl := range []string{"~/bin/claude-launch {n}", "$HOME/bin/claude-launch {n}", "${HOME}/bin/claude-launch {n}"} {
+		if got := strings.Join(Command(tpl, tg, []string{"--resume", "s"}), " "); got != home+"/bin/claude-launch 2 --resume s" {
+			t.Errorf("template %s: %q", tpl, got)
+		}
 	}
 	if SlotNumber("/home/u/.claude") != "1" || SlotNumber("/x/.claude-12") != "12" {
 		t.Error("slot numbers")
