@@ -80,7 +80,7 @@ test('verdict variants: first, aggressive, not chosen, blocked, older without ca
   assert.ok(first.rules.some((r) => r.text === 'Week 29% (stops at 98%)'));
   assert.equal(R.verdictModel({ ...OWNER_VERDICT, rank: 2 }, NOW).place, '2nd in line: 1 other account gets a new session before this one; they take turns.');
   assert.equal(R.verdictModel({ ...OWNER_VERDICT, mode_from: 'none', kind: 'aggressive' }, NOW).kindKey, 'none');
-  assert.equal(R.verdictModel({ ...OWNER_VERDICT, expiring: true, rank: 1 }, NOW).place, 'It gets the next new session started with wy account next. Its week resets within 2 days, so it goes first.');
+  assert.equal(R.verdictModel({ ...OWNER_VERDICT, expiring: true, rank: 1 }, NOW).place, 'It gets the next new session started with wy account next. Its weekly room would otherwise expire unused, so it goes first.');
   const old = R.verdictModel({ at: OWNER_VERDICT.at, eligible: true, rank: 1, kind: 'aggressive', weekly_pct: 29.4, five_hour_pct: 1 }, NOW);
   assert.deepEqual(j(old.rules.map((r) => r.text)), ['5-hour 1%', 'Week 29%']);
   assert.equal(old.kindKey, 'aggressive');

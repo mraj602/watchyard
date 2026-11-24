@@ -6,6 +6,39 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-11-24
+
+### Changed
+
+- `wy account next` (lanes) **drains** weekly room before it resets. An aggressive account whose
+  week resets within 24 hours, or within twice the time it needs to use its room at full 5-hour
+  speed, goes first and takes as many lanes as its room absorbs before the reset: the capacity
+  comes from the measured lane cost (p75 and mean) and length and from the burn of the lanes
+  already running, not from fixed per-lane charges, and the hourly cap does not apply. Drain picks
+  carry `drain`, `finish_by` (the reset − 10 minutes) and `weekly_reset` in `--json`, a "drain: …"
+  reason, and `WY_FINISH_BY` / `WY_ACCOUNT_RESET` in the `--exec` environment. A protected account
+  drains only when its room would expire even at full speed, after every aggressive drain
+  account. Outside drain: at-risk aggressive accounts, then the others in turn, then aggressive
+  accounts with an unknown weekly level, then protected ones. On 2026-11-23 the old round
+  robin sent three of six lanes to protected accounts while claude-2 had 12% of its week left
+  hours before its reset; now all six go to claude-2.
+- `wy account next` (lanes) skips an aggressive account whose running lanes will still burn its
+  5-hour window to the limit, until the first of them is expected to end.
+- `wy account next` (lanes) **never stalls**: a lane waits only when every account is at a hard
+  limit (weekly 98, the 5-hour limit with the running lanes' burn, the backstop, the landing
+  guard) or cannot be read. The hourly cap, the protected account's gate and a draining account's
+  capacity only order the accounts; when all are reached the lane goes to an aggressive account,
+  then a protected one, marked `over` (`"over": true` in `--json`). Protected accounts stay last.
+- New `--expect short|medium|long|<duration>`, `--expect-minutes N` and `--expect-tokens N`
+  (lanes): how big each new session will be. The class sizes come from measured sessions (short
+  under 25 minutes, about 1.2 5-hour points; medium up to 2 hours, about 3.2; long, about 14).
+  The estimate (never below the measured mean lane) sets drain capacity, the landing guard and
+  the 5-hour check, and a long lane goes to accounts that do not reset before it would finish.
+  The pick line says `expect <class>` and `--json` has `expect`. In the week simulator (300 runs,
+  typical estimate errors) this cuts lanes running past a weekly reset in the long-lanes pattern
+  from 4.2 to 0.9 per week (the old round robin: 1.5).
+- Leases record `drain` and `finish_by` in the ledger and in `account_lease` records.
+
 ## [1.3.1] - 2026-11-23
 
 ### Fixed

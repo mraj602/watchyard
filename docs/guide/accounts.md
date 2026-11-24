@@ -14,8 +14,8 @@ switches or rotates accounts for you, and it never shares a login between folder
 `wy account next` (below) decides where new Claude Code sessions go. Tell it, once per
 account, how to treat that account:
 
-- **Protected**: kept for you. New sessions only while this week is behind an even pace and
-  the 5-hour window is under 45%. Choose it for the account you use yourself: in Chrome, the
+- **Protected**: kept for you. Used last: new sessions go here only when no aggressive account can take them, or for room
+  that would expire unused anyway. Choose it for the account you use yourself: in Chrome, the
   Claude app, or interactively in a terminal. Agents then only borrow what you would not use
   anyway, and nothing ever falls back onto it when the other accounts are full.
 - **Aggressive**: use it up. Sessions go here until 98% of the week or 5 hours. Choose it for
@@ -114,10 +114,30 @@ down, the leases from the last hub read are used until a new reading of that acc
 them. `--explain` lists each lease with where its use was measured.
 
 The default strategy, `lanes`, treats each account as **aggressive** (use its room up to 98 %)
-or **protected** (kept for you: new sessions only while its week is behind an even pace plus
-10 points, under 85 %, and its 5 hours under 45 %; nothing ever falls back onto it). Accounts
-take turns, and an aggressive account whose week resets within two days goes first so its room
-is not lost. Other strategies (`--strategy`, or `wy config set next.strategy …`) project usage
+or **protected** (kept for you and used last: it is preferred while its week is behind an even pace
+plus 10 points, under 85 %, and its 5 hours under 45 %; past that it still takes a session when no
+aggressive account can, so work never waits while any account can safely take it).
+
+An aggressive account **drains** when its week resets soon with room left: within a day, or
+within twice the time it would need to use that room running flat out. A draining account goes
+first and takes as many sessions at once as its room can absorb before the reset, worked out
+from what your sessions really cost and how long they run (small, short sessions count as
+small), with no hourly cap. Its picks say so ("drain: 12% of week left, resets 05:30, finish by
+05:20"), and with `--exec` the session gets `WY_FINISH_BY` and `WY_ACCOUNT_RESET` (UTC) so an
+agent can wrap up in time. `--expect short|medium|long` (or `--expect 90m`, `--expect-minutes
+90`, `--expect-tokens 2000000`) tells the picker how big a session will be: under 25 minutes is
+short, up to 2 hours medium, longer long. A long session is kept off accounts whose week resets
+before it would finish, so short ones use up the room that is about to expire. Without it, a
+session counts as your typical one. A
+protected account drains too, but only when its room would expire even at full speed, and only
+after every aggressive draining account. Then come aggressive accounts whose room is at risk,
+then the other aggressive accounts in turn (one whose running sessions will use up its 5 hours
+waits for them), then those with an unknown weekly level, and protected accounts last, only when
+no aggressive account has room. Nothing waits while an account can take a session safely: the
+hourly cap, a protected account's limits and a draining account's count only set the order, so
+when every account has reached one of them the session still goes to an aggressive account, then
+a protected one, and the pick says "over". A batch waits (exit 4 with the time one frees up) only
+when every account is at 98 %, its 5 hours would run out, or its usage cannot be read. Other strategies (`--strategy`, or `wy config set next.strategy …`) project usage
 forward instead: `smart` (spend the weekly room that would otherwise expire unused first,
 keeping clear of accounts about to fill their 5 hours), `expiring`, `most-room`, `spread`,
 `fill` (a fixed order) and `sticky`.

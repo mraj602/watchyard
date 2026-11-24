@@ -127,7 +127,7 @@ export function verdictModel(v: Verdict | null | undefined, now: number, tz?: st
     place = v.rank != null && v.rank > 1
       ? `${ordinal(v.rank)} in line: ${others} other ${others === 1 ? 'account gets' : 'accounts get'} a new session before this one; they take turns.`
       : 'It gets the next new session started with wy account next.';
-    if (v.expiring) place += ' Its week resets within 2 days, so it goes first.';
+    if (v.expiring) place += ' Its weekly room would otherwise expire unused, so it goes first.';
   }
   const level = v.skip_level;
   const why = !v.eligible ? (level != null && WHY[level]) || (v.reason ?? '').trim() : '';

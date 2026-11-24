@@ -59,7 +59,7 @@ func world(aggrW, protW float64) map[string]LaneSample {
 }
 
 func laneIn(s map[string]LaneSample, n int) LaneInput {
-	in := LaneInput{Now: lnow, Params: DefaultLaneParams, N: n}
+	in := LaneInput{Now: lnow, Params: V3LaneParams, N: n}
 	for i, a := range allNames {
 		sm, ok := s[a]
 		if !ok {
@@ -151,8 +151,9 @@ func TestLanesUrgentPassesOnlyTheCap(t *testing.T) {
 	}
 }
 
-// 2. Order: round robin, the newest lease oldest first; a batch visits every account once;
-// expiring aggressive accounts go first.
+// 2. Order (fill_exp): round robin among aggressive accounts, the newest lease oldest first; a
+// batch visits every aggressive account before any protected one; expiring aggressive accounts
+// go first while their 5-hour level is under ExpMax5h.
 func TestLanesOrder(t *testing.T) {
 	in := laneIn(world(30, 20), 1)
 	in.Leases = []LaneLease{lease("claude-2", 0.5, "a", true), lease("claude-3", 0.4, "b", true)}
@@ -164,8 +165,13 @@ func TestLanesOrder(t *testing.T) {
 	for _, p := range rank(t, in).Picks {
 		seen[p.Key] = true
 	}
-	if len(seen) != 7 {
-		t.Errorf("a batch of 7 visited %d accounts", len(seen))
+	for k := range seen {
+		if isProt(k) {
+			t.Errorf("a batch of 7 reached protected %s while aggressive accounts had room", k)
+		}
+	}
+	if len(seen) != len(aggrNames) {
+		t.Errorf("a batch of 7 visited %d aggressive accounts, want %d", len(seen), len(aggrNames))
 	}
 	// claude-6 resets in 24 h with 5h under 30: it goes first even though it was leased last.
 	s := world(30, 20)
@@ -176,11 +182,48 @@ func TestLanesOrder(t *testing.T) {
 	if r.Picks[0].Key != "claude-6" || !rowOf(r, "claude-6").Expiring {
 		t.Errorf("expiring account not first: %s", r.Picks[0].Key)
 	}
-	s["claude-6"] = smp(30, 35, 5, 24) // 5h at 35: no longer expiring-first
+	s["claude-6"] = smp(30, 35, 5, 24) // 5h at 35: still expiring-first (owner 2026-11-24)
+	in = laneIn(s, 1)
+	in.Leases = []LaneLease{lease("claude-6", 0.1, "x", true)}
+	if p := rank(t, in).Picks[0].Key; p != "claude-6" {
+		t.Errorf("claude-6 with 5h 35 not first: %s", p)
+	}
+	s["claude-6"] = smp(30, 92, 5, 24) // 5h at 92 >= ExpMax5h: no longer expiring-first
 	in = laneIn(s, 1)
 	in.Leases = []LaneLease{lease("claude-6", 0.1, "x", true)}
 	if p := rank(t, in).Picks[0].Key; p == "claude-6" {
-		t.Errorf("claude-6 with 5h 35 still went first")
+		t.Errorf("claude-6 with 5h 92 still went first")
+	}
+}
+
+// 2b. The draft (fill_exp) on the 2026-11-23 case: claude-2 resets in 9 h with 88% used and 45% of its 5-hour window,
+// just leased three times; the other aggressive accounts have days left; the protected ones are
+// eligible. Every lane goes to claude-2 up to its burst cap, then the other aggressive accounts;
+// no protected account is reached.
+func TestLanesFillExpiringFirst(t *testing.T) {
+	s := world(20, 40)
+	s["claude-2"] = smp(88, 45, 5, 9)
+	s["claude-6"] = smp(6, 13, 5, 140)
+	in := laneIn(s, 6)
+	in.Params = DraftLaneParams // the draft's behaviour; the drain order: TestDrainIncident1123
+	in.Leases = []LaneLease{lease("claude-2", 0.3, "a", true), lease("claude-2", 0.3, "b", true), lease("claude-2", 0.3, "c", true)}
+	r := rank(t, in)
+	var got []string
+	for _, p := range r.Picks {
+		got = append(got, p.Key)
+	}
+	if len(got) != 6 || got[0] != "claude-2" || got[1] != "claude-2" || got[2] != "claude-2" {
+		t.Fatalf("picks %v: claude-2 must take the first three (burst cap 6, three used)", got)
+	}
+	for _, k := range got[3:] {
+		if isProt(k) || k == "claude-2" {
+			t.Errorf("picks %v: after claude-2's cap the other aggressive accounts, never protected", got)
+		}
+	}
+	// The reference order (rr_exp) would have sent it elsewhere: claude-2 is not expiring there.
+	in.Params = ReferenceLaneParams
+	if p := rank(t, in).Picks[0].Key; p == "claude-2" {
+		t.Errorf("rr_exp unexpectedly picked claude-2 first")
 	}
 }
 
@@ -240,9 +283,21 @@ func TestLanesLeaseCharges(t *testing.T) {
 	}
 }
 
-// 3. Burst caps hold inside one batch; new leases carry no session id unless given.
+// 3. Burst caps hold inside one batch; new leases carry no session id unless given. Drain
+// order (owner Q1): once every aggressive account is only burst-capped the rest wait; they never
+// fall to a protected account. The reference order filled the protected accounts too.
 func TestLanesBatchCaps(t *testing.T) {
-	r := rank(t, laneIn(world(30, 20), 30))
+	d := rank(t, laneIn(world(30, 20), 30))
+	if len(d.Picks) != 4*6 || d.Waiting != 6 {
+		t.Errorf("drain order: %d picks, %d waiting; want 24 placed, 6 waiting", len(d.Picks), d.Waiting)
+	}
+	for _, p := range d.Picks {
+		if isProt(p.Key) {
+			t.Errorf("drain order: protected %s picked while aggressive accounts were only burst-capped", p.Key)
+		}
+	}
+	ref := func(in LaneInput) LaneInput { in.Params = ReferenceLaneParams; return in }
+	r := rank(t, ref(laneIn(world(30, 20), 30)))
 	n := map[string]int{}
 	for _, p := range r.Picks {
 		n[p.Key]++
@@ -258,7 +313,7 @@ func TestLanesBatchCaps(t *testing.T) {
 	if len(r.Picks) != 4*6+3*2 || r.Waiting != 0 {
 		t.Errorf("%d picks, %d waiting; want 30 placed", len(r.Picks), r.Waiting)
 	}
-	r = rank(t, laneIn(world(30, 20), 31))
+	r = rank(t, ref(laneIn(world(30, 20), 31)))
 	if len(r.Picks) != 30 || r.Waiting != 1 {
 		t.Errorf("31 asked: %d placed, %d waiting", len(r.Picks), r.Waiting)
 	}
@@ -603,8 +658,8 @@ func TestDecideLanesMeterAndLeases(t *testing.T) {
 	if math.Abs(rb.Lanes.FiveHourPct-11) > 0.11 || rb.Lanes.Leases != 0 {
 		t.Errorf("b lanes %+v", *rb.Lanes)
 	}
-	if res.Picks[0].Label != "b" || res.Picks[0].LaneKind != "protected" {
-		t.Errorf("pick %+v: b has no lease yet, round robin takes it first", res.Picks[0].Ranked.Label)
+	if res.Picks[0].Label != "a" || res.Picks[0].LaneKind != "aggressive" {
+		t.Errorf("pick %+v: aggressive a has room, so protected b waits (fill_exp)", res.Picks[0].Ranked.Label)
 	}
 	// The same session id again is refused.
 	if _, err := Decide(Input{Now: t0, Settings: s, Candidates: []Candidate{a, b}, Leases: ledger, Outbox: ob, N: 1, SIDs: []string{"S1"}}); !errors.Is(err, ErrDuplicateSession) {
@@ -672,5 +727,50 @@ func TestReadOutboxMeter(t *testing.T) {
 	plain, _ := ReadOutbox(dir, lnow.Add(-7*24*time.Hour), false)
 	if len(plain.Tokens) != 0 || len(plain.Sessions) != 0 || len(plain.Samples) != 1 {
 		t.Errorf("without the meter: %+v", plain)
+	}
+}
+
+// 2c. The draft's fill_exp groups (DraftLaneParams, kept for the replay): two accounts in their last day take turns; an account whose room is at
+// risk by the full-speed estimate goes before one with days of slack; the 5-hour gate holds.
+func TestLanesFillGroups(t *testing.T) {
+	s := world(20, 40)
+	s["claude-2"] = smp(80, 10, 5, 10)
+	s["claude-3"] = smp(70, 10, 5, 20)
+	in := laneIn(s, 4)
+	in.Params = DraftLaneParams
+	var got []string
+	for _, p := range rank(t, in).Picks {
+		got = append(got, p.Key)
+	}
+	if len(got) != 4 || got[0] == got[1] || got[2] == got[3] {
+		t.Fatalf("picks %v: the two last-day accounts must take turns", got)
+	}
+	for _, k := range got {
+		if k != "claude-2" && k != "claude-3" {
+			t.Errorf("picks %v: %s went before the last-day accounts were capped", got, k)
+		}
+	}
+
+	// claude-3 at 44% with 56 h: needs 56*7.2/98*5 = 20.6 h at full speed, 3x = 62 h >= 56: at
+	// risk. claude-4 at 2% with 132 h: needs 35 h, 3x = 106 h < 132: not.
+	s = world(2, 40)
+	for _, a := range aggrNames {
+		s[a] = smp(2, 10, 5, 132)
+	}
+	s["claude-3"] = smp(44, 10, 5, 56)
+	in = laneIn(s, 1)
+	in.Params = DraftLaneParams
+	r := rank(t, in)
+	if r.Picks[0].Key != "claude-3" || !rowOf(r, "claude-3").Expiring || rowOf(r, "claude-4").Expiring {
+		t.Errorf("at-risk claude-3 not first: %s", r.Picks[0].Key)
+	}
+
+	// The 5-hour gate: a last-day account at 92% of its 5 hours does not jump the queue.
+	s = world(20, 40)
+	s["claude-2"] = smp(80, 92, 5, 10)
+	in = laneIn(s, 1)
+	in.Params = DraftLaneParams
+	if p := rank(t, in).Picks[0].Key; p == "claude-2" {
+		t.Errorf("claude-2 at 5h 92 still went first")
 	}
 }

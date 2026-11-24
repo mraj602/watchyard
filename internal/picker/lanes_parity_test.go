@@ -123,10 +123,11 @@ func goldenTime(t *testing.T, s *string) time.Time {
 }
 
 // TestLanesGoldenParams: the golden cases were made with the shipped parameters; a change
-// to DefaultLaneParams needs new golden cases.
+// to ReferenceLaneParams needs new golden cases (DefaultLaneParams differs only in the order
+// and ExpMax5h: fill_exp, owner 2026-11-24).
 func TestLanesGoldenParams(t *testing.T) {
 	d := loadGolden(t)
-	p := DefaultLaneParams
+	p := ReferenceLaneParams
 	num := func(m map[string]any, k string) float64 {
 		v, ok := m[k].(float64)
 		if !ok {
@@ -297,7 +298,7 @@ func goldenInput(t *testing.T, d goldenDoc, c goldenCase) LaneInput {
 		names = append(names, a)
 	}
 	sort.Strings(names)
-	in := LaneInput{Now: now, Params: DefaultLaneParams, N: c.N, SIDs: c.SIDs, Urgent: c.Urgent}
+	in := LaneInput{Now: now, Params: ReferenceLaneParams, N: c.N, SIDs: c.SIDs, Urgent: c.Urgent}
 	for i, a := range names {
 		s := c.Samples[a]
 		acc := LaneAccount{Key: a, Ord: i, Protected: prot[a], Live: live[a],

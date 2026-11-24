@@ -74,7 +74,7 @@ export function verdictModel(v, nowMs, tz) {
   } else {
     headline = 'Not taking new sessions now';
   }
-  if (v.eligible && v.expiring) place += ' Its week resets within 2 days, so it goes first.';
+  if (v.eligible && v.expiring) place += ' Its weekly room would otherwise expire unused, so it goes first.';
 
   const rules = [];
   const lvl = (x) => (x == null ? null : Math.round(x));
