@@ -189,6 +189,7 @@ wy move --plan                         # each account's projection, the moves an
 wy config set account.smart_switch on  # let it move sessions by itself (off: nothing moves)
 wy config set account.move_orgs same-first   # any (default) | same-first | same
 wy move <session> [<account>]          # move one by hand
+wy move --selftest                     # run --plan in the timer's own environment: is claude found there?
 ```
 
 What it does, in short:

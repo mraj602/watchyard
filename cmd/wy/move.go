@@ -51,6 +51,9 @@ func moveUsage(w io.Writer) {
   wy move --digest [--since 24h] [--json]
                                          moves, limit hits, weekly room, protected time over cap and
                                          suspect moves of the period
+  wy move --selftest                     run --plan in the timer's own environment (systemd-run
+                                         with the unit's PATH and WY_* values) and say whether
+                                         claude and account.move_launch are found there
 
 Smart Account Switch moves the sessions that are burning (mid-turn too) off an account whose
 5-hour or weekly level, projected at its current burn, goes over its cap (setup.md 8.6).
@@ -89,6 +92,7 @@ func moveCmd(e moveEnv, args []string) error {
 	list := fs.Bool("list", false, "the moves of the last day")
 	digest := fs.Bool("digest", false, "the digest of the period (--since)")
 	since := fs.String("since", "24h", "the period of --digest (24h, 7d)")
+	selftest := fs.Bool("selftest", false, "run --plan in the timer's own environment and report what it can find")
 	noHub := fs.Bool("no-hub", false, "use only this machine's data")
 	force := fs.Bool("force", false, "move to the named account even when its limit is (nearly) reached")
 	pin := fs.String("pin-account", "", "never move this session")
@@ -107,7 +111,7 @@ func moveCmd(e moveEnv, args []string) error {
 	}
 	st := mover.NewState(e.dirs.State.Path)
 	modes := 0
-	for _, b := range []bool{*plan, *auto, *list, *digest, *pin != "", *unpin != "", len(pos) > 0} {
+	for _, b := range []bool{*plan, *auto, *list, *digest, *selftest, *pin != "", *unpin != "", len(pos) > 0} {
 		if b {
 			modes++
 		}
@@ -119,6 +123,8 @@ func moveCmd(e moveEnv, args []string) error {
 	switch {
 	case *digest:
 		return e.printDigest(*since, *asJSON)
+	case *selftest:
+		return moveSelftest(e)
 	case *pin != "" || *unpin != "":
 		id, on := *pin, true
 		if id == "" {

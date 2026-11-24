@@ -2197,6 +2197,25 @@ decision's destination); a session in the middle of a turn is refused without `-
 account at 98% or more of a window without `--force`, a session outside the scope always. `wy move --auto`: one pass, only when
 `account.smart_switch` is on. `wy move --list [--json]`: the last day's moves (accounts by label).
 `wy move --digest [--since 24h] [--json]`: the digest of the period (see Notices and digest).
+`wy move --selftest`: the self-test, below.
+
+**Self-test and timer checks.** The pass runs from the timer's environment (a systemd user
+service or a LaunchAgent), which is not the shell's: its PATH often lacks `~/.local/bin`, and its
+default KillMode kills a pass `wy tick` started in the background. `wy move --selftest` runs
+`wy move --plan` (never `--auto`: nothing moves) the way the timer would. Linux with the unit
+installed: `systemd-run --user --wait --pipe --quiet --collect -p KillMode=process
+--setenv=NAME=value ... <wy from ExecStart> move --plan`, with the unit's and its drop-ins'
+`Environment=` values (PATH, the `WY_*` folders; `%h` expanded). Without `systemd-run` (or not
+Linux, or no user manager) it runs the same command directly with a cleared environment holding
+only those values and HOME, and says so. It prints the environment used (unit, wy, PATH,
+KillMode), the plan, then a verdict: whether claude is found (on the timer's PATH, else the
+`~/.local/bin` fallback), whether the program of `account.move_launch` is found on that PATH, and
+the exit status; exit 1 when any of them is wrong. Needs the timer installed (`wy setup`).
+`wy doctor` checks the same things without running anything: KillMode=process (systemd), claude
+findable from the timer's PATH (switch on), the `account.move_launch` program an executable file
+on that PATH or absolute (switch on), and, for a folder whose settings carry `wy hook` by hand
+(not through the plugin), the step hooks `wy hook --step` on `PreToolUse` and `PostToolUse`
+(switch on; "Between steps", 8.6) as a `mover-hooks` warning.
 
 **`wy burn [--minutes N] [--json] [--no-hub]`: who is burning.** Per account: its 5-hour and
 weekly levels (as the picker reads them), its 5-hour burn in points per hour and in token units

@@ -15,6 +15,14 @@ All notable changes to Watchyard are recorded here. The format follows
   protected minutes over cap and moves that may not have been needed, and `wy tick` pushes it
   once a day at 09:00 local (`account.move_digest`, default on). Each auto pass now also leaves
   a line in `<state>/move/passes.jsonl`.
+- **`wy move --selftest` and mover checks in `wy doctor`** (setup.md 8.6). The self-test runs
+  `wy move --plan` in the timer's own environment (`systemd-run --user --wait --pipe --quiet
+  --collect -p KillMode=process` with the unit's PATH and `WY_*` values; directly with a cleared
+  environment where systemd-run is not available, and on macOS from the LaunchAgent's) and says
+  whether claude and `account.move_launch` are found there. `wy doctor`, with the switch on,
+  also warns when the `account.move_launch` program cannot be found or run from the timer's
+  PATH, and when hand-written hooks lack the step hooks (`wy hook --step`) that "between steps"
+  moves need.
 - **Smart Account Switch** (`wy move`, setup.md 8.6), off by default (`wy config set
   account.smart_switch on`). Every minute it projects each account's 5-hour and weekly level at
   the reset from the last 10 minutes of burn (P5 = level + burn × hours to the 5-hour reset; P7
