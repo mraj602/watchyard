@@ -357,7 +357,8 @@ or `--same-host` (this OS user's own sessions). Without the agent, or with no hu
 add|rm` and `tags` refuse `hub_unreachable` (exit 7), and so does a tag send.
 
 **Marker tags.** `no-move` and the tag of `account.smart_switch_scope` (setup.md 8.6) mark a
-session for Watchyard itself: adding one lists no holders and sends no notice to them (many
+session for Watchyard itself (`no-move` no longer pins a session: pins come from Claude Code only,
+setup.md 8.6, Pinned sessions): adding one lists no holders and sends no notice to them (many
 sessions hold the same marker).
 
 **Cleared automatically.** The hub deletes a session's tags when its state becomes `ended` or

@@ -482,7 +482,11 @@ func TestNoteText(t *testing.T) {
 	if !strings.Contains(st, "(stopped at the 5h limit, which resets at 15:05)") {
 		t.Errorf("stopped note: %s", st)
 	}
-	if got := Note("claude-4", "claude-2", at, Move{ByHand: true}); !strings.Contains(got, "(by hand, with wy move)") {
+	// By hand: the owner's call, no projection claim even when the source has one; a note all
+	// the same for the hook (IsNote).
+	got = Note("claude-4", "claude-2", at, Move{ByHand: true, Window: Win5h, P: 181, HitAt: at.Add(time.Hour)}, "claude-6", "claude-4")
+	if !strings.HasPrefix(got, "This session was moved by hand by the owner from claude-4 to claude-2 at 14:05 (move 2: claude-6 → claude-4 → claude-2).") ||
+		strings.Contains(got, "would") || strings.Contains(got, "P5") || !IsNote(got) || !IsNote(Note("a", "b", at, Move{})) || IsNote("fix the build") {
 		t.Errorf("by hand: %s", got)
 	}
 }

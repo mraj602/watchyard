@@ -46,10 +46,8 @@ func moveUsage(w io.Writer) {
                                          session pinned in Claude Code needs --force
   wy move --auto                         one pass of Smart Account Switch (the timer runs it; does
                                          nothing unless account.smart_switch is on)
-  wy move --pin-account <session>        never move this session (--unpin to undo; the peers tag
-                                         no-move and a pin in Claude Code do the same)
-  wy move --list [--json]                the moves of the last day and the pinned sessions (where
-                                         each pin comes from: claude, wy)
+  wy move --list [--json]                the moves of the last day and the sessions pinned in
+                                         Claude Code (the switch never moves those)
   wy move --digest [--since 24h] [--json]
                                          moves, limit hits, weekly room, protected time over cap and
                                          suspect moves of the period
@@ -97,19 +95,13 @@ func moveCmd(e moveEnv, args []string) error {
 	selftest := fs.Bool("selftest", false, "run --plan in the timer's own environment and report what it can find")
 	noHub := fs.Bool("no-hub", false, "use only this machine's data")
 	force := fs.Bool("force", false, "move to the named account even when its limit is (nearly) reached, or a session pinned in Claude Code")
-	pin := fs.String("pin-account", "", "never move this session")
-	unpin := fs.String("unpin", "", "let Smart Account Switch move this session again")
-	var pos []string
-	rest := args
-	for {
-		if err := fs.Parse(rest); err != nil {
-			return usageErr(err)
-		}
-		if fs.NArg() == 0 {
-			break
-		}
-		pos = append(pos, fs.Arg(0))
-		rest = fs.Args()[1:]
+	pin := fs.String("pin-account", "", "retired: pin the session in Claude Code")
+	unpin := fs.String("unpin", "", "retired: unpin the session in Claude Code")
+	// Flags anywhere: `wy move <id> <account> --dry-run` is a dry run (parseInterspersed); a
+	// flag-like word it could not read stops the command before anything happens.
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
 	}
 	st := mover.NewState(e.dirs.State.Path)
 	modes := 0
@@ -128,31 +120,7 @@ func moveCmd(e moveEnv, args []string) error {
 	case *selftest:
 		return moveSelftest(e)
 	case *pin != "" || *unpin != "":
-		id, on := *pin, true
-		if id == "" {
-			id, on = *unpin, false
-		}
-		w, err := e.world(*noHub)
-		if err != nil {
-			return err
-		}
-		l, err := w.find(id)
-		if err != nil {
-			return err
-		}
-		if err := st.SetPin(l.SessionID, on); err != nil {
-			return err
-		}
-		verb := "pinned to its account: Smart Account Switch will not move it"
-		if !on {
-			verb = "unpinned: Smart Account Switch may move it"
-		}
-		fmt.Fprintf(e.stdout, "%s %s\n", short(l.SessionID), verb)
-		if !on && w.pinSet.nativePinned(l) {
-			fmt.Fprintf(e.stdout, "%s is still pinned in Claude Code (~/%s/jobs/pins.json): the switch leaves it until it is unpinned there\n",
-				short(l.SessionID), filepath.Base(l.Slot))
-		}
-		return nil
+		return errors.New("wy move --pin-account and --unpin are gone: pin or unpin the session in Claude Code itself (its account's jobs/pins.json); Smart Account Switch reads those pins")
 	case *list:
 		es := st.Log(e.now().Add(-24 * time.Hour))
 		pins, warns := e.listPins(e.config())
@@ -221,7 +189,7 @@ func moveCmd(e moveEnv, args []string) error {
 	if err != nil {
 		return err
 	}
-	if w.pinSet.nativePinned(l) {
+	if w.pinSet.pinned(l) {
 		// Claude Code's own pin (setup.md 8.6, Pinned sessions): only with --force, and the pin
 		// stays on the old folder's list (Watchyard never writes Claude Code's pins.json).
 		acc := w.labelOfDir[l.Slot]
@@ -257,6 +225,14 @@ func moveCmd(e moveEnv, args []string) error {
 	}
 	if t.Dir == l.Slot {
 		return fmt.Errorf("%s already runs on %s", short(l.SessionID), t.Label)
+	}
+	// A move of it a moment ago may still be starting its resumed copy (a background session
+	// registers after its launch): a second move now would leave two copies.
+	for _, x := range st.Log(e.now().Add(-moveSettle)) {
+		if x.SessionID == l.SessionID && !*force {
+			return fmt.Errorf("%s was moved %s ago (%s -> %s): its resumed copy may still be starting; check `claude agents` there, or pass --force",
+				short(l.SessionID), e.now().Sub(x.At).Round(time.Second), w.slotLabel(x.FromDir), w.slotLabel(x.ToDir))
+		}
 	}
 	if pr, ok := w.proj[w.keyOfDir[l.Slot]]; ok && pr.Window != "" {
 		mv = mover.Move{Window: pr.Window, P: pr.P5, ResetAt: e.now().Add(pr.Reset5), Stopped: w.byID[l.SessionID].Stopped}
@@ -305,6 +281,10 @@ func moveCmd(e moveEnv, args []string) error {
 	return nil
 }
 
+// moveSettle is how long after a move a by-hand move of the same session waits (--force
+// overrides): its resumed copy may not be registered yet.
+const moveSettle = 5 * time.Minute
+
 func (e moveEnv) config() config.Config {
 	cfg := config.Defaults()
 	if f, err := config.Load(e.dirs.Config.Path); err == nil {
@@ -342,7 +322,7 @@ type moveWorld struct {
 	warnings []string
 	// pins are the live pinned sessions by account key (they hold its reserve).
 	pins map[string][]string
-	// pinSet is where each pin comes from (Claude Code's jobs/pins.json, wy's own); pinWarns
+	// pinSet are the pins (Claude Code's jobs/pins.json, the only source); pinWarns
 	// are the Claude Code pins files it could not read (the switch's log has each once).
 	pinSet   pinSet
 	pinWarns []string
@@ -443,10 +423,13 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	for _, s := range slots {
 		dirs = append(dirs, s.Dir)
 	}
-	pins := loadPins(st, tags, dirs, func(msg string) {
+	pins := loadPins(dirs, func(msg string) {
 		w.warnings = append(w.warnings, msg)
 		w.pinWarns = append(w.pinWarns, msg)
 	})
+	if x := ignoredPins(st); x != "" {
+		w.warnings = append(w.warnings, x)
+	}
 	w.pinSet = pins
 	w.pins = livePins(w.launches, w.keyOfDir, pins, now)
 	in.PinReserves = pinReserves(params, w.pins)
@@ -588,12 +571,14 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		if p, ok := ctx[l.SessionID]; ok {
 			s.Context = p / 100 * 200_000
 		}
-		s.PinFrom = pins.from(l)
-		s.Pinned = s.PinFrom != ""
+		if pins.pinned(l) {
+			s.Pinned, s.PinFrom = true, "in Claude Code"
+		}
 		if !w.scope.in(l.SessionID, tags[l.SessionID]) {
 			s.Pinned, w.outScope[l.SessionID] = true, true
 		}
 		s.Movable = l.Kind != mover.KindCloud
+		s.Copies = len(l.Copies)
 		if x, ok := last[l.SessionID]; ok {
 			s.MovedAt, s.MovedFrom = x.At, x.From
 		}
@@ -765,9 +750,28 @@ func (w *moveWorld) find(q string) (mover.Launch, error) {
 	case 0:
 		return mover.Launch{}, fmt.Errorf("no running session %q on this machine", q)
 	case 1:
-		return hits[0], nil
+		l := hits[0]
+		if len(l.Copies) > 0 {
+			// Two processes of one session (a resumed copy next to the old one): moving
+			// either would make a third. Nothing moves until one is stopped.
+			where := []string{fmt.Sprintf("pid %d on %s", l.PID, w.slotLabel(l.Slot))}
+			for _, c := range l.Copies {
+				where = append(where, fmt.Sprintf("pid %d on %s", c.PID, w.slotLabel(c.Slot)))
+			}
+			return mover.Launch{}, fmt.Errorf("%d copies of %s are running (%s): stop the extra one first; nothing moved",
+				len(where), short(l.SessionID), strings.Join(where, ", "))
+		}
+		return l, nil
 	}
 	return mover.Launch{}, fmt.Errorf("%q matches %d sessions: give more of the id", q, len(hits))
+}
+
+// slotLabel is the label of config folder dir (~/.claude-3 when it has none).
+func (w *moveWorld) slotLabel(dir string) string {
+	if l := w.labelOfDir[dir]; l != "" {
+		return l
+	}
+	return "~/" + filepath.Base(dir)
 }
 
 // account resolves an account by label, folder (~/.claude-3) or number.
@@ -874,6 +878,9 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		if pr.Hit >= 0 {
 			state += fmt.Sprintf("; 100%% in %s", pr.Hit.Round(time.Minute))
 		}
+		if pr.Left != "" {
+			state += "; " + pr.Left
+		}
 		if !loggedIn[pr.Key] {
 			state += "; not logged in here (never a destination)"
 		}
@@ -941,14 +948,17 @@ func (w *moveWorld) humanMessage(cfg config.Config, l mover.Launch, t mover.Targ
 		from = filepath.Base(l.Slot)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "[Watchyard] This session moved from %s to %s at %s", from, t.Label, at.Local().Format("15:04"))
+	if mv.ByHand {
+		fmt.Fprintf(&b, "[Watchyard] This session was moved by hand by the owner from %s to %s at %s", from, t.Label, at.Local().Format("15:04"))
+	} else {
+		fmt.Fprintf(&b, "[Watchyard] This session moved from %s to %s at %s", from, t.Label, at.Local().Format("15:04"))
+	}
 	switch {
+	case mv.ByHand:
 	case mv.Stopped && mv.Window != "":
 		fmt.Fprintf(&b, " (it was stopped at %s's %s limit)", from, mv.Window)
 	case mv.Window != "" && !mv.HitAt.IsZero():
 		fmt.Fprintf(&b, " (%s's %s would hit 100%% at %s)", from, mv.Window, mover.Clock(mv.HitAt, at))
-	case mv.ByHand:
-		b.WriteString(" (by hand, with wy move)")
 	}
 	if l.Kind == mover.KindTerminal {
 		agents := mover.Shell(mover.Command(cfg.Account.MoveLaunch, t, []string{"agents"}))

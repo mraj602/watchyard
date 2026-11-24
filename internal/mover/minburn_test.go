@@ -95,3 +95,51 @@ func skipped(r Result, id, why string) bool {
 	}
 	return false
 }
+
+// Live on pre5 (2026-11-25 04:00 IST), claude-3: level 7d 84.1, P7 89.1, cap 88 (2 pins),
+// 9.1 points/h mostly from its pinned sessions. The usual target, cap − Hysteresis = 83, is
+// under the level now: no set of moves could meet it, so every unpinned session was moved off,
+// one per pass, down to 0.2 points/h. With the level over cap − Hysteresis the target is the cap;
+// what is left under the floor is reported as "only pinned burn left".
+func TestPlanUnreachableTarget(t *testing.T) {
+	now := time.Date(2026, 11, 24, 22, 30, 0, 0, time.UTC)
+	src := Account{Key: "acct:c3/oA", Label: "claude-3", Rate: 9.1, Meter: 9.1, LoggedIn: true, Ratio: 9.1, Pins: 2, Reserve5: 20, Reserve7: 10,
+		W5: Window{Level: 30, Reset: now.Add(time.Hour)}, W7: Window{Level: 84.1, Reset: now.Add(53 * time.Hour)}}
+	dst := Account{Key: "acct:c6/oB", Label: "claude-6", LoggedIn: true, Ratio: 8,
+		W5: Window{Level: 10, Reset: now.Add(4 * time.Hour)}, W7: Window{Level: 31, Reset: now.Add(100 * time.Hour)}}
+	old := now.Add(-2 * time.Hour)
+	ss := []Session{
+		{ID: "pin-a", Account: src.Key, Rate: 2.5, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old},
+		{ID: "pin-b", Account: src.Key, Rate: 2.2, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old},
+		{ID: "big", Account: src.Key, Rate: 3.0, Busy: true, Movable: true, Context: 80_000, Started: old},
+		{ID: "mid", Account: src.Key, Rate: 1.2, Busy: true, Movable: true, Context: 80_000, Started: old},
+		{ID: "tiny", Account: src.Key, Rate: 0.2, Busy: true, Movable: true, Context: 80_000, Started: old},
+	}
+	in := Input{Now: now, Params: DefaultParams, Accounts: []Account{src, dst}, Sessions: ss,
+		Streak: map[string]int{src.Key + " " + Win7d: 5}}
+	r := Plan(in)
+	pr := r.Accounts[0]
+	if pr.Cap7 != 88 || pr.P7 < 89 || pr.P7 > 89.2 {
+		t.Fatalf("projection %+v", pr)
+	}
+	// Moving "big" (3.0) brings P7 to 87.4, under the cap: enough; "mid" stays.
+	if len(r.Moves) != 1 || r.Moves[0].Session != "big" || !skipped(r, "mid", "enough moved") {
+		t.Fatalf("moves %+v skips %+v", r.Moves, r.Skips)
+	}
+	// The usual target (83) would have moved "mid" too, and every later burner over the floor.
+	in.Params.MinBurn = -1
+	if r := Plan(in); len(r.Moves) < 2 {
+		t.Errorf("the old target moved %d", len(r.Moves))
+	}
+	// Next passes: big and mid gone, the pins and tiny left, still over the cap: nothing to
+	// move, and --plan says why.
+	in.Params = DefaultParams
+	src.Rate, src.Meter = 4.9, 4.9
+	src.W7.Level = 85.6
+	in.Accounts[0] = src
+	in.Sessions = []Session{ss[0], ss[1], ss[4]}
+	r = Plan(in)
+	if len(r.Moves) != 0 || !strings.Contains(r.Accounts[0].Left, "only pinned burn left (4.7 points/h pinned, 0.2 unpinned)") {
+		t.Fatalf("moves %+v account %+v", r.Moves, r.Accounts[0])
+	}
+}

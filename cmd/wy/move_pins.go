@@ -5,7 +5,6 @@ import (
 	"io"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/mraj602/watchyard/internal/config"
@@ -15,20 +14,17 @@ import (
 	"github.com/mraj602/watchyard/internal/picker"
 )
 
-// pinSet is where the owner's pins come from (setup.md 8.6, Pinned sessions): wy's own
-// (`wy move --pin-account`, the peers tag no-move) and Claude Code's, the short ids in each
-// config folder's jobs/pins.json (read only, mtime-cached). A session is pinned when either
-// names it; Claude Code's pin counts only for the folder whose list has it.
+// pinSet are the owner's pins (setup.md 8.6, Pinned sessions): the ones Claude Code keeps
+// itself, the short ids in each config folder's jobs/pins.json (read only, mtime-cached). They
+// are the only pins: a pin counts only for the folder whose list has it.
 type pinSet struct {
-	wy     map[string]bool
-	tags   map[string][]string
 	native map[string][]string // config folder -> Claude Code's pinned short ids
 }
 
-// loadPins reads wy's pins and the Claude Code pins of every folder in dirs; warn gets a
-// pins file that cannot be read or parsed (once per process until it changes).
-func loadPins(st mover.State, tags map[string][]string, dirs []string, warn func(string)) pinSet {
-	ps := pinSet{wy: st.Pins(), tags: tags, native: map[string][]string{}}
+// loadPins reads the Claude Code pins of every folder in dirs; warn gets a pins file that
+// cannot be read or parsed.
+func loadPins(dirs []string, warn func(string)) pinSet {
+	ps := pinSet{native: map[string][]string{}}
 	for _, d := range dirs {
 		if ids := mover.NativePins(d, warn); len(ids) > 0 {
 			ps.native[d] = ids
@@ -37,34 +33,30 @@ func loadPins(st mover.State, tags map[string][]string, dirs []string, warn func
 	return ps
 }
 
-// from is where session l's pin comes from: "claude", "wy", "claude+wy", or "" when the owner
-// did not pin it.
-func (p pinSet) from(l mover.Launch) string {
-	var src []string
-	if mover.NativePinned(p.native[l.Slot], l.SessionID) {
-		src = append(src, "claude")
-	}
-	if p.wy[l.SessionID] || peerspkg.HasTag(p.tags[l.SessionID], peerspkg.NoMoveTag) {
-		src = append(src, "wy")
-	}
-	return strings.Join(src, "+")
-}
-
-// native says whether Claude Code itself pins session l to its folder.
-func (p pinSet) nativePinned(l mover.Launch) bool {
+// pinned says whether Claude Code pins session l to its folder.
+func (p pinSet) pinned(l mover.Launch) bool {
 	return mover.NativePinned(p.native[l.Slot], l.SessionID)
 }
 
+// ignoredPins is the note for wy's old pins file (<state>/move/pins.json, from the retired
+// `wy move --pin-account`): it is left in place and not read ("" when it lists nothing).
+func ignoredPins(st mover.State) string {
+	if n := len(st.Pins()); n > 0 {
+		return fmt.Sprintf("%d session(s) in %s (the retired wy move --pin-account) are not pinned: pins come from Claude Code only (jobs/pins.json)",
+			n, filepath.Join(st.Dir, "pins.json"))
+	}
+	return ""
+}
+
 // livePins are this machine's live pinned sessions by account key (setup.md 8.6, Pinned
-// sessions): pinned by the owner (in Claude Code, `wy move --pin-account`, the peers tag
-// no-move; a session only outside account.smart_switch_scope holds none), each counted once,
-// running, and not idle for mover.PinIdle.
+// sessions): pinned in Claude Code (a session only outside account.smart_switch_scope holds
+// none), each counted once, running, and not idle for mover.PinIdle.
 func livePins(launches []mover.Launch, keyOfDir map[string]string, pins pinSet, now time.Time) map[string][]string {
 	out := map[string][]string{}
 	seen := map[string]bool{}
 	for _, l := range launches {
 		key := keyOfDir[l.Slot]
-		if key == "" || seen[l.SessionID] || pins.from(l) == "" {
+		if key == "" || seen[l.SessionID] || !pins.pinned(l) {
 			continue
 		}
 		if l.Status != "busy" && !l.StatusSince.IsZero() && now.Sub(l.StatusSince) >= mover.PinIdle {
@@ -118,12 +110,11 @@ func nextSwitch(e nextEnv, cfg config.Config, slots []picker.Slot, cands []picke
 	if !known || (p.PinReserve5 <= 0 && p.PinReserve7 <= 0) {
 		return nil, view
 	}
-	tags, _ := peersTags()
 	var dirs []string
 	for _, s := range slots {
 		dirs = append(dirs, s.Dir)
 	}
-	pins := loadPins(st, tags, dirs, func(msg string) { fmt.Fprintln(e.stderr, "wy: "+msg) })
+	pins := loadPins(dirs, func(msg string) { fmt.Fprintln(e.stderr, "wy: "+msg) })
 	return pinReserves(p, livePins(launches, keyOfDir, pins, now)), view
 }
 
@@ -153,7 +144,11 @@ func (w *moveWorld) pinCommand(id string) string {
 	if to == "" {
 		return ""
 	}
-	return fmt.Sprintf("wy move %s %s", short(id), w.targets[to].Label)
+	cmd := fmt.Sprintf("wy move %s %s", short(id), w.targets[to].Label)
+	if l, ok := w.launch(id); ok && w.pinSet.pinned(l) {
+		cmd += " --force" // pinned in Claude Code: a by-hand move needs it
+	}
+	return cmd
 }
 
 // pinRow is one pinned session for --list and --plan: where its pin comes from and whether it
@@ -162,8 +157,9 @@ type pinRow struct {
 	Session string `json:"session"`
 	Name    string `json:"name,omitempty"`
 	Account string `json:"account"`
-	From    string `json:"from"`
-	Live    bool   `json:"live"`
+	// From is where the pin comes from: "claude" (Claude Code's jobs/pins.json), the only source.
+	From string `json:"from"`
+	Live bool   `json:"live"`
 }
 
 // pinRows are the owner's pinned sessions among launches, by account then id.
@@ -177,8 +173,7 @@ func pinRows(launches []mover.Launch, labelOfDir, keyOfDir map[string]string, ps
 	rows := []pinRow{}
 	seen := map[string]bool{}
 	for _, l := range launches {
-		from := ps.from(l)
-		if from == "" || seen[l.SessionID] {
+		if !ps.pinned(l) || seen[l.SessionID] {
 			continue
 		}
 		seen[l.SessionID] = true
@@ -186,7 +181,7 @@ func pinRows(launches []mover.Launch, labelOfDir, keyOfDir map[string]string, ps
 		if acc == "" {
 			acc = "~/" + filepath.Base(l.Slot)
 		}
-		rows = append(rows, pinRow{Session: l.SessionID, Name: l.Name, Account: acc, From: from, Live: held[l.SessionID] && keyOfDir[l.Slot] != ""})
+		rows = append(rows, pinRow{Session: l.SessionID, Name: l.Name, Account: acc, From: "claude", Live: held[l.SessionID] && keyOfDir[l.Slot] != ""})
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Account != rows[j].Account {
@@ -197,7 +192,8 @@ func pinRows(launches []mover.Launch, labelOfDir, keyOfDir map[string]string, ps
 	return rows
 }
 
-// printPinRows prints rows, one line each ("pinned: 2abbe6d1 planner on claude-3 (claude)").
+// printPinRows prints rows, one line each ("pinned: 2abbe6d1 planner on claude-3 (in Claude
+// Code; holds a reserve)").
 func printPinRows(out io.Writer, rows []pinRow) {
 	for _, r := range rows {
 		state := "holds a reserve"
@@ -208,7 +204,7 @@ func printPinRows(out io.Writer, rows []pinRow) {
 		if r.Name != "" {
 			name = " " + r.Name
 		}
-		fmt.Fprintf(out, "pinned: %s%s on %s (%s; %s)\n", short(r.Session), name, r.Account, r.From, state)
+		fmt.Fprintf(out, "pinned: %s%s on %s (in Claude Code; %s)\n", short(r.Session), name, r.Account, state)
 	}
 }
 
@@ -235,12 +231,9 @@ func (e moveEnv) listPins(cfg config.Config) ([]pinRow, []string) {
 		sys = &mover.Sys{FS: identity.OSFS{}, Proc: peerspkg.NewProc(), State: mover.NewState(e.dirs.State.Path)}
 	}
 	launches := sys.Sessions(islots)
-	var tags map[string][]string
-	if e.tags != nil {
-		tags = e.tags()
-	} else if len(launches) > 0 {
-		tags, _ = peersTags()
+	ps := loadPins(dirs, func(m string) { warns = append(warns, m) })
+	if x := ignoredPins(mover.NewState(e.dirs.State.Path)); x != "" {
+		warns = append(warns, x)
 	}
-	ps := loadPins(mover.NewState(e.dirs.State.Path), tags, dirs, func(m string) { warns = append(warns, m) })
 	return pinRows(launches, labelOfDir, keyOfDir, ps, livePins(launches, keyOfDir, ps, e.now())), warns
 }

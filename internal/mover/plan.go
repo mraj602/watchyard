@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/mraj602/watchyard/internal/projection"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -182,13 +183,14 @@ type Session struct {
 	// with a message in its pane or terminal; Typed is when the owner last typed into it.
 	Interactive bool
 	Typed       time.Time
-	// Pinned: the owner opted it out (pinned in Claude Code, no-move, --pin-account) or it is
-	// outside the scope. PinFrom is where the owner's pin comes from: "claude" (the account's
-	// Claude Code jobs/pins.json), "wy" (--pin-account, no-move) or "claude+wy" ("" when none).
+	// Pinned: the owner pinned it in Claude Code (its folder's jobs/pins.json) or it is outside
+	// the scope. PinFrom says where the owner's pin is ("in Claude Code"; "" when none).
 	Pinned  bool
 	PinFrom string
 	// Movable: its kind can be restarted (false for claude.ai --sdk-url sessions).
 	Movable bool
+	// Copies: other live processes of the session; never moved while there are any.
+	Copies int
 	// Context is its context in tokens (a move re-reads it uncached).
 	Context float64
 	// Expected is how much longer it is expected to run (0: unknown).
@@ -253,7 +255,10 @@ type Projection struct {
 	Held      bool
 	// ReadingsOnly: over the caps only at the readings' rate (ReadingPasses passes needed).
 	ReadingsOnly bool `json:",omitempty"`
-	ratio        float64
+	// Left: it stays over its target after this pass's moves because no move can lower it
+	// further ("only pinned burn left ...").
+	Left  string `json:",omitempty"`
+	ratio float64
 }
 
 // Move is one planned move.
@@ -503,7 +508,7 @@ func Plan(in Input) Result {
 		}
 		for len(cands) > 0 {
 			cur := p.Project(a, ss, delta[a.Key], now)
-			if !cur.overBy(p.Hysteresis) {
+			if !p.overTarget(cur) {
 				for _, s := range cands {
 					skip(s, fmt.Sprintf("enough moved: %s projected 5h %.0f%%, 7d %.0f%%", a.Label, cur.P5, cur.P7))
 				}
@@ -556,6 +561,30 @@ func Plan(in Input) Result {
 			}
 			p.place(in, &res, st, s, a, mv, delta, skip)
 		}
+		if p.MinBurn >= 0 && !p.IdleMoves {
+			if cur := p.Project(a, ss, delta[a.Key], now); p.overTarget(cur) {
+				// Nothing left that a move would lower: say what burns on.
+				var pinned, low float64
+				for _, s := range ss {
+					switch {
+					case s.Stopped || s.Rate <= 0:
+					case s.Pinned:
+						pinned += s.Rate
+					default:
+						if !slices.ContainsFunc(res.Moves, func(m Move) bool { return m.Session == s.ID && m.To != "" }) {
+							low += s.Rate
+						}
+					}
+				}
+				if low < p.MinBurn {
+					for i := range res.Accounts {
+						if res.Accounts[i].Key == a.Key {
+							res.Accounts[i].Left = fmt.Sprintf("only pinned burn left (%.1f points/h pinned, %.1f unpinned)", pinned, low)
+						}
+					}
+				}
+			}
+		}
 	}
 	return res
 }
@@ -592,6 +621,8 @@ func (p Params) excluded(s Session, st *moveState, now time.Time) string {
 		return "pinned, or outside the scope"
 	case !s.Movable:
 		return "its kind cannot be restarted from this machine (claude.ai)"
+	case s.Copies > 0:
+		return fmt.Sprintf("%d copies of it are running: stop the extra one first", s.Copies+1)
 	}
 	if p.OwnerGrace > 0 && s.Interactive && !s.Typed.IsZero() && now.Sub(s.Typed) < p.OwnerGrace {
 		return "the owner typed into it " + now.Sub(s.Typed).Round(time.Second).String() + " ago (owner grace)"
@@ -638,13 +669,38 @@ func (pr Projection) overBy(m float64) bool {
 	return pr.P5 > pr.Cap5-m || pr.P7 > pr.Cap7-m || (m == 0 && pr.Hard)
 }
 
-// enoughWithout reports whether taking rate off the account brings both projections
-// Hysteresis under the caps.
+// margins are how far under each cap the moves aim: Hysteresis, but none for a window whose
+// level now is already at or over its cap less Hysteresis (no move takes a projection below
+// the level now, so that target could never be met and every burner would be moved off). With
+// MinBurn negative (the simulator's tables before it), always Hysteresis.
+func (p Params) margins(pr Projection) (m5, m7 float64) {
+	m5, m7 = p.Hysteresis, p.Hysteresis
+	if p.MinBurn < 0 || p.IdleMoves {
+		return m5, m7
+	}
+	if pr.Level5 >= pr.Cap5-p.Hysteresis {
+		m5 = 0
+	}
+	if pr.Level7 >= pr.Cap7-p.Hysteresis {
+		m7 = 0
+	}
+	return m5, m7
+}
+
+// overTarget reports whether a projection is still over what the moves aim for (margins).
+func (p Params) overTarget(pr Projection) bool {
+	m5, m7 := p.margins(pr)
+	return pr.P5 > pr.Cap5-m5 || pr.P7 > pr.Cap7-m7
+}
+
+// enoughWithout reports whether taking rate off the account brings both projections to
+// their targets (margins).
 func (pr Projection) enoughWithout(p Params, rate float64) bool {
 	h5 := pr.Reset5.Hours()
 	h7 := math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())
 	ratio := pr.ratio
-	return pr.P5-rate*h5 <= pr.Cap5-p.Hysteresis && pr.P7-rate/ratio*h7 <= pr.Cap7-p.Hysteresis
+	m5, m7 := p.margins(pr)
+	return pr.P5-rate*h5 <= pr.Cap5-m5 && pr.P7-rate/ratio*h7 <= pr.Cap7-m7
 }
 
 func (pr Projection) pOf(w string) float64 {

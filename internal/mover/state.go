@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"time"
 
@@ -129,7 +128,8 @@ func (s State) TakeOrder(pid int) (RunOrder, bool) {
 	return o, true
 }
 
-// Pins are the sessions pinned to their account.
+// Pins are the sessions in wy's old pins file (the retired wy move --pin-account): no longer
+// pins (setup.md 8.6, Pinned sessions); read only to say they are ignored.
 func (s State) Pins() map[string]bool {
 	out := map[string]bool{}
 	b, err := os.ReadFile(s.path("pins.json"))
@@ -143,22 +143,6 @@ func (s State) Pins() map[string]bool {
 		}
 	}
 	return out
-}
-
-// SetPin pins (on) or unpins a session.
-func (s State) SetPin(sessionID string, on bool) error {
-	ps := s.Pins()
-	if on {
-		ps[sessionID] = true
-	} else {
-		delete(ps, sessionID)
-	}
-	ids := make([]string, 0, len(ps))
-	for id := range ps {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return s.write(s.path("pins.json"), ids)
 }
 
 // Changed records text under name (<state>/move/<name>) and says whether it differs from the

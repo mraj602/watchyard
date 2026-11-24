@@ -42,9 +42,7 @@ func TestMovePinReserve(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "No session needs a move.") || !strings.Contains(out, "95/98") {
 		t.Fatalf("plan without a pin:\n%s", out)
 	}
-	if out, errOut, code := run("--pin-account", "pin-b"); code != 0 || !strings.Contains(out, "pinned") {
-		t.Fatalf("pin: %q %q", out, errOut)
-	}
+	nativePins(t, f, `["5e55a0b0"]`)
 	out, _, _ = run("--plan")
 	if !strings.Contains(out, "85/93") || !strings.Contains(out, "1 pinned: 10/5") || !strings.Contains(out, "5h over its cap, pass 1 of 2") ||
 		!strings.Contains(out, "5e55a0b0 pin-b stays on claude: pinned") || !strings.Contains(out, "keeps 10% of its account's 5-hour window") {
@@ -72,18 +70,18 @@ func TestMovePinReserve(t *testing.T) {
 	h.calls = nil
 	out, _, _ = run("--auto")
 	want := "alert: pinned session 5e55a0b0 pin-b alone takes claude's 5h window to 100% at " + nextNow.Add(2*time.Hour).Local().Format("15:04")
-	if !strings.Contains(out, want) || !strings.Contains(out, "move it by hand: wy move 5e55a0b0 claude-2") || len(h.calls) != 0 {
+	if !strings.Contains(out, want) || !strings.Contains(out, "move it by hand: wy move 5e55a0b0 claude-2 --force") || len(h.calls) != 0 {
 		t.Fatalf("alert:\n%s\n%q", out, h.calls)
 	}
 	if out, _, _ := run("--auto"); strings.Contains(out, "alert:") {
 		t.Fatalf("alerted twice:\n%s", out)
 	}
-	if as := mover.NewState(f.dirs.State.Path).Alerts(nextNow); len(as) != 1 || as[0].Session != pin || as[0].Command != "wy move 5e55a0b0 claude-2" {
+	if as := mover.NewState(f.dirs.State.Path).Alerts(nextNow); len(as) != 1 || as[0].Session != pin || as[0].Command != "wy move 5e55a0b0 claude-2 --force" {
 		t.Fatalf("kept alerts %+v", as)
 	}
 }
 
-// livePins: only the owner's pins (pins file, no-move tag) on a known account, not idle for
+// livePins: only the owner's pins (Claude Code's, per folder) on a known account, not idle for
 // 6 hours; the reserve is pins × the settings.
 func TestLivePins(t *testing.T) {
 	now := nextNow
@@ -93,10 +91,10 @@ func TestLivePins(t *testing.T) {
 		{SessionID: "c", Slot: "/h/.claude-2", Status: "idle", StatusSince: now.Add(-7 * time.Hour)}, // idle 7 h: released
 		{SessionID: "d", Slot: "/h/.claude-2", Status: "busy"},                                       // not pinned
 		{SessionID: "e", Slot: "/h/.claude-9", Status: "busy"},                                       // not logged in here
-		{SessionID: "f", Slot: "/h/.claude-3", Status: "busy"},                                       // tag no-move
+		{SessionID: "f", Slot: "/h/.claude-3", Status: "busy"},                                       // pinned in .claude-3
 	}
 	keys := map[string]string{"/h/.claude-2": "acct:2/o", "/h/.claude-3": "acct:3/o"}
-	got := livePins(ls, keys, pinSet{wy: map[string]bool{"a": true, "b": true, "c": true, "e": true}, tags: map[string][]string{"f": {"no-move"}}}, now)
+	got := livePins(ls, keys, pinSet{native: map[string][]string{"/h/.claude-2": {"a", "b", "c"}, "/h/.claude-9": {"e"}, "/h/.claude-3": {"f"}}}, now)
 	if strings.Join(got["acct:2/o"], ",") != "a,b" || strings.Join(got["acct:3/o"], ",") != "f" || len(got) != 2 {
 		t.Fatalf("live pins %v", got)
 	}
@@ -108,9 +106,23 @@ func TestLivePins(t *testing.T) {
 	}
 }
 
-// setup.md 8.6, Pinned sessions: a session in its folder's Claude Code jobs/pins.json is
-// pinned (prefix match), holds the reserve once even when wy pins it too, shows where its pin
-// comes from, and a by-hand move needs --force and says the Claude Code pin stays.
+// nativePins writes Claude Code's own pins of the fixture's first folder (~/.claude).
+func nativePins(t *testing.T, f *nextFixture, body string) string {
+	t.Helper()
+	file := filepath.Join(f.home, ".claude", "jobs", "pins.json")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
+// setup.md 8.6, Pinned sessions: Claude Code's own pins are the only pins. A session in its
+// folder's jobs/pins.json (prefix match) is pinned and holds the reserve; wy's old pins file
+// and the peers tag no-move pin nothing; --pin-account is retired; a by-hand move of a pinned
+// session needs --force and says the pin stays; Claude Code's file is never written.
 func TestMoveNativePin(t *testing.T) {
 	f, h, run := moveFixture(t, 60, "busy")
 	pin := pinSession(t, f, "busy")
@@ -119,37 +131,36 @@ func TestMoveNativePin(t *testing.T) {
 	f.set("account.smart_switch_scope", "sessions:5e55a0a0,5e55a0b0")
 	moveTestVars[moveTestEnv] = `{"rates":{"5e55a0a0":8,"5e55a0b0":1}}`
 	t.Cleanup(func() { delete(moveTestVars, moveTestEnv) })
-	file := filepath.Join(f.home, ".claude", "jobs", "pins.json")
-	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+
+	// wy's old pins file: ignored, with a note.
+	old := filepath.Join(f.dirs.State.Path, "move", "pins.json")
+	if err := os.MkdirAll(filepath.Dir(old), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	native := `["48d8d877","5e55a0b0"]`
-	if err := os.WriteFile(file, []byte(native), 0o600); err != nil {
+	if err := os.WriteFile(old, []byte(`["`+pin+`"]`), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	out, _, _ := run("--plan")
+	if strings.Contains(out, "1 pinned") || !strings.Contains(out, "1 session(s) in") || !strings.Contains(out, "are not pinned: pins come from Claude Code only") {
+		t.Fatalf("plan with only the old pins file:\n%s", out)
+	}
+	if _, errOut, code := run("--pin-account", "pin-b"); code == 0 || !strings.Contains(errOut, "pin or unpin the session in Claude Code") {
+		t.Fatalf("--pin-account: %d %q", code, errOut)
 	}
 
-	out, _, _ := run("--plan")
-	if !strings.Contains(out, "1 pinned: 10/5") || !strings.Contains(out, "5e55a0b0 pin-b stays on claude: pinned (claude)") ||
-		!strings.Contains(out, "pinned: 5e55a0b0 pin-b on claude (claude; holds a reserve)") {
+	native := `["48d8d877","5e55a0b0"]`
+	file := nativePins(t, f, native)
+	out, _, _ = run("--plan")
+	if !strings.Contains(out, "1 pinned: 10/5") || !strings.Contains(out, "5e55a0b0 pin-b stays on claude: pinned (in Claude Code)") ||
+		!strings.Contains(out, "pinned: 5e55a0b0 pin-b on claude (in Claude Code; holds a reserve)") {
 		t.Fatalf("plan with a Claude Code pin:\n%s", out)
 	}
 	js, _, _ := run("--plan", "--json")
 	if !strings.Contains(js, `"Pins": 1`) || !strings.Contains(js, `"from": "claude"`) {
 		t.Fatalf("plan json:\n%s", js)
 	}
-
-	// Pinned by wy too: one pin, both sources.
-	run("--pin-account", "pin-b")
-	out, _, _ = run("--plan")
-	if !strings.Contains(out, "1 pinned: 10/5") || !strings.Contains(out, "(claude+wy; holds a reserve)") {
-		t.Fatalf("plan with both pins:\n%s", out)
-	}
-	out, _, _ = run("--unpin", "pin-b")
-	if !strings.Contains(out, "still pinned in Claude Code") {
-		t.Fatalf("unpin:\n%s", out)
-	}
 	out, _, _ = run("--list")
-	if !strings.Contains(out, "pinned: 5e55a0b0 pin-b on claude (claude; holds a reserve)") {
+	if !strings.Contains(out, "pinned: 5e55a0b0 pin-b on claude (in Claude Code; holds a reserve)") {
 		t.Fatalf("list:\n%s", out)
 	}
 	js, _, _ = run("--list", "--json")
@@ -157,14 +168,16 @@ func TestMoveNativePin(t *testing.T) {
 		t.Fatalf("list json:\n%s", js)
 	}
 
-	// By hand: refused without --force; with it, a warning that the pin stays.
+	// By hand: refused without --force; with it, a warning that the pin stays, and the note
+	// says the owner moved it (no projection claim).
 	_, errOut, code := run(pin[:8], "claude-2", "--dry-run")
 	if code == 0 || !strings.Contains(errOut, "pinned to claude in Claude Code") || !strings.Contains(errOut, "--force") {
 		t.Fatalf("by hand without --force: %d %q", code, errOut)
 	}
-	_, errOut, code = run(pin[:8], "claude-2", "--dry-run", "--force")
-	if code != 0 || !strings.Contains(errOut, "The pin stays on claude's list (~/.claude/jobs/pins.json)") {
-		t.Fatalf("by hand with --force: %d %q", code, errOut)
+	out, errOut, code = run(pin[:8], "claude-2", "--dry-run", "--force")
+	if code != 0 || !strings.Contains(errOut, "The pin stays on claude's list (~/.claude/jobs/pins.json)") ||
+		!strings.Contains(out, "This session was moved by hand by the owner from claude to claude-2 at") || strings.Contains(out, "would hit") || strings.Contains(out, "would reach") {
+		t.Fatalf("by hand with --force: %d %q %q", code, out, errOut)
 	}
 	for _, c := range h.calls {
 		if strings.Contains(c, pin) {
@@ -176,9 +189,7 @@ func TestMoveNativePin(t *testing.T) {
 	}
 
 	// Unparsable: no pins, a warning.
-	if err := os.WriteFile(file, []byte(`["5e55a0b0"`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	nativePins(t, f, `["5e55a0b0"`)
 	out, _, _ = run("--plan")
 	if strings.Contains(out, "1 pinned") || !strings.Contains(out, "warning: Claude Code pins in") {
 		t.Fatalf("plan with a broken pins file:\n%s", out)
@@ -193,25 +204,24 @@ func TestMoveNativePin(t *testing.T) {
 	}
 }
 
-// pinSet: Claude Code's pin counts for its own folder only; sources are named.
-func TestPinSetFrom(t *testing.T) {
-	ps := pinSet{wy: map[string]bool{"bbbb-2": true}, tags: map[string][]string{"cccc-3": {"no-move"}},
-		native: map[string][]string{"/h/.claude-3": {"aaaa", "bbbb"}}}
+// pinSet: Claude Code's pin counts for its own folder only (prefix match); the peers tag
+// no-move is no pin.
+func TestPinSetFolder(t *testing.T) {
+	ps := pinSet{native: map[string][]string{"/h/.claude-3": {"aaaa", "bbbb"}}}
 	for _, c := range []struct {
 		l    mover.Launch
-		want string
+		want bool
 	}{
-		{mover.Launch{SessionID: "aaaa-1", Slot: "/h/.claude-3"}, "claude"},
-		{mover.Launch{SessionID: "aaaa-1", Slot: "/h/.claude-2"}, ""}, // moved away: the old folder's pin
-		{mover.Launch{SessionID: "bbbb-2", Slot: "/h/.claude-3"}, "claude+wy"},
-		{mover.Launch{SessionID: "cccc-3", Slot: "/h/.claude-3"}, "wy"},
+		{mover.Launch{SessionID: "aaaa-1", Slot: "/h/.claude-3"}, true},
+		{mover.Launch{SessionID: "aaaa-1", Slot: "/h/.claude-2"}, false}, // moved away: the old folder's pin
+		{mover.Launch{SessionID: "cccc-3", Slot: "/h/.claude-3"}, false},
 	} {
-		if got := ps.from(c.l); got != c.want {
-			t.Fatalf("%+v: %q", c.l, got)
+		if got := ps.pinned(c.l); got != c.want {
+			t.Fatalf("%+v: %v", c.l, got)
 		}
 	}
 	ls := []mover.Launch{{SessionID: "aaaa-1", Slot: "/h/.claude-3", Status: "busy"}, {SessionID: "bbbb-2", Slot: "/h/.claude-3", Status: "busy"},
-		{SessionID: "bbbb-2", Slot: "/h/.claude-3", Status: "busy"}}
+		{SessionID: "bbbb-2", Slot: "/h/.claude-3", Status: "busy"}, {SessionID: "cccc-3", Slot: "/h/.claude-3", Status: "busy"}}
 	got := livePins(ls, map[string]string{"/h/.claude-3": "acct:3/o"}, ps, nextNow)
 	if strings.Join(got["acct:3/o"], ",") != "aaaa-1,bbbb-2" {
 		t.Fatalf("live pins %v", got)

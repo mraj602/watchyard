@@ -146,11 +146,11 @@ func TestMoveByHand(t *testing.T) {
 	}
 	dir2 := filepath.Join(f.home, ".claude-2")
 	cmd := "env CLAUDE_CONFIG_DIR=" + dir2 + " claude --model opus --resume 5e55a0a0-0000-4000-8000-000000000001"
-	msg := "[Watchyard] This session moved from claude to claude-2 at " + nextNow.Local().Format("15:04") + " (by hand, with wy move). It continues here under claude-2."
+	msg := "[Watchyard] This session was moved by hand by the owner from claude to claude-2 at " + nextNow.Local().Format("15:04") + ". It continues here under claude-2."
 	want := []string{"tmux set-option -p -t %7 remain-on-exit on", "kill 100", "carry 5e55a0a0-0000-4000-8000-000000000001",
 		"tmux respawn-pane -k -t %7 -c /work bash -ic " + mover.Shell([]string{"printf '\\n%s\\n\\n' " + mover.Shell([]string{msg}) + "; sleep 4; " + cmd}),
 		"tmux set-option -p -u -t %7 remain-on-exit"}
-	if len(h.calls) != 6 || !strings.HasPrefix(h.calls[0], "note 5e55a0a0-0000-4000-8000-000000000001: Watchyard moved this session from claude to claude-2 at ") ||
+	if len(h.calls) != 6 || !strings.HasPrefix(h.calls[0], "note 5e55a0a0-0000-4000-8000-000000000001: This session was moved by hand by the owner from claude to claude-2 at ") ||
 		strings.Join(h.calls[1:], "|") != strings.Join(want, "|") {
 		t.Fatalf("steps:\n%s", strings.Join(h.calls, "\n"))
 	}
@@ -192,9 +192,7 @@ func TestMoveAuto(t *testing.T) {
 	f2, h2, run2 := moveFixture(t, 100, "idle")
 	f2.hookEvents("5e55a0a0-0000-4000-8000-000000000001", "StopFailure:rate_limit")
 	f2.set("account.smart_switch", "on")
-	if out, errOut, code := run2("--pin-account", "lane-a"); code != 0 || !strings.Contains(out, "pinned") {
-		t.Fatalf("pin: %q %q", out, errOut)
-	}
+	nativePins(t, f2, `["5e55a0a0"]`)
 	if out, _, code := run2("--auto"); code != 0 || out != "" || len(h2.calls) != 0 {
 		t.Fatalf("pinned moved: %q %q", out, h2.calls)
 	}

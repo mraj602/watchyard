@@ -13,8 +13,8 @@ import (
 
 // Claude Code keeps its own pins per config folder: <dir>/jobs/pins.json, a JSON array of
 // short session ids (the first 8 characters). A session listed there is pinned to that
-// account as much as one pinned with `wy move --pin-account` (setup.md 8.6, Pinned
-// sessions). Watchyard only reads the file; it never writes it.
+// account; these are the only pins (setup.md 8.6, Pinned sessions). Watchyard only reads the
+// file; it never writes it.
 
 // NativePinsFile is the path of the Claude Code pins of config folder dir.
 func NativePinsFile(dir string) string { return filepath.Join(dir, "jobs", "pins.json") }

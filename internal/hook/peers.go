@@ -2,7 +2,6 @@ package hook
 
 import (
 	"os"
-	"strings"
 	"time"
 
 	"github.com/mraj602/watchyard/internal/clientenv"
@@ -19,7 +18,7 @@ import (
 //     of a delivery into this session (peers.md 2.4). This holds whether or not [peers] is
 //     enabled, since Claude Code's own /peers messages use the same wrapper.
 //   - derived.move_prompt = true on a UserPromptSubmit whose prompt is a Watchyard move note
-//     (it starts with mover.NotePrefix): the resume prompt of a moved session, not the owner
+//     (mover.IsNote): the resume prompt of a moved session, not the owner
 //     typing (setup.md 8.6, Interactive).
 //   - derived.peer_wait = true on a Stop while the session waits on another session's reply:
 //     it sent the newest message of an open thread after its own newest human prompt
@@ -39,7 +38,7 @@ func peerDerived(env *clientenv.Env, payload []byte, d record.Derived, now time.
 		if !peers.IsHumanPrompt(ev.Prompt, now, peers.LastDelivery(state, ev.SessionID)) {
 			d.Set("peer_prompt", true)
 		}
-		if strings.HasPrefix(ev.Prompt, mover.NotePrefix) {
+		if mover.IsNote(ev.Prompt) {
 			d.Set("move_prompt", true)
 		}
 	case "Stop":

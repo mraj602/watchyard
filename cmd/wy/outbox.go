@@ -70,6 +70,10 @@ func outboxAppend(stdin io.Reader, args []string, stdout, stderr io.Writer) erro
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "wy outbox append: unexpected argument %q\n", fs.Arg(0))
+		return errUsage
+	}
 	dir, err := outboxDir(*dirFlag)
 	if err != nil {
 		return err
