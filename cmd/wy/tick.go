@@ -34,8 +34,9 @@ import (
 // agentsEvery is the least time between two `claude agents` passes of the timer.
 const agentsEvery = 5 * time.Minute
 
-// moveEvery is the least time between two Smart Account Switch passes of the timer.
-const moveEvery = 2 * time.Minute
+// moveEvery is the least time between two Smart Account Switch passes of the timer: every
+// tick (the timer runs once a minute; setup.md 8.6, a pass every 60 s).
+const moveEvery = 50 * time.Second
 
 // runTick implements `wy tick [--quiet]`. With --quiet (the timer) it prints nothing and
 // always exits 0; each part runs even when an earlier one failed.

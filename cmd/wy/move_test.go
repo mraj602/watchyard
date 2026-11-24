@@ -17,6 +17,9 @@ import (
 	peerspkg "github.com/mraj602/watchyard/internal/peers"
 )
 
+// moveTestVars are the environment variables the move fixture's getenv returns.
+var moveTestVars = map[string]string{}
+
 type moveProc map[int][2]int
 
 func (f moveProc) Info(pid int) (peerspkg.ProcInfo, error) {
@@ -99,7 +102,7 @@ func moveFixture(t *testing.T, five float64, status string) (*nextFixture, *recH
 	h := &recHost{}
 	run := func(args ...string) (string, string, int) {
 		var out, errOut bytes.Buffer
-		e := moveEnv{nextEnv: nextEnv{home: f.home, dirs: f.dirs, getenv: func(string) string { return "" }, now: func() time.Time { return nextNow },
+		e := moveEnv{nextEnv: nextEnv{home: f.home, dirs: f.dirs, getenv: func(k string) string { return moveTestVars[k] }, now: func() time.Time { return nextNow },
 			stdout: &out, stderr: &errOut, lookPath: func(n string) (string, error) { return "/usr/bin/" + n, nil },
 			environ: func() []string { return nil }, authRun: f.authStatus},
 			sys: &mover.Sys{FS: identity.OSFS{}, Proc: moveProc{100: {90, 5}, 90: {1, 1}}, State: mover.NewState(f.dirs.State.Path),
@@ -223,8 +226,8 @@ func (f *nextFixture) fiveReset(d time.Duration) {
 
 // TestMovePlanStoppedOnlyByLimit: the real worker case of 1.3.3-pre (idle tmux sessions at a
 // prompt on an account at 100 % were planned as "stopped at the 5h limit"). Only a session
-// whose last turn ended on the limit reply is stopped; it moves only when the reset is far
-// enough away; an idle session that finished its turn is never moved for a full account.
+// whose last turn ended on the limit reply is stopped; it moves only when the reset is 20 min
+// or more away; an idle session with no burn is never moved.
 func TestMovePlanStoppedOnlyByLimit(t *testing.T) {
 	const sid = "5e55a0a0-0000-4000-8000-000000000001"
 	for _, c := range []struct {
@@ -235,18 +238,18 @@ func TestMovePlanStoppedOnlyByLimit(t *testing.T) {
 		moves  bool
 	}{
 		{"idle after a normal turn, reset in 20 min", []string{"UserPromptSubmit", "Stop"}, 20 * time.Minute,
-			"lane-a stays on claude: idle, not stopped by the limit", false},
+			"No session needs a move.", false},
 		{"idle after a normal turn, reset in 3 h", []string{"UserPromptSubmit", "Stop"}, 3 * time.Hour,
-			"lane-a stays on claude: idle, not stopped by the limit", false},
-		{"idle with no events at all", nil, 3 * time.Hour, "idle, not stopped by the limit", false},
-		{"stopped by the limit, reset in 20 min", []string{"UserPromptSubmit", "StopFailure:rate_limit"}, 20 * time.Minute,
-			"lane-a stays on claude: stopped at the 5h limit, which resets in 20m0s: waiting is cheaper than a move", false},
+			"No session needs a move.", false},
+		{"idle with no events at all", nil, 3 * time.Hour, "No session needs a move.", false},
+		{"stopped by the limit, reset in 15 min", []string{"UserPromptSubmit", "StopFailure:rate_limit"}, 15 * time.Minute,
+			"lane-a stays on claude: stopped at the 5h limit, which resets in 15m0s: waiting costs less than a move", false},
 		{"stopped by the limit, reset in 3 h", []string{"UserPromptSubmit", "StopFailure:rate_limit"}, 3 * time.Hour,
 			"lane-a (tmux): claude -> claude-2: stopped at the 5h limit", true},
 		{"stopped earlier, then went on and finished", []string{"StopFailure:rate_limit", "UserPromptSubmit", "Stop"}, 3 * time.Hour,
-			"idle, not stopped by the limit", false},
+			"No session needs a move.", false},
 		{"another error is not the limit", []string{"UserPromptSubmit", "StopFailure:server_error"}, 3 * time.Hour,
-			"idle, not stopped by the limit", false},
+			"No session needs a move.", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f, h, run := moveFixture(t, 100, "idle")
@@ -262,5 +265,87 @@ func TestMovePlanStoppedOnlyByLimit(t *testing.T) {
 				t.Fatalf("auto:\n%s\n%q", out, h.calls)
 			}
 		})
+	}
+}
+
+// injectRates narrows the scope to the fixture's session and injects its burn and the
+// accounts' levels (WY_MOVE_TEST) for one test.
+func injectRates(t *testing.T, f *nextFixture, js string) {
+	t.Helper()
+	f.set("account.smart_switch_scope", "sessions:5e55a0a0")
+	moveTestVars[moveTestEnv] = js
+	t.Cleanup(func() { delete(moveTestVars, moveTestEnv) })
+}
+
+// A burning agent lane (tmux, a lease's task as its only prompt) is moved mid-turn after the
+// spike filter's second pass; it resumes with the mid-turn note as its prompt.
+func TestMoveAutoBurnerMidTurn(t *testing.T) {
+	const sid = "5e55a0a0-0000-4000-8000-000000000001"
+	f, h, run := moveFixture(t, 60, "busy")
+	f.hookEvents(sid, "UserPromptSubmit")
+	f.fiveReset(3 * time.Hour)
+	injectRates(t, f, `{"rates":{"5e55a0a0":20}}`) // 60 + 3 h × 20 = 120 > 95
+	f.set("account.smart_switch", "on")
+	out, _, code := run("--auto")
+	if code != 0 || strings.Contains(out, "moved ") || len(h.calls) != 0 {
+		t.Fatalf("first pass moved (spike filter): %q %q", out, h.calls)
+	}
+	out, _, _ = run("--plan")
+	if !strings.Contains(out, "lane-a (tmux): claude -> claude-2: 5h projected 120% (cap 95%)") || !strings.Contains(out, "; mid-turn") {
+		t.Fatalf("plan after one pass:\n%s", out)
+	}
+	out, errOut, code := run("--auto")
+	if code != 0 || !strings.Contains(out, "moved 5e55a0a0 lane-a from claude to claude-2") {
+		t.Fatalf("second pass: %d %q %q", code, out, errOut)
+	}
+	resp := ""
+	for _, c := range h.calls {
+		if strings.HasPrefix(c, "note ") {
+			t.Fatalf("a mid-turn move wrote a SessionStart note: %q", c)
+		}
+		if strings.HasPrefix(c, "tmux respawn-pane") {
+			resp = c
+		}
+	}
+	if !strings.Contains(resp, "--resume "+sid+" ") || !strings.Contains(resp, "Watchyard moved this session from claude to claude-2 mid-turn at") ||
+		!strings.Contains(resp, "Carry on with your task.") || !strings.Contains(resp, "different organisation") {
+		t.Fatalf("respawn: %q", resp)
+	}
+}
+
+// An interactive session (the owner typed into it) is never stopped: it is told instead.
+func TestMoveAutoInteractiveNotice(t *testing.T) {
+	const sid = "5e55a0a0-0000-4000-8000-000000000001"
+	f, h, run := moveFixture(t, 60, "busy")
+	f.hookEvents(sid, "UserPromptSubmit", "Stop", "UserPromptSubmit")
+	f.fiveReset(3 * time.Hour)
+	injectRates(t, f, `{"rates":{"5e55a0a0":20},"spike_passes":1}`)
+	out, _, _ := run("--plan")
+	if !strings.Contains(out, "(tmux, interactive): told, not moved") || !strings.Contains(out, "claude-2 has room") ||
+		!strings.Contains(out, "/exit, then run: cd /work && env CLAUDE_CONFIG_DIR=") || !strings.Contains(out, "--resume "+sid) {
+		t.Fatalf("plan:\n%s", out)
+	}
+	f.set("account.smart_switch", "on")
+	out, _, code := run("--auto")
+	if code != 0 || strings.Contains(out, "moved 5e55") || len(h.calls) != 0 || !strings.Contains(out, "not told (peers are off)") {
+		t.Fatalf("auto: %q %q", out, h.calls)
+	}
+}
+
+// Only accounts logged in on this machine are destinations, by the switch and by hand.
+func TestMoveLoggedInOnly(t *testing.T) {
+	f, h, run := moveFixture(t, 100, "idle")
+	f.hookEvents("5e55a0a0-0000-4000-8000-000000000001", "UserPromptSubmit", "StopFailure:rate_limit")
+	f.fiveReset(3 * time.Hour)
+	f.loggedOut["~/.claude-2"] = true
+	out, _, _ := run("--plan")
+	if strings.Contains(out, "-> claude-2") || !strings.Contains(out, "-> (none)") || !strings.Contains(out, "no logged-in account") {
+		t.Fatalf("plan:\n%s", out)
+	}
+	if _, errOut, code := run("lane-a"); code != exitNoAccount || len(h.calls) != 0 {
+		t.Fatalf("by hand: %d %q", code, errOut)
+	}
+	if _, errOut, code := run("lane-a", "claude-2"); code == 0 || !strings.Contains(errOut, "no logged-in account") {
+		t.Fatalf("by hand to a logged-out account: %d %q", code, errOut)
 	}
 }

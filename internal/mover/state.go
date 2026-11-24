@@ -247,3 +247,35 @@ func Records(es []LogEntry) []Record {
 	}
 	return out
 }
+
+// SwitchState is what one auto pass leaves for the next (<state>/move/switch.json): when it
+// ran, the spike filter's streaks and the last notice per interactive session.
+type SwitchState struct {
+	At      time.Time               `json:"at"`
+	Streak  map[string]int          `json:"streak"`
+	Noticed map[string]NoticeRecord `json:"noticed"`
+}
+
+// LoadSwitch reads the switch state at now. Streaks older than three passes are dropped (the
+// passes were not consecutive), notices after a day.
+func (s State) LoadSwitch(now time.Time, pass time.Duration) SwitchState {
+	var x SwitchState
+	if b, err := os.ReadFile(s.path("switch.json")); err == nil {
+		_ = json.Unmarshal(b, &x)
+	}
+	if x.Streak == nil || now.Sub(x.At) > 3*max(pass, time.Minute) {
+		x.Streak = map[string]int{}
+	}
+	if x.Noticed == nil {
+		x.Noticed = map[string]NoticeRecord{}
+	}
+	for id, n := range x.Noticed {
+		if now.Sub(n.At) > 24*time.Hour {
+			delete(x.Noticed, id)
+		}
+	}
+	return x
+}
+
+// SaveSwitch writes the switch state.
+func (s State) SaveSwitch(x SwitchState) error { return s.write(s.path("switch.json"), x) }

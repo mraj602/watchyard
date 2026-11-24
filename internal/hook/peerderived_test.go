@@ -77,3 +77,17 @@ func TestHookMarksStopWaitingOnAPeer(t *testing.T) {
 		t.Fatalf("after the reply: peer_wait = %q", got)
 	}
 }
+
+// A move note as a resume prompt is marked move_prompt: it is not the owner typing (setup.md
+// 8.6, Interactive).
+func TestHookMarksMovePrompts(t *testing.T) {
+	sb := newSandbox(t)
+	sb.run("UserPromptSubmit", []byte(`{"session_id":"sess-m","prompt":"Watchyard moved this session from claude-3 to claude-2 mid-turn at 14:05. Carry on with your task."}`))
+	if got := sb.derivedOf("move_prompt"); got != "true" {
+		t.Fatalf("move_prompt = %q", got)
+	}
+	sb.run("UserPromptSubmit", []byte(`{"session_id":"sess-m","prompt":"what did Watchyard moved this session mean?"}`))
+	if got := sb.derivedOf("move_prompt"); got != "" {
+		t.Fatalf("an owner prompt got move_prompt = %q", got)
+	}
+}

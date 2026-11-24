@@ -63,6 +63,19 @@ func TestResumeArgsByKind(t *testing.T) {
 			t.Errorf("%s: %q, want %q", k, got, want)
 		}
 	}
+	// Mid-turn: every kind resumes with the note as its prompt, without the idle tail.
+	l.MidTurn = true
+	for k, want := range map[Kind][]string{
+		KindTmux:       {"--model", "opus", "--resume", "s1", note},
+		KindWrapped:    {"--model", "opus", "--resume", "s1", note},
+		KindBackground: {"--model", "opus", "--resume", "s1", "--bg", note},
+		KindHeadless:   {"-p", "--model", "opus", "--resume", "s1", note},
+	} {
+		l.Kind = k
+		if got := ResumeArgs(l, note); !reflect.DeepEqual(got, want) {
+			t.Errorf("mid-turn %s: %q, want %q", k, got, want)
+		}
+	}
 }
 
 func TestCommandTemplate(t *testing.T) {
@@ -78,19 +91,6 @@ func TestCommandTemplate(t *testing.T) {
 	}
 	if got := Shell([]string{"a b", "it's", "ok"}); got != `'a b' 'it'\''s' ok` {
 		t.Errorf("Shell: %s", got)
-	}
-}
-
-func TestNoteText(t *testing.T) {
-	at := time.Date(2026, 11, 24, 10, 31, 0, 0, time.Local)
-	mv := Move{Window: Win5h, HitAt: at.Add(17 * time.Minute), ResetAt: time.Date(2026, 11, 24, 13, 59, 0, 0, time.Local)}
-	want := "Watchyard moved this session from claude-4 to claude-2 at 10:31 (5h would have hit at 10:48, before its 13:59 reset). " +
-		"Background shells started before keep running (Claude Code lists them as stopped; they are not) but are no longer tracked here: check their output files."
-	if got := Note("claude-4", "claude-2", at, mv); got != want {
-		t.Errorf("note:\n%s\nwant\n%s", got, want)
-	}
-	if got := Note("claude-4", "claude-2", at, Move{}); !strings.HasPrefix(got, "Watchyard moved this session from claude-4 to claude-2 at 10:31. Background") {
-		t.Errorf("manual note: %s", got)
 	}
 }
 
@@ -267,6 +267,23 @@ func TestBackgroundMoveStopsOldCopy(t *testing.T) {
 	for _, c := range h.calls {
 		if strings.HasPrefix(c, "start") {
 			t.Fatalf("resumed while a copy ran: %v", h.calls)
+		}
+	}
+}
+
+func TestHasPrompt(t *testing.T) {
+	for argv, want := range map[string]bool{
+		"--model opus":                        false,
+		"--model opus do-it":                  true,
+		"--add-dir a b --model opus":          false,
+		"--resume abc":                        false,
+		"--resume abc note":                   true,
+		"-p --output-format json task":        true,
+		"--permission-mode bypassPermissions": false,
+		"-- task":                             true,
+	} {
+		if got := HasPrompt(strings.Fields(argv)); got != want {
+			t.Errorf("%q: %v, want %v", argv, got, want)
 		}
 	}
 }

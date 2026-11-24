@@ -66,6 +66,9 @@ func Execute(h Host, l Launch, t Target, template, note, log string) ([]string, 
 	argv := Command(template, t, ResumeArgs(l, note))
 	switch l.Kind {
 	case KindTmux, KindWrapped:
+		if l.MidTurn {
+			break // the note is its prompt
+		}
 		if err := h.Note(l.SessionID, note); err != nil {
 			return nil, fmt.Errorf("move note: %w", err)
 		}

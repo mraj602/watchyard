@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mraj602/watchyard/internal/identity"
 )
@@ -94,21 +93,5 @@ func TestJobFlags(t *testing.T) {
 	}
 	if got := KeptArgs([]string{"--bg-spare"}); len(got) != 0 {
 		t.Fatalf("spare flag kept: %q", got)
-	}
-}
-
-// A move stays within the session's organisation when an account there has room.
-func TestDestinationSameOrg(t *testing.T) {
-	p := DefaultParams
-	p.Fixed5h = 90
-	in := Input{Now: time.Now(), Params: p,
-		Accounts: []Account{{Key: "acct:a/o1", W5: Window{Level: 95}}, {Key: "acct:b/o2", W5: Window{Level: 10}}, {Key: "acct:c/o1", W5: Window{Level: 20}}},
-		Sessions: []Session{{ID: "s1", Account: "acct:a/o1"}}}
-	if got, _ := Destination(in, "s1"); got != "acct:c/o1" {
-		t.Fatalf("destination %q", got)
-	}
-	in.Accounts[2].W5.Level = 95
-	if got, _ := Destination(in, "s1"); got != "acct:b/o2" {
-		t.Fatalf("other organisation when its own is full: %q", got)
 	}
 }

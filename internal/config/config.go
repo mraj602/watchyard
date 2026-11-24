@@ -129,6 +129,25 @@ type Config struct {
 		// SmartSwitchScope is which sessions the switch may move: all (the default), tag:<tag>
 		// (sessions with that peers tag) or sessions:<id>,<id> (ids or 8+ character prefixes).
 		SmartSwitchScope string `toml:"smart_switch_scope"`
+		// MoveOrgs: the organisations a session may move to: any (the default), same-first or
+		// same. The Move* numbers are the decision rules of setup.md 8.6 (each key's default and
+		// reason are in its Decision table).
+		MoveOrgs             string  `toml:"move_orgs"`
+		MoveCap5h            float64 `toml:"move_cap_5h"`
+		MoveCap7d            float64 `toml:"move_cap_7d"`
+		MoveCap5hProtected   float64 `toml:"move_cap_5h_protected"`
+		MoveCap7dProtected   float64 `toml:"move_cap_7d_protected"`
+		MoveHysteresis       float64 `toml:"move_hysteresis"`
+		MoveBurnMin          float64 `toml:"move_burn_min"`
+		MoveWeekSpanH        float64 `toml:"move_week_span_h"`
+		MoveSpikePasses      float64 `toml:"move_spike_passes"`
+		MoveSpikeNearMin     float64 `toml:"move_spike_near_min"`
+		MoveCooldownMin      float64 `toml:"move_cooldown_min"`
+		MoveNoReturnMin      float64 `toml:"move_no_return_min"`
+		MoveAccountMoves     float64 `toml:"move_account_moves"`
+		MoveAccountWindowMin float64 `toml:"move_account_window_min"`
+		MoveStoppedWaitMin   float64 `toml:"move_stopped_wait_min"`
+		MoveNoticeMin        float64 `toml:"move_notice_min"`
 	} `toml:"account"`
 }
 
@@ -198,6 +217,10 @@ func Defaults() Config {
 	c.Peers.Delivery = "honest"
 	c.Peers.HubMayWiden = true
 	c.Account.SmartSwitchScope = "all"
+	c.Account.MoveOrgs = "any"
+	for k, v := range moveDefaults {
+		*c.moveField(k) = v
+	}
 	c.Update.VerifyAttestation = true
 	c.Next = Next{Strategy: NextStrategyLanes, Session5h: 15, Session7d: 2, SessionMin: 120, StaleMin: 30,
 		ReserveMin: 12, StickyMargin: 10, Accounts: map[string]NextAccount{}}
@@ -260,6 +283,7 @@ var known = map[string]spec{
 	"account.smart_switch":       {kind: kBool, def: false},
 	"account.move_launch":        {kind: kString, def: ""},
 	"account.smart_switch_scope": {kind: kString, def: "all"},
+	"account.move_orgs":          {kind: kString, def: "any"},
 	"next.strategy":              {kind: kString, def: NextStrategyLanes},
 	"next.model":                 {kind: kString, def: ""},
 	"next.session_5h":            {kind: kFloat, def: float64(15)},
@@ -268,6 +292,58 @@ var known = map[string]spec{
 	"next.stale_min":             {kind: kFloat, def: float64(30)},
 	"next.reserve_min":           {kind: kFloat, def: float64(12)},
 	"next.sticky_margin":         {kind: kFloat, def: float64(10)},
+}
+
+// moveDefaults are the defaults of the account.move_* numbers (setup.md 8.6, Decision).
+var moveDefaults = map[string]float64{
+	"move_cap_5h": 95, "move_cap_7d": 98, "move_cap_5h_protected": 80, "move_cap_7d_protected": 80,
+	"move_hysteresis": 5, "move_burn_min": 10, "move_week_span_h": 5, "move_spike_passes": 2, "move_spike_near_min": 30,
+	"move_cooldown_min": 20, "move_no_return_min": 60, "move_account_moves": 3, "move_account_window_min": 15,
+	"move_stopped_wait_min": 20, "move_notice_min": 30,
+}
+
+func init() {
+	for k, v := range moveDefaults {
+		known["account."+k] = spec{kind: kFloat, def: v}
+	}
+}
+
+// moveField is the Account field of the move_* key k.
+func (c *Config) moveField(k string) *float64 {
+	a := &c.Account
+	switch k {
+	case "move_cap_5h":
+		return &a.MoveCap5h
+	case "move_cap_7d":
+		return &a.MoveCap7d
+	case "move_cap_5h_protected":
+		return &a.MoveCap5hProtected
+	case "move_cap_7d_protected":
+		return &a.MoveCap7dProtected
+	case "move_hysteresis":
+		return &a.MoveHysteresis
+	case "move_burn_min":
+		return &a.MoveBurnMin
+	case "move_week_span_h":
+		return &a.MoveWeekSpanH
+	case "move_spike_passes":
+		return &a.MoveSpikePasses
+	case "move_spike_near_min":
+		return &a.MoveSpikeNearMin
+	case "move_cooldown_min":
+		return &a.MoveCooldownMin
+	case "move_no_return_min":
+		return &a.MoveNoReturnMin
+	case "move_account_moves":
+		return &a.MoveAccountMoves
+	case "move_account_window_min":
+		return &a.MoveAccountWindowMin
+	case "move_stopped_wait_min":
+		return &a.MoveStoppedWaitMin
+	case "move_notice_min":
+		return &a.MoveNoticeMin
+	}
+	panic("config: unknown move key " + k)
 }
 
 // labelsPrefix: "slots.labels.<slot>" is a free-form key; the slot (e.g. "~/.claude-2")
@@ -605,6 +681,10 @@ func parse(key string, k kind, args []string) (any, error) {
 	case "account.smart_switch_scope":
 		if err := CheckSwitchScope(v); err != nil {
 			return nil, err
+		}
+	case "account.move_orgs":
+		if v != "any" && v != "same-first" && v != "same" {
+			return nil, fmt.Errorf("account.move_orgs: want any, same-first or same, got %q", v)
 		}
 	}
 	if key == "hub.url" && v != "" {

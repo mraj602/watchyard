@@ -43,7 +43,7 @@ func TestMoveTestInjection(t *testing.T) {
 		t.Fatal("injection accepted with scope all")
 	}
 	mt, err := loadMoveTest(env(`{"accounts": {"claude-2": {"five_hour": 90, "five_reset_min": 120}},
-		"rates": {"67ce5986": 40}, "cooldown_min": 1, "account_moves": 9}`), parseScope("tag:x"))
+		"rates": {"67ce5986": 40}, "cooldown_min": 1, "account_moves": 9, "spike_passes": 1}`), parseScope("tag:x"))
 	if err != nil || mt == nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestMoveTestInjection(t *testing.T) {
 	}
 	p := mover.DefaultParams
 	mt.applyParams(&p)
-	if p.Cooldown != time.Minute || p.AccountMoves != 9 {
+	if p.Cooldown != time.Minute || p.AccountMoves != 9 || p.SpikePasses != 1 {
 		t.Errorf("params %+v", p)
 	}
 }
@@ -138,5 +138,40 @@ func TestNoticeOnlyToParent(t *testing.T) {
 	// A second hop keeps the parent (the new lease carries it).
 	if p := moveLease(e, child, mover.Target{Key: "acct:a3/o1", Label: "claude-3", Dir: "/h/.claude-3"}, "claude-2", false); p != parent {
 		t.Fatalf("second hop parent %q", p)
+	}
+}
+
+// Interactive (setup.md 8.6): terminal and wy run always; a tmux pane with Remote Control or
+// an owner prompt in its life; not a lane whose only prompt is its task, nor move notes or
+// peer messages; background and headless never.
+func TestInteractive(t *testing.T) {
+	at := func(m int, owner bool) promptSeen {
+		return promptSeen{at: time.Date(2026, 11, 24, 12, m, 0, 0, time.UTC), owner: owner}
+	}
+	task := []string{"--model", "haiku", "do the task"}
+	bare := []string{"--model", "haiku"}
+	for _, c := range []struct {
+		name string
+		l    mover.Launch
+		ps   []promptSeen
+		task bool
+		want bool
+	}{
+		{"plain terminal", mover.Launch{Kind: mover.KindTerminal}, nil, false, true},
+		{"wy run", mover.Launch{Kind: mover.KindWrapped}, nil, true, true},
+		{"background", mover.Launch{Kind: mover.KindBackground}, []promptSeen{at(1, true), at(2, true)}, false, false},
+		{"headless", mover.Launch{Kind: mover.KindHeadless}, []promptSeen{at(1, true), at(2, true)}, false, false},
+		{"tmux with Remote Control", mover.Launch{Kind: mover.KindTmux, RemoteControl: true, Argv: task}, nil, true, true},
+		{"tmux lane, its task only", mover.Launch{Kind: mover.KindTmux, Argv: bare}, []promptSeen{at(1, true)}, true, false},
+		{"tmux started with a prompt", mover.Launch{Kind: mover.KindTmux, Argv: task}, []promptSeen{at(1, true)}, true, false},
+		{"tmux lane, then move notes and peer messages", mover.Launch{Kind: mover.KindTmux, Argv: task},
+			[]promptSeen{at(1, true), at(5, false), at(9, false)}, true, false},
+		{"tmux lane, then the owner typed", mover.Launch{Kind: mover.KindTmux, Argv: task}, []promptSeen{at(1, true), at(5, false), at(9, true)}, true, true},
+		{"tmux, owner opened it and typed", mover.Launch{Kind: mover.KindTmux, Argv: bare}, []promptSeen{at(1, true)}, false, true},
+		{"tmux, nothing typed yet", mover.Launch{Kind: mover.KindTmux, Argv: bare}, nil, false, false},
+	} {
+		if got := interactive(c.l, c.ps, c.task); got != c.want {
+			t.Errorf("%s: interactive %v, want %v", c.name, got, c.want)
+		}
 	}
 }

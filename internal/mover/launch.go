@@ -59,6 +59,9 @@ type Launch struct {
 	// running); StatusSince when it last changed.
 	Status      string
 	StatusSince time.Time
+	// MidTurn: the move stops it in the middle of a turn: it resumes with the note as its
+	// prompt (set by the caller for one move).
+	MidTurn bool
 }
 
 // Inputs of Detect: what the registry file, /proc and tmux say about one process.
@@ -177,20 +180,54 @@ func KeptArgs(argv []string) []string {
 	return out
 }
 
+// HasPrompt reports whether a claude command line carries a prompt: a positional argument
+// (not a flag's value) or anything after "--".
+func HasPrompt(argv []string) bool {
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		if a == "--" {
+			return i+1 < len(argv)
+		}
+		if !strings.HasPrefix(a, "-") {
+			return true
+		}
+		name, _, inline := strings.Cut(a, "=")
+		if valueFlags[name] && !inline {
+			for i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "-") {
+				i++
+				if !variadic[name] {
+					break
+				}
+			}
+		}
+	}
+	return false
+}
+
 // ResumeArgs are the claude arguments that continue l under another account: its kept flags
 // and --resume <id>; a background session also --bg and a headless one -p, both with the
-// move note as the prompt (they take no SessionStart context before a prompt).
+// move note as the prompt (they take no SessionStart context before a prompt). A session
+// moved mid-turn (l.MidTurn) gets the note as its prompt in every kind, so it goes on by
+// itself (a positional prompt starts a turn).
 func ResumeArgs(l Launch, note string) []string {
 	args := KeptArgs(l.Argv)
 	args = append(args, "--resume", l.SessionID)
+	prompt := note + PromptTail
+	if l.MidTurn {
+		prompt = note // the mid-turn note ends "Carry on with your task."
+	}
 	switch l.Kind {
 	case KindBackground:
-		args = append(args, "--bg", note+PromptTail)
+		args = append(args, "--bg", prompt)
 	case KindHeadless:
 		if !hasFlag(args, "-p", "--print") {
 			args = append([]string{"-p"}, args...)
 		}
-		args = append(args, note+PromptTail)
+		args = append(args, prompt)
+	case KindTmux, KindWrapped:
+		if l.MidTurn {
+			args = append(args, prompt)
+		}
 	}
 	return args
 }
@@ -247,27 +284,45 @@ func Shell(argv []string) string {
 	return strings.Join(q, " ")
 }
 
+// NotePrefix starts every move note (the hook tells a resume prompt from the owner's by it).
+const NotePrefix = "Watchyard moved this session"
+
 // Note is the one line a moved session gets: as SessionStart context on resume, or as the
-// prompt of a background or headless resume.
+// prompt of a resume that must go on by itself (background, headless, any mid-turn move).
 //
 // chain is the accounts of the session's earlier moves, oldest first, ending with from (none
 // for a first move): a later move names its number and the whole path in the same line, so
 // the session reads one current note instead of piecing together older ones.
 func Note(from, to string, at time.Time, mv Move, chain ...string) string {
-	s := fmt.Sprintf("Watchyard moved this session from %s to %s at %s", from, to, at.Local().Format("15:04"))
+	s := fmt.Sprintf(NotePrefix+" from %s to %s", from, to)
+	if mv.MidTurn {
+		s += " mid-turn"
+	}
+	s += " at " + at.Local().Format("15:04")
 	if len(chain) > 1 {
 		s += fmt.Sprintf(" (move %d: %s → %s)", len(chain), strings.Join(chain, " → "), to)
 	}
 	switch {
-	case mv.Window != "" && !mv.HitAt.IsZero() && mv.HitAt.After(at):
-		s += fmt.Sprintf(" (%s would have hit at %s, before its %s reset)", mv.Window, mv.HitAt.Local().Format("15:04"),
-			mv.ResetAt.Local().Format("15:04"))
-	case mv.Window != "" && mv.Stopped:
+	case mv.Stopped && mv.Window != "":
 		s += fmt.Sprintf(" (stopped at the %s limit, which resets at %s)", mv.Window, mv.ResetAt.Local().Format("15:04"))
-	case mv.Window != "":
-		s += fmt.Sprintf(" (its %s limit was reached; it resets at %s)", mv.Window, mv.ResetAt.Local().Format("15:04"))
+	case mv.Window != "" && !mv.HitAt.IsZero() && mv.HitAt.After(at):
+		s += fmt.Sprintf(": %s's %s would hit 100%% at %s at its current burn (P%s %.0f%%)", from, mv.Window,
+			mv.HitAt.Local().Format("15:04"), strings.TrimSuffix(strings.TrimSuffix(mv.Window, "h"), "d"), mv.P)
+	case mv.Window != "" && mv.P > 0:
+		s += fmt.Sprintf(": %s's %s would reach %.0f%% before its %s reset at its current burn", from, mv.Window, mv.P,
+			mv.ResetAt.Local().Format("15:04"))
 	case mv.ByHand:
 		s += " (by hand, with wy move)"
 	}
-	return s + ". Background shells started before keep running (Claude Code lists them as stopped; they are not) but are no longer tracked here: check their output files."
+	if mv.OrgChanged {
+		s += " (different organisation: earlier thinking blocks are not visible to you; the conversation is intact)"
+	}
+	s += "."
+	if mv.MidTurn {
+		return s + " Your last step may not have finished: check its result before redoing it. Helper agents that were running" +
+			" were stopped: restart them if you still need them. Background shells keep running (listed as stopped; check" +
+			" their output files). Carry on with your task."
+	}
+	return s + " Background shells started before keep running (Claude Code lists them as stopped; they are not) but are" +
+		" no longer tracked here: check their output files."
 }
