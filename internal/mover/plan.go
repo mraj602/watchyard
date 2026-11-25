@@ -91,6 +91,9 @@ type Params struct {
 	oldDest     bool
 	// noYoungDest (simulator): the destination counts young lanes at 0, as 1.3.3-pre9.
 	noYoungDest bool
+	// pullMargin: a pull onto a draining account keeps Hysteresis (PullMargin) under its caps
+	// (hyst gives a draining account none otherwise).
+	pullMargin bool
 	// CheapMoves: among the sessions whose move alone fixes the overload, the most points
 	// freed per re-read cost (context × ModelFactor) first, then the highest burn, then the
 	// youngest.
@@ -333,6 +336,9 @@ type Projection struct {
 	ReadingsOnly bool `json:",omitempty"`
 	// Expiring: protected, within ExpiringRoom of its weekly reset: Cap7 is the aggressive cap.
 	Expiring bool `json:",omitempty"`
+	// Draining: an aggressive account drained (Account.Drain or an owner drain): its caps are
+	// the drain aim (caps) and no Hysteresis applies under them (hyst).
+	Draining bool `json:",omitempty"`
 	// StaleFor: its reading is this old, over Params.StaleAfter: no moves off or onto it.
 	StaleFor time.Duration `json:",omitempty"`
 	// Left: it stays over its target after this pass's moves because no move can lower it
@@ -879,7 +885,7 @@ func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]fl
 			continue
 		}
 		pp := p
-		pp.Hysteresis = math.Max(p.Hysteresis, p.PullMargin)
+		pp.Hysteresis, pp.pullMargin = math.Max(p.Hysteresis, p.PullMargin), true
 		if pr := p.Project(d, byAcc[d.Key], delta[d.Key], now); pr.P5 > pr.Cap5-pp.Hysteresis || pr.P7 > pr.Cap7-pp.Hysteresis {
 			continue
 		}
@@ -1072,17 +1078,29 @@ func (pr Projection) overBy(m float64) bool {
 // the level now, so that target could never be met and every burner would be moved off). With
 // MinBurn negative (the simulator's tables before it), always Hysteresis.
 func (p Params) margins(pr Projection) (m5, m7 float64) {
-	m5, m7 = p.Hysteresis, p.Hysteresis
+	h := p.hyst(pr)
+	m5, m7 = h, h
 	if p.MinBurn < 0 || p.IdleMoves {
 		return m5, m7
 	}
-	if pr.Level5 >= pr.Cap5-p.Hysteresis {
+	if pr.Level5 >= pr.Cap5-h {
 		m5 = 0
 	}
-	if pr.Level7 >= pr.Cap7-p.Hysteresis {
+	if pr.Level7 >= pr.Cap7-h {
 		m7 = 0
 	}
 	return m5, m7
+}
+
+// hyst is the margin under pr's caps that moves aim for and destinations keep: Hysteresis, but
+// none for a draining account, whose caps are already the drain aim (setup.md 8.5, Drain aim):
+// with the margin a drain could never come within Hysteresis of its aim (live pre15: claude-3
+// at 89%, lanes refused at a projected 91% against "cap 95% less the switch margin").
+func (p Params) hyst(pr Projection) float64 {
+	if pr.Draining && !p.pullMargin {
+		return 0
+	}
+	return p.Hysteresis
 }
 
 // overTarget reports whether a projection is still over what the moves aim for (margins).
@@ -1236,6 +1254,7 @@ func (p Params) Project(a Account, ss []Session, extra float64, now time.Time) P
 	pr := Projection{Key: a.Key, Label: a.Label, Protected: a.Protected, Level5: a.W5.Level, Level7: a.W7.Level, R5: r5, RateNote: a.RateNote,
 		Cap5: c5, Cap7: c7, Hit: -1, ratio: ratio(a), Pins: a.Pins, Reserve5: math.Max(0, a.Reserve5), Reserve7: math.Max(0, a.Reserve7)}
 	pr.Expiring = p.expiring(a, now)
+	pr.Draining = !a.Protected && !a.Off && (a.Drain || a.DrainUntil.After(now))
 	pr.Reset5 = resetIn(a.W5, now, 5*time.Hour)
 	pr.Reset7 = resetIn(a.W7, now, 7*24*time.Hour)
 	if a.W5.Reset.IsZero() || !a.W5.Reset.After(now) {
@@ -1337,8 +1356,8 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 			pr.P5 -= r * math.Max(0, pr.Reset5.Hours()-e)
 			pr.P7 -= r / pr.ratio * math.Max(0, math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())-e)
 		}
-		return pr, pr.P5 <= pr.Cap5-p.Hysteresis && pr.P7 <= pr.Cap7-p.Hysteresis && pr.Level5 < pr.Cap5-p.Hysteresis &&
-			pr.Level7 < pr.Cap7-p.Hysteresis
+		h := p.hyst(pr)
+		return pr, pr.P5 <= pr.Cap5-h && pr.P7 <= pr.Cap7-h && pr.Level5 < pr.Cap5-h && pr.Level7 < pr.Cap7-h
 	}
 	if p.DestHorizon > 0 && p.oldDest {
 		full := room
@@ -1356,8 +1375,8 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 			r := math.Max(0, s.Rate)
 			pr.P5 += r * min(h, pr.Reset5).Hours()
 			pr.P7 += r / pr.ratio * math.Min(h.Hours(), math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours()))
-			return pr, pr.P5 <= pr.Cap5-p.Hysteresis && pr.P7 <= pr.Cap7-p.Hysteresis && pr.Level5 < pr.Cap5-p.Hysteresis &&
-				pr.Level7 < pr.Cap7-p.Hysteresis
+			hy := p.hyst(pr)
+			return pr, pr.P5 <= pr.Cap5-hy && pr.P7 <= pr.Cap7-hy && pr.Level5 < pr.Cap5-hy && pr.Level7 < pr.Cap7-hy
 		}
 	}
 	idx := map[string]int{}

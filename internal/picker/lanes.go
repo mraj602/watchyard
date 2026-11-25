@@ -1395,11 +1395,18 @@ func moverOver(m *MoverView, acc LaneAccount, v laneState, sl switchLaneEst, p L
 	}
 	// Under the caps less the destination's margin, as a moved session must be (a placement
 	// is a destination too).
-	if !projection.Over(p5, p7, c5, c7, acc.PinReserve5, acc.PinReserve7, m.Hysteresis) {
+	// A draining account: its caps are the drain aim, with no margin under them (the switch's
+	// own hyst; live pre15: claude-3 at 89%, lanes refused at 91% against "cap 95% less the
+	// switch margin", so a drain never came within 5 points of its aim).
+	hy := m.Hysteresis
+	if drain && !acc.Protected {
+		hy = 0
+	}
+	if !projection.Over(p5, p7, c5, c7, acc.PinReserve5, acc.PinReserve7, hy) {
 		return ""
 	}
 	marg := ""
-	if m.Hysteresis > 0 {
+	if hy > 0 {
 		marg = fmt.Sprintf(" less the switch's %s-point margin", f0(m.Hysteresis))
 	}
 	if p5-pinLess(c5, acc.PinReserve5) >= p7-pinLess(c7, acc.PinReserve7) {

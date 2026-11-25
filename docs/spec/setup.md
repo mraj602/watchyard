@@ -1330,7 +1330,11 @@ account out of the drain; they only limit how many more it takes).
   would land over 99, so a lane is not stopped by a limit before the reset. A lane estimated to
   outlast the week goes to other accounts first (runway), so the last stretch takes short
   lanes. Smart Account Switch's caps for a draining account ramp the same way (5h: the 5-hour
-  aim; 7d: the weekly aim, at most 99). An owner's own lower weekly limit and the switch's
+  aim; 7d: the weekly aim, at most 99). Those caps are the aim itself: the switch's 5-point margin
+  (`move_hysteresis`) is not kept under them, neither by the picker's switch-projection check
+  nor by the switch's moves off it or onto it (a pull onto an owner drain keeps `PullMargin`);
+  with it a drain could never come within 5 points of its aim (live pre15: claude-3 at 89%,
+  lanes refused at a projected 91% against "cap 95% less the switch margin"). An owner's own lower weekly limit and the switch's
   protected caps are not raised. `--explain` ends the drain line with "aim 96.4% now, 98% at
   Thu 03:30" (`--json` `drain.aim_pct`, `aim_at_reset_pct`, `weekly_resets_at`). `--explain`, the table,
   `--plan` and the board show "draining (owner, until 23:59)" ("Thu 07:00" when not today).
