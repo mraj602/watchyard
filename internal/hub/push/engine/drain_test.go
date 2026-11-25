@@ -67,3 +67,20 @@ func TestDrainEndsAtUntil(t *testing.T) {
 		t.Fatal(h.dump())
 	}
 }
+
+// Near the weekly reset the drain aim ramps (setup.md 8.5, Drain aim): a drain until 1 h
+// before the reset keeps going at 97.5% (its aim there is 99) and ends at 99.
+func TestDrainAimRampsNearReset(t *testing.T) {
+	h := newHarness(t)
+	h.sample("four@example.com", 0, 20, at(3*time.Hour), 97.5, at(5*time.Hour))
+	h.exec(`UPDATE seat SET drain_until = ?`, at(4*time.Hour).UnixMilli())
+	h.advanceTo(2 * time.Minute)
+	if len(h.byTrigger(model.TriggerDrainStarted)) != 1 || len(h.byTrigger(model.TriggerDrainEnded)) != 0 {
+		t.Fatalf("97.5%% an hour before the reset: %s", h.dump())
+	}
+	h.sample("four@example.com", 11*time.Minute, 30, at(3*time.Hour), 99, at(5*time.Hour))
+	h.advanceTo(13 * time.Minute)
+	if ended := h.byTrigger(model.TriggerDrainEnded); len(ended) != 1 || ended[0].Facts.Detail != "aim" {
+		t.Fatalf("99%%: %s", h.dump())
+	}
+}

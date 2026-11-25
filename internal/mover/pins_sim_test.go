@@ -236,11 +236,33 @@ var pinStrategies = func() []simStrat {
 		s.name = "abnormal day: " + s.name
 		out = append(out, s)
 	}
+	// The scaled reserve and the drain ramp (setup.md 8.5 Drain aim, 8.6 Pinned sessions; owner
+	// 2026-11-25), on the default 10/5, normal and abnormal days.
+	var base simStrat
+	for _, s := range out {
+		if s.name == "pins + reserve 10/5" {
+			base = s
+		}
+	}
+	for _, ab := range []bool{false, true} {
+		for _, v := range []struct {
+			name         string
+			scaled, ramp bool
+		}{{"scaled", true, false}, {"drain ramp", false, true}, {"scaled + drain ramp", true, true}} {
+			s := base
+			s.scaled, s.ramp, s.abnormal = v.scaled, v.ramp, ab
+			s.name = base.name + ", " + v.name
+			if ab {
+				s.name = "abnormal day: " + s.name
+			}
+			out = append(out, s)
+		}
+	}
 	return out
 }()
 
-const pinsHeader = "| strategy | pinned stopped min | of which heavy windows | pinned hits (weekly / lanes on its account) | pinned stopped min, no room anywhere | all stopped min | hits | moves | coordinator moves | re-read Mtok | moves by reserve | lanes placed elsewhere by reserve | waste | prot 5h max | prot 7d max | owner alerts | owner moves | coordinator weekly %/week |\n" +
-	"|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+const pinsHeader = "| strategy | pinned stopped min | of which heavy windows | pinned hits (weekly / lanes on its account) | pinned stopped min, no room anywhere | all stopped min | hits | moves | coordinator moves | re-read Mtok | moves by reserve | lanes placed elsewhere by reserve | waste | prot 5h max | prot 7d max | owner alerts | owner moves | coordinator weekly %/week | lanes stopped at the weekly limit |\n" +
+	"|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
 
 func writePinsRow(b *strings.Builder, name string, s simResult) {
 	days := s.runs * simDays
@@ -248,10 +270,10 @@ func writePinsRow(b *strings.Builder, name string, s simResult) {
 	if s.resets7 > 0 {
 		waste = s.WeeklyWaste / s.resets7
 	}
-	fmt.Fprintf(b, "| %s | %.1f | %.1f | %.3f (%.3f / %.3f) | %.1f | %.1f | %.2f | %.2f | %.2f | %.2f | %.2f | %.2f | %.1f | %.1f | %.1f | %.3f | %.3f | %.1f |\n", name,
+	fmt.Fprintf(b, "| %s | %.1f | %.1f | %.3f (%.3f / %.3f) | %.1f | %.1f | %.2f | %.2f | %.2f | %.2f | %.2f | %.2f | %.1f | %.1f | %.1f | %.3f | %.3f | %.1f | %.3f |\n", name,
 		s.PinStopped/days, s.PinStoppedHeavy/days, s.PinHits/days, s.PinHits7d/days, s.PinHitsShared/days, s.PinStoppedNoRoom/days, s.StoppedMin/days, s.Hits/days, s.Moves/days, s.CoordMoves/days,
 		s.ReReadMTok/days, s.DisplacedMoves/days, s.DisplacedPlaces/days, waste, s.MaxProt5/s.runs, s.MaxProt7/s.runs, s.Alerts/days,
-		s.OwnerMoves/days, s.CoordBurn/days/float64(len(coordAccounts))*7/simRatio)
+		s.OwnerMoves/days, s.CoordBurn/days/float64(len(coordAccounts))*7/simRatio, s.Hits7d/days)
 }
 
 // TestSimulatePins compares the pinned-session strategies on every pattern with the
@@ -265,6 +287,15 @@ func TestSimulatePins(t *testing.T) {
 	pats, strats := simPatterns, pinStrategies
 	if os.Getenv("WY_SIM_RUNS") == "" {
 		pats, strats = []simPattern{simPatterns[0], simPatterns[4]}, []simStrat{pinStrategies[0], pinStrategies[1], pinStrategies[4]}
+	}
+	if f := os.Getenv("WY_SIM_PINS"); f != "" { // only the strategies whose name contains it
+		var keep []simStrat
+		for _, s := range strats {
+			if strings.Contains(s.name, f) {
+				keep = append(keep, s)
+			}
+		}
+		strats = keep
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Pinned coordinators: %d seeded runs per pattern, %d days each; 5 coordinators (claude-1 ci-lv1, claude-2 Slack watcher, claude-3 orchestrator + planner, claude-7 OTA planner) on top of each pattern's lanes.\n"+

@@ -375,24 +375,43 @@ func staleAge(d time.Duration) string {
 	return fmt.Sprintf("%d h %d min", m/60, m%60)
 }
 
-// staleAlert tells the owner once when accounts have had stale data (no moves off or onto
-// them) for longer than Params.StaleAlert (setup.md 8.6, Stale data): one line in the pass's
-// log and one push (as the digest: the hub's switch_digest alert, or direct push when the hub
-// is away). A new alert comes only when the set of such accounts changes to a new one.
+// staleAlertEvery: at most one stale-data alert per account in this long.
+const staleAlertEvery = 6 * time.Hour
+
+// staleAlert tells the owner when stale data held back a move it needed (Result.StaleBlocks:
+// a source over its cap, a session with no other destination, a drain's pull; setup.md 8.6,
+// Stale data), with the data over Params.StaleAlert old: one line in the pass's log and one push
+// (as the digest: the hub's switch_digest alert, or direct push when the hub is away), at most
+// once per account per staleAlertEvery. It names the hub only when this pass could not read it.
 func (w *moveWorld) staleAlert(e moveEnv, cfg config.Config, st mover.State, r mover.Result) {
 	now := e.now()
-	var labels, parts []string
-	for _, pr := range w.input.Params.StaleAccounts(r) {
-		l := w.accLabel(pr.Key)
-		labels = append(labels, l)
-		parts = append(parts, fmt.Sprintf("%s (data %s old)", l, staleAge(pr.StaleFor)))
+	var keys []string
+	block := map[string]mover.StaleBlock{}
+	for _, b := range r.StaleBlocks {
+		if w.input.Params.StaleAlert > 0 && b.StaleFor <= w.input.Params.StaleAlert {
+			continue
+		}
+		keys = append(keys, b.Key)
+		block[b.Key] = b
 	}
-	sort.Strings(labels)
-	if !st.Changed("stale-alerted", strings.Join(labels, ",")) || len(labels) == 0 {
+	if len(keys) == 0 {
 		return
 	}
-	text := "Smart Account Switch moves nothing off or onto " + strings.Join(parts, ", ") +
-		": their usage readings are old (is the hub reachable?)"
+	due := st.StaleAlertDue(keys, now, staleAlertEvery)
+	if len(due) == 0 {
+		return
+	}
+	var parts []string
+	for _, k := range due {
+		b := block[k]
+		parts = append(parts, fmt.Sprintf("%s (data %s old: %s)", w.accLabel(k), staleAge(b.StaleFor), staleHow(b.How)))
+	}
+	sort.Strings(parts)
+	cause := "no new usage reading came in for it (no session with a status line ran on it and claude.ai was not read)"
+	if w.hubErr != "" {
+		cause = "the hub could not be read this pass (" + w.hubErr + "), so only this machine's own readings were used"
+	}
+	text := "Smart Account Switch held back a move on stale data: " + strings.Join(parts, "; ") + ". " + cause
 	fmt.Fprintln(e.stdout, "alert: "+text)
 	o := moveOutFor(e.dirs, cfg, now)
 	if !o.ready() {
@@ -402,7 +421,20 @@ func (w *moveWorld) staleAlert(e moveEnv, cfg config.Config, st mover.State, r m
 	defer cancel()
 	p := record.SwitchNoticePayload{Trigger: record.SwitchNoticeDigest, Episode: "stale:" + strconv.FormatInt(now.UnixMilli(), 10),
 		SinceAt: now.UTC().Format(time.RFC3339), Text: cutText(text)}
-	if err := o.deliver(ctx, p, "Smart Account Switch paused on stale data", "Smart Account Switch: an account's data is stale"); err != nil {
+	if err := o.deliver(ctx, p, "Smart Account Switch held back a move on stale data", "Smart Account Switch: stale data held back a move"); err != nil {
 		fmt.Fprintln(e.stdout, "stale-data alert not sent: "+err.Error())
 	}
+}
+
+// staleHow is what a StaleBlock held back, for the alert.
+func staleHow(how string) string {
+	switch how {
+	case mover.StaleSource:
+		return "over its cap, nothing moved off it"
+	case mover.StaleDest:
+		return "left out as the destination of a session that found no other"
+	case mover.StalePull:
+		return "its drain pulled nothing in"
+	}
+	return how
 }

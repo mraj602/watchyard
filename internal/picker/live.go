@@ -33,6 +33,13 @@ type LiveAccount struct {
 	DrainUntil time.Time
 	// Off: the owner keeps it out (setup.md 8.5, Kind): the switch moves nothing in or out.
 	Off bool
+	// Quiet: the hub was read and nothing ran on it since its reading (no live session on any
+	// machine, no running lane, no tokens since): its levels can only have held or fallen, so the
+	// switch may use an old reading of it (setup.md 8.6, Stale data).
+	Quiet bool
+	// PinReserve5 and PinReserve7: the points kept free for its live pinned sessions, scaled to
+	// the time left in each window (LaneAccount.PinReserve5/7; 0: no pins).
+	PinReserve5, PinReserve7 float64
 }
 
 // LiveLane is one running lane (a lease whose session runs): its burn over the last
@@ -58,7 +65,8 @@ func (in LaneInput) Live() ([]LiveAccount, []LiveLane) {
 		v := laneLive(a, c, now, p, in.Leases)
 		pa := p.account(a)
 		la := LiveAccount{Key: a.Key, Protected: a.Protected, FiveHour: v.hM, Weekly: v.wM, FiveReset: c.fiveRst,
-			Ratio: pa.ratio(), F5: pa.F5, Stale: v.stale || len(v.unknown) > 0, DrainUntil: a.DrainUntil, Off: a.Off}
+			Ratio: pa.ratio(), F5: pa.F5, Stale: v.stale || len(v.unknown) > 0, DrainUntil: a.DrainUntil, Off: a.Off,
+			PinReserve5: a.PinReserve5, PinReserve7: a.PinReserve7}
 		if !la.FiveReset.After(now) {
 			la.FiveReset, la.FiveHour = time.Time{}, 0
 		}
@@ -74,6 +82,7 @@ func (in LaneInput) Live() ([]LiveAccount, []LiveLane) {
 		if !c.noTS {
 			la.ReadingAt = c.ts
 		}
+		la.Quiet = a.HubRead && !a.Live && !c.noTS && !running(in.Leases, a.Key)
 		accs = append(accs, la)
 		f5[a.Key] = pa.F5
 	}
@@ -90,4 +99,14 @@ func (in LaneInput) Live() ([]LiveAccount, []LiveLane) {
 		lanes = append(lanes, LiveLane{Key: L.Key, SID: L.SID, T0: L.T0, Rate: r, Measured: L.RecentOK, Expect: L.Expect, ExpectEnd: L.ExpectEnd})
 	}
 	return accs, lanes
+}
+
+// running reports whether a lane of the account runs (launched, not ended).
+func running(ls []LaneLease, key string) bool {
+	for _, L := range ls {
+		if L.Key == key && L.Launched && !L.Ended {
+			return true
+		}
+	}
+	return false
 }

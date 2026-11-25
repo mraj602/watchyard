@@ -13,7 +13,7 @@ import { isOwner, ensureSessions, reorderSeats } from '../store.js';
 import { moveBy, dropTarget, dropOrder, moveSentence } from '../components/order.js';
 import { patchJSON, getRelation } from '../api.js';
 import { verdictModel, verdictAge, tilesModel, sessionLine, ratioChart, capacityModel, howRows, CHART_HINT } from '../components/relation-fmt.js';
-import { MODE_WORDS, MODE_OPTIONS, MODE_QUESTION, OFF_LINE, seatModeKey, drainText, drainInputTime, modeBody, localOverrideLine } from '../components/pick-mode.js';
+import { MODE_WORDS, MODE_OPTIONS, MODE_QUESTION, OFF_LINE, seatModeKey, drainText, drainInputValue, localInputValue, modeBody, localOverrideLine } from '../components/pick-mode.js';
 import { relChart } from '../components/rel-chart.js';
 import { toast } from '../components/ui.js';
 
@@ -400,16 +400,28 @@ async function saveMode(seat, body) {
   again();
 }
 
-// The Drain choice: a time field (default end of today) and Start / Change; "Stop draining"
-// while draining sends drain_until null.
+// The Drain choice: a date-and-time field (local; prefilled with the current end while draining,
+// else the end of today) and Start / Change, which send exactly what the field shows (a past
+// time is refused here, never moved to another day); "Stop draining" sends drain_until null.
 function drainForm(seat, draining) {
   if (modeState.drainOpen !== seat.id && !draining) return null;
-  const time = modeState.drainOpen === seat.id && modeState.time ? modeState.time : drainInputTime(seat);
-  let value = time;
-  const input = h('input', { type: 'time', value, 'aria-label': 'Drain until', 'data-key': `drain-time-${seat.id}`, oninput: (e) => { value = e.target.value; modeState.time = value; } });
+  let value = modeState.drainOpen === seat.id && modeState.time ? modeState.time : drainInputValue(seat);
+  const input = h('input', { type: 'datetime-local', class: 'drain-until', value, min: localInputValue(new Date()), step: 60, required: true,
+    'aria-label': 'Drain until', 'data-key': `drain-time-${seat.id}`,
+    oninput: (e) => { value = e.target.value; modeState.time = value; modeState.drainOpen = seat.id; } });
+  input.value = value; // the property too: the attribute alone is only the default
+  const send = () => {
+    const body = modeBody('drain', value);
+    if (!body) {
+      Object.assign(modeState, { error: 'Pick a date and time in the future.', errorId: seat.id });
+      again();
+      return;
+    }
+    saveMode(seat, body);
+  };
   return h('div', { class: 'drain-form row-ctl', 'data-key': `drain-form-${seat.id}` },
-    h('label', {}, 'Until ', input),
-    h('button', { type: 'button', class: 'btn', 'data-key': `drain-save-${seat.id}`, onclick: () => saveMode(seat, modeBody('drain', value)) }, draining ? 'Change' : 'Start draining'),
+    h('label', { class: 'drain-label' }, 'Until ', input),
+    h('button', { type: 'button', class: 'btn', 'data-key': `drain-save-${seat.id}`, onclick: send }, draining ? 'Change' : 'Start draining'),
     draining ? h('button', { type: 'button', class: 'btn', 'data-key': `drain-stop-${seat.id}`, onclick: () => saveMode(seat, { drain_until: null }) }, 'Stop draining') : null);
 }
 

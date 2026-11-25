@@ -125,6 +125,16 @@ type Params struct {
 	PullQuiet  time.Duration
 }
 
+// ScaledPinReserve is a's pin reserve scaled to what its a.Pins pinned sessions, burning rate
+// 5-hour points per hour together (at least projection.PinBaseRate each), can burn before each
+// window resets, twice over (projection.PinReserve; setup.md 8.6, Pinned sessions). A 5-hour
+// window not started is a whole window away; an unknown weekly reset keeps the full reserve.
+func (p Params) ScaledPinReserve(a Account, rate float64, now time.Time) (r5, r7 float64) {
+	f5, f7 := p.PinReserve(a.Pins)
+	rate = math.Max(rate, float64(a.Pins)*projection.PinBaseRate)
+	return projection.PinReserve(f5, rate, hoursTo(a.W5, now, 5)), projection.PinReserve(f7, rate/ratio(a), hoursTo(a.W7, now, -1))
+}
+
 // PinReserve is the reserve of an account with pins live pinned sessions: pins x
 // PinReserve5 points of the 5-hour window and pins x PinReserve7 of the week.
 func (p Params) PinReserve(pins int) (float64, float64) {
@@ -192,8 +202,12 @@ type Account struct {
 	// Stale: its readings are too old to project; never a destination.
 	Stale bool
 	// ReadAt: when the reading its levels start from was taken (zero: not known). Older than
-	// Params.StaleAfter, the account is neither a source nor a destination.
+	// Params.StaleAfter, the account is neither a source nor a destination, unless Quiet.
 	ReadAt time.Time
+	// Quiet: nothing ran on it since that reading (the hub was read this pass and shows no live
+	// session, no lane runs, no tokens since): its levels can only have held or fallen, so an old
+	// reading is still an upper bound and it is not stale (setup.md 8.6, Stale data).
+	Quiet bool
 	// Excluded: never a destination (excluded by settings).
 	Excluded bool
 	// Off: the owner keeps it out (setup.md 8.5, Kind): never a destination, and its sessions
@@ -395,8 +409,49 @@ type Result struct {
 	Skips    []Skip
 	Alerts   []Alert
 	Accounts []Projection
+	// StaleBlocks: the accounts whose stale data held back a move this pass (setup.md 8.6,
+	// Stale data); the owner is told about these only.
+	StaleBlocks []StaleBlock
 	// Streak is the spike filter's state after this pass (keep it for the next one).
 	Streak map[string]int
+}
+
+// StaleBlock is an account whose stale data held back a move: a source over its cap with
+// sessions on it (StaleSource), an account left out as the destination of a session that found
+// none (StaleDest), or a draining account whose pulls were skipped (StalePull).
+type StaleBlock struct {
+	Key      string
+	StaleFor time.Duration
+	How      string
+}
+
+// What a StaleBlock held back.
+const (
+	StaleSource = "source"
+	StaleDest   = "destination"
+	StalePull   = "pull"
+)
+
+// staleBlock records a once per account (the first way it blocked).
+func (r *Result) staleBlock(key, how string, age time.Duration) {
+	for _, b := range r.StaleBlocks {
+		if b.Key == key {
+			return
+		}
+	}
+	r.StaleBlocks = append(r.StaleBlocks, StaleBlock{Key: key, StaleFor: age, How: how})
+}
+
+// staleAge is how old a's data is when it keeps it out of the switch: Params.staleFor, or its
+// reading's age when the picker called it stale (zero when neither).
+func (p Params) staleAge(a Account, now time.Time) time.Duration {
+	if age := p.staleFor(a, now); age > 0 {
+		return age
+	}
+	if a.Stale && !a.ReadAt.IsZero() {
+		return now.Sub(a.ReadAt)
+	}
+	return 0
 }
 
 // young reports whether session s is under Params.YoungGate (its burn not counted yet).
@@ -522,6 +577,9 @@ func Plan(in Input) Result {
 		if age := p.staleFor(a, now); age > 0 {
 			// Its level rests on an old reading (live: the hub away, "5h 100%" from a reading
 			// 3 h 37 min old while the account was at ~68%): nothing moves off it on that.
+			if over && len(byAcc[a.Key]) > 0 && !a.Off {
+				res.staleBlock(a.Key, StaleSource, age)
+			}
 			pr.StaleFor, pr.Triggered, pr.Held = age, false, false
 			delete(res.Streak, a.Key+" "+pr.Window)
 		}
@@ -804,7 +862,20 @@ func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]fl
 		draining[d.Key], off[d.Key] = d.ownerDrain(now), d.Off
 	}
 	for _, d := range in.Accounts {
-		if !d.ownerDrain(now) || !d.LoggedIn || d.Stale || d.Excluded || d.Off || p.staleFor(d, now) > 0 {
+		if !d.ownerDrain(now) || !d.LoggedIn || d.Excluded || d.Off {
+			continue
+		}
+		if age := p.staleAge(d, now); age > 0 || d.Stale {
+			// A busy session elsewhere it could have pulled in: the pull was held back.
+			for _, s := range in.Sessions {
+				if age <= 0 {
+					break
+				}
+				if s.Account != d.Key && !off[s.Account] && s.Busy && s.Movable && s.Rate >= p.PullMinBurn {
+					res.staleBlock(d.Key, StalePull, age)
+					break
+				}
+			}
 			continue
 		}
 		pp := p
@@ -961,6 +1032,17 @@ func (p Params) place(in Input, res *Result, st *moveState, s Session, a Account
 			delta[a.Key] -= s.Rate
 		}
 	}
+	if to == "" {
+		// No destination: the accounts that only their stale data kept out might have had room.
+		for _, d := range in.Accounts {
+			if d.Key == s.Account || !d.LoggedIn || d.Excluded || d.Off {
+				continue
+			}
+			if age := p.staleAge(d, in.Now); age > 0 {
+				res.staleBlock(d.Key, StaleDest, age)
+			}
+		}
+	}
 	mv.Reason = p.reason(a, mv, why, in.Now)
 	res.Moves = append(res.Moves, mv)
 }
@@ -1028,7 +1110,7 @@ func (pr Projection) pOf(w string) float64 {
 
 // staleFor is how old a's reading is when that is over StaleAfter (0: fresh, unknown or off).
 func (p Params) staleFor(a Account, now time.Time) time.Duration {
-	if p.StaleAfter <= 0 || a.ReadAt.IsZero() {
+	if p.StaleAfter <= 0 || a.ReadAt.IsZero() || a.Quiet {
 		return 0
 	}
 	if age := now.Sub(a.ReadAt); age > p.StaleAfter {
@@ -1102,7 +1184,19 @@ func (p Params) caps(a Account, now time.Time) (c5, c7 float64) {
 		}
 		return p.Cap5Protected, p.Cap7Protected
 	}
+	if !a.Off && (a.Drain || a.DrainUntil.After(now)) {
+		// A draining account's caps ramp toward its resets (setup.md 8.5, Drain aim).
+		return projection.DrainCaps(p.Cap5, p.Cap7, hoursTo(a.W5, now, 5), hoursTo(a.W7, now, -1))
+	}
 	return p.Cap5, p.Cap7
+}
+
+// hoursTo is the hours to w's reset; none when it is not known or past.
+func hoursTo(w Window, now time.Time, none float64) float64 {
+	if w.Reset.After(now) {
+		return w.Reset.Sub(now).Hours()
+	}
+	return none
 }
 
 // expiring: a is protected and its weekly reset is within ExpiringRoom.

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mraj602/watchyard/internal/hub/state"
+	"github.com/mraj602/watchyard/internal/projection"
 	"github.com/mraj602/watchyard/internal/setup/model"
 )
 
@@ -415,7 +416,7 @@ func (c ctx) groupFrom(s HubSeat, index int) Group {
 	switch {
 	case off:
 		g.Note = OffNote
-	case u.After(c.now) && (g.SevenDay == nil || g.SevenDay.Pct < DrainAim):
+	case u.After(c.now) && (g.SevenDay == nil || float64(g.SevenDay.Pct) < drainAimAt(g.SevenDay, u)):
 		g.Note = drainNote(u.In(c.loc), c.now.In(c.loc))
 	}
 	return g
@@ -424,9 +425,15 @@ func (c ctx) groupFrom(s HubSeat, index int) Group {
 // OffNote is the note of an account the owner turned off: its usage still shows.
 const OffNote = "off (owner): never picked, nothing moved in"
 
-// DrainAim is the weekly level an owner's drain ends at (the picker's 98 less its 1-point
-// drain margin).
-const DrainAim = 97
+// drainAimAt is the weekly level an owner's drain ends at (setup.md 8.5, Drain aim): the drain
+// ramp's aim at its until u (96 far from the weekly reset, up to 99 at it).
+func drainAimAt(w *Window, u time.Time) float64 {
+	h := -1.0
+	if w != nil && w.ResetsAt != nil {
+		h = max(0.0001, w.ResetsAt.Sub(u).Hours())
+	}
+	return min(projection.DrainAim7(h), 99)
+}
 
 // drainNote is "draining (owner, until 23:59)", a day name when it is not today.
 func drainNote(u, now time.Time) string {

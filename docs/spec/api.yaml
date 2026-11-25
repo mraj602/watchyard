@@ -2832,6 +2832,12 @@ components:
         mode_from: {type: [string, "null"], enum: [local, hub, proposed, none, null], description: "Where the kind came from on that machine (record.md 4.11); null from an older wy."}
         weekly_cap: {type: [number, "null"], description: "The weekly level at which it takes no new session now (protected: the pace line); null from an older wy."}
         five_hour_cap: {type: [number, "null"], description: "The 5-hour level at which it takes no new session; null from an older wy."}
+        pins: {type: integer, description: "Its live pinned sessions on that machine (setup.md 8.6 Pinned sessions); absent without pins."}
+        pin_reserve_5h_pct: {type: number, description: "Points of the 5-hour window kept free for the pins now, scaled to the time left; absent without pins."}
+        pin_reserve_7d_pct: {type: number, description: "Points of the week kept free for the pins now, scaled to the time left; absent without pins."}
+        pin_reserve_full_5h_pct: {type: number, description: "The 5-hour reserve before scaling (pins × account.pin_reserve_5h); absent without pins."}
+        pin_reserve_full_7d_pct: {type: number, description: "The weekly reserve before scaling; absent without pins."}
+        weekly_resets_at: {type: string, format: date-time, description: "When its week resets (the weekly reserve holds until then); absent without pins."}
 
     CalibrationFactor:
       type: object

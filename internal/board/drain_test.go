@@ -32,4 +32,14 @@ func TestGroupOwnerDrainNote(t *testing.T) {
 			t.Errorf("%s: note %q, want %q", c.name, g.Note, c.want)
 		}
 	}
+	// Near the weekly reset the aim ramps (setup.md 8.5, Drain aim): a drain until 1 h before it
+	// goes on at 98 and ends at 99.
+	reset := now.Add(2 * time.Hour)
+	for w, want := range map[float64]string{98: "draining (owner, until 13:00)", 99: ""} {
+		weekly := w
+		s := HubSeat{ID: "seat_4", Label: &label, Windows: []HubWindow{{Key: "seven_day", UsedPct: &weekly, ResetsAt: &reset}}}
+		if g := newCtx(Options{Now: now, Loc: time.UTC, Drains: drains(now.Add(time.Hour))}).groupFrom(s, 0); g.Note != want {
+			t.Errorf("%v%% an hour before the reset: note %q, want %q", w, g.Note, want)
+		}
+	}
 }

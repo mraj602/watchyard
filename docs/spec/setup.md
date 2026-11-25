@@ -1306,12 +1306,33 @@ account out of the drain; they only limit how many more it takes).
   this machine's key; when the hub cannot be reached the command says "on this machine only".
   This machine's key overrides the hub's on this machine. An account that is off cannot drain
   (the hub answers 400; locally the drain is ignored). The hub ends its drain at `drain_until` or
-  when the seat's weekly peak reaches 97 %, and pushes `drain_started` / `drain_ended` on the
+  when the seat's weekly peak reaches the drain aim as it will be at `drain_until` (*Drain aim*
+  below, at most 99 %), and pushes `drain_started` / `drain_ended` on the
   Drain channel (push.md 3.9). While `until` is in the future the account drains as
   an **aggressive** drain account (a protected one too) whatever its hours to the weekly reset:
-  `H = min(H, until − now + guard)`, so `finish_by = until`, with the same drain margins (aims
-  97 weekly, 96 five-hour) and capacities. It ends by itself at `until`, or once its weekly
-  level reaches `W − M` (the account is then as configured again). `--explain`, the table,
+  `H = min(H, until − now + guard)`, so `finish_by = until`, with the same drain aims
+  (*Drain aim* below) and capacities. It ends by itself at `until`, or once its weekly level
+  reaches the drain aim as it will be at `until`, less the pin reserve (the account is then as
+  configured again).
+- *Drain aim* (owner 2026-11-25: "drain slowly till 95-96%, and as time comes reach 98-100%").
+  A draining account (automatic or the owner's) aims its week at
+
+      aim7 = 96 + 4 × (1 − h/6)    for h < 6 hours to its weekly reset, else 96
+
+  less the pin reserve, never over 100 less the reserve and the 1-point drain margin (so at
+  most 99): far from the reset a point kept costs nothing (it can still be used later) and a
+  burst to the limit stops lanes for days; in the last 6 hours every point not used is lost at
+  the reset and a stop lasts only until it. Its weekly hard limit for new lanes is
+  max(98, the aim plus the margin) less the reserve. In a draining 5-hour window the ceiling is
+  98, rising to 100 over the window's last 2 hours, and the 5-hour drain aim (and the backstop)
+  that less `DrainMargin5h` 2 (96 rising to 98); one more lane must still fit under the
+  ceiling, and the landing guard (`LandMax` 99) still refuses a lane whose expected cost alone
+  would land over 99, so a lane is not stopped by a limit before the reset. A lane estimated to
+  outlast the week goes to other accounts first (runway), so the last stretch takes short
+  lanes. Smart Account Switch's caps for a draining account ramp the same way (5h: the 5-hour
+  aim; 7d: the weekly aim, at most 99). An owner's own lower weekly limit and the switch's
+  protected caps are not raised. `--explain` ends the drain line with "aim 96.4% now, 98% at
+  Thu 03:30" (`--json` `drain.aim_pct`, `aim_at_reset_pct`, `weekly_resets_at`). `--explain`, the table,
   `--plan` and the board show "draining (owner, until 23:59)" ("Thu 07:00" when not today).
   The board shows a drain set only on one machine for that machine's accounts, over the hub's.
 - *Lane statistics.* From the leases read (this machine's ledger, 8 days; other machines' leases
@@ -1941,9 +1962,36 @@ environment of another process is never read (keys.md 8).
   the level (live, pre6 05:37, the hub migrating: claude-4 read "5h 100%" from a reading 3 h 37
   min old, the meter since then ~87 points, while the account was at ~68%). Only its sessions
   stopped at a limit still move (their limit reply is fresh evidence). `--plan` says "data stale
-  (3 h 37 min), no moves". When it lasts over 30 minutes the pass alerts the owner once (a line
-  in its log and a push as the digest's: the hub's `switch_digest` alert, or direct push when
-  the hub is away); a new alert comes only when the set of stale accounts changes. An account
+  (3 h 37 min), no moves".
+
+  *Where readings come from.* An account's level is read from Claude Code's status line (each
+  render of an interactive session carries `rate_limits`; `wy statusline` keeps it locally and
+  sends it to the hub) and from claude.ai's usage page (`web`, read by the desktop app for the
+  accounts signed in there, about every 5 minutes). Headless sessions (`claude -p`, agents) have
+  no status line, so an account that only runs them, or runs nothing, is read only through
+  claude.ai; an account signed in to neither goes stale while idle (live 2026-11-25: claude-5's
+  newest reading 108 hours old). There is no supported way to read a level without a session's
+  status line or claude.ai (the usage endpoint needs the OAuth token, which Watchyard never reads).
+
+  *Quiet accounts.* With the hub read in the pass, an account on which nothing ran since its
+  reading (no live session on any machine, no running lane, no tokens since: `Account.Quiet`) is
+  not stale: its levels can only have held or fallen (a window that reset since counts as 0), so
+  the old reading is an upper bound, and it is a destination like any other.
+
+  *The hub not read.* A switch pass reads the hub within 20 seconds (`wy account next`: 5). When
+  that fails, it plans on this machine's own readings, usually hours old for accounts that run
+  only headless sessions (live 2026-11-25 20:06: the hub's hourly backup, 20:02:57 to 20:08:03,
+  slowed `GET /v1/usage` past 5 s and every pass in it saw claude-4 "7 h 38 min old").
+
+  *Alert.* The owner is told only when stale data held back a move this pass
+  (`Result.StaleBlocks`): a source over its cap with sessions on it, an account left out as the
+  destination of a session that found no other, or a draining account whose pull of a busy
+  burner was skipped; and only with data over 30 minutes old, at most once per account per 6
+  hours (`<state>/move/stale-alerts.json`). It is a line in the pass's log and a push as the
+  digest's (the hub's `switch_digest` alert, or direct push when the hub is away): "Smart Account
+  Switch held back a move on stale data: claude-5 (data 108 h 16 min old: left out as the
+  destination of a session that found no other). no new usage reading came in for it (…)"; it
+  says "the hub could not be read this pass (…)" only when this pass's hub read failed. An account
   with no reading time is not stale by this rule (the picker's own stale and unknown rules
   hold). For the picker with the switch on, an old sample's level neither blocks an aggressive
   account nor draws a lane: such an account is ranked after the accounts with fresh data, and
@@ -2009,7 +2057,17 @@ Pin the long-running sessions that burn little but must not stop: a Slack watche
 orchestrator, a CI watcher. Each *live* pinned session (running, and not idle for 6 hours) keeps a
 reserve free on its account: `account.pin_reserve_5h` (default 10) points of the 5-hour window
 and `account.pin_reserve_7d` (default 5) points of the week; an account with n live pins keeps
-n × these. The reserve is a setting, not measured from the pin's burn. With it:
+n × these, scaled to the time left in each window (owner 2026-11-25: "it will never increase
+more than 88%. That's a huge waste of almost one 5h session"): a flat reserve throws the
+reserved room away at every reset, so each window keeps only
+
+    min(n × reserve, max(1, the pins' burn × hours to that window's reset × 2))
+
+the pins' burn being their measured 5-hour points per hour (at least 1 point per hour per pin,
+a coordinator's awake base; for the week divided by the account's ratio). Far from a reset that
+is the full reserve; in the last hours it shrinks to the pins' real need, so a drain can use
+the rest of the week (claude-3 at 88% with 2 pins at 5.7 points per hour, ratio 9.1, 5 hours
+from its reset: 6.3 of the week instead of 10, 2.5 two hours out, 1 at the end). With it:
 
 - the picker (8.5) hands out new lanes as if every limit of the account were that much lower
   (`--explain` prints a `Pins` line, `--json` the fields `pins`, `pin_reserve_5h_pct`,
@@ -2020,7 +2078,10 @@ n × these. The reserve is a setting, not measured from the pin's burn. With it:
 - a destination keeps its own reserve free (its caps less its reserve);
 - a protected account counts the reserve inside its 80/80 caps;
 - `wy move --plan` shows it per account (`PIN RESERVE`, "1 pinned: 10/5"; the `CAPS` column is
-  after it).
+  after it), and a scaled one in the state ("pin reserve 7d 2.5% until Thu 03:30, scaled to time
+  left (full 20/10)"); `--explain`'s `Pins` line says the same ("... and 2.5% of the week free; the
+  weekly part until Thu 03:30, scaled to time left (full 10)"); the board's verdict says it too; `--json` adds `pin_reserve_full_5h_pct`,
+  `pin_reserve_full_7d_pct`.
 
 A pinned session that alone (its own burn, nothing else) takes its account's 5-hour or weekly
 level to 100% within 2 hours, before that window resets, is not moved: the pass records one alert
@@ -2054,6 +2115,24 @@ lanes and fills the destinations. Acting on the alert helps most (-17%). On an a
 pins at 4-5× their burn) every strategy stops the pins more than twice as long; the alerts rise
 to 5.6 a day. The modelled pins use about 27% of a week each, more than the 3-10% they use
 normally, so these numbers are on the heavy side.
+
+**Simulator, scaled reserve and drain ramp** (2026-11-25; the same coordinators layer, reserve
+10/5, `WY_SIM_PINS="reserve 10/5"`, 10 patterns × 60 runs × 2 days, per day per run; *waste* is
+the weekly room left at a reset, *weekly stops* lanes stopped at the weekly limit):
+
+| Strategy | Pinned stopped min | Pinned hits | All stopped min | Waste % | Weekly stops |
+| --- | --- | --- | --- | --- | --- |
+| reserve 10/5 (flat) | 286.9 | 0.92 | 993 | 20.4 | 4.89 |
+| scaled | 269.0 | 0.83 | 941 | 20.6 | 4.68 |
+| drain ramp | 284.0 | 0.89 | 976 | 20.2 | 5.02 |
+| **scaled + drain ramp (this release)** | **269.7** | 0.86 | 949 | 20.3 | 4.80 |
+
+Scaling does not stop the pins more: their stopped minutes fall 6% (the reserve near a reset
+was room the other sessions needed) and all stopped minutes 4%. The weekly waste barely moves in
+this model (-0.1 points): its simplified picker sends few lanes to an account in its last hours,
+so most of the 20% is on accounts nobody drains; the gain is the live case (an owner drain the
+flat reserve held at 88%). The weekly stops are not zero in any strategy (lanes the model runs
+past the limit); the ramp alone adds 0.13 a day, with the scaled reserve 0.09 fewer than flat.
 
 **The picker and the switch.** While the switch is on, `wy account next` (lanes strategy, 8.5)
 places no new lane on an account where the switch would move a session off: the switch's

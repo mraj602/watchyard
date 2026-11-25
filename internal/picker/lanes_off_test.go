@@ -90,3 +90,44 @@ func TestPolicyHubOffAndDrain(t *testing.T) {
 		}
 	}
 }
+
+// setup.md 8.6, Stale data: an account is Quiet for the switch when the hub was read and
+// nothing ran on it since its reading (no live session, no running lane).
+func TestLiveQuiet(t *testing.T) {
+	quiet := func(in LaneInput) bool {
+		la, _ := in.Live()
+		for _, a := range la {
+			if a.Key == dZ {
+				return a.Quiet
+			}
+		}
+		t.Fatal("no account")
+		return false
+	}
+	set := func(in *LaneInput, f func(*LaneAccount)) {
+		for i := range in.Accounts {
+			if in.Accounts[i].Key == dZ {
+				f(&in.Accounts[i])
+			}
+		}
+	}
+	in := laneIn(dworld(), 1)
+	set(&in, func(a *LaneAccount) { a.HubRead, a.Live = true, false })
+	in.Leases = nil
+	if !quiet(in) {
+		t.Error("hub read, nothing ran: want quiet")
+	}
+	set(&in, func(a *LaneAccount) { a.Live = true })
+	if quiet(in) {
+		t.Error("a live session: not quiet")
+	}
+	set(&in, func(a *LaneAccount) { a.Live, a.HubRead = false, false })
+	if quiet(in) {
+		t.Error("the hub not read: not quiet (other machines unknown)")
+	}
+	set(&in, func(a *LaneAccount) { a.HubRead = true })
+	in.Leases = []LaneLease{{Key: dZ, Launched: true, T0: lnow.Add(-time.Hour)}}
+	if quiet(in) {
+		t.Error("a running lane: not quiet")
+	}
+}

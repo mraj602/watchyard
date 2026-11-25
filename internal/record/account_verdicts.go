@@ -43,6 +43,15 @@ type AccountVerdict struct {
 	ModeFrom    string   `json:"mode_from,omitempty"`
 	WeeklyCap   *float64 `json:"weekly_cap,omitempty"`
 	FiveHourCap *float64 `json:"five_hour_cap,omitempty"`
+	// Pins and the points they keep free (setup.md 8.6, Pinned sessions): PinReserve5h/7d now,
+	// scaled to the time left; PinFull5h/7d before scaling; WeeklyResetsAt when its week resets
+	// (RFC 3339 UTC; the weekly reserve holds until then).
+	Pins           *int     `json:"pins,omitempty"`
+	PinReserve5h   *float64 `json:"pin_reserve_5h_pct,omitempty"`
+	PinReserve7d   *float64 `json:"pin_reserve_7d_pct,omitempty"`
+	PinFull5h      *float64 `json:"pin_reserve_full_5h_pct,omitempty"`
+	PinFull7d      *float64 `json:"pin_reserve_full_7d_pct,omitempty"`
+	WeeklyResetsAt *string  `json:"weekly_resets_at,omitempty"`
 }
 
 // Verdict mode_from values (record.md 4.11).
@@ -102,6 +111,10 @@ func (p AccountVerdictsPayload) Validate() error {
 		}
 		if !validLevel(a.WeeklyCap) || !validLevel(a.FiveHourCap) {
 			return fmt.Errorf("account_verdicts: bad cap")
+		}
+		if !validLevel(a.PinReserve5h) || !validLevel(a.PinReserve7d) || !validLevel(a.PinFull5h) || !validLevel(a.PinFull7d) ||
+			(a.Pins != nil && *a.Pins < 0) || !validTime(a.WeeklyResetsAt) {
+			return fmt.Errorf("account_verdicts: bad pin reserve")
 		}
 	}
 	return nil

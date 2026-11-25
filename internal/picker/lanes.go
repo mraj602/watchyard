@@ -247,6 +247,9 @@ type LaneAccount struct {
 	WebStale bool
 	// Live: a session of the account is running (it ran since the reading).
 	Live bool
+	// HubRead: its data came from the hub this run (a seat matched, the hub answered), so Live
+	// knows the sessions of every machine.
+	HubRead bool
 	// Limit7d and Limit5h replace the weekly limit (aggressive) or target (protected) and the
 	// 5-hour limit (aggressive) or floor (protected); 0 keeps the parameter.
 	Limit7d, Limit5h float64
@@ -260,6 +263,10 @@ type LaneAccount struct {
 	// setup.md 8.6, Pinned sessions): every limit of the account is that much lower for new lanes.
 	Pins                     int
 	PinReserve5, PinReserve7 float64
+	// PinFull5 and PinFull7 are the reserve before it was scaled to the time left in each
+	// window (PinReserve5/7 are then at most these), and PinUnits the pins' measured burn,
+	// units per hour (PinReserve.Units).
+	PinFull5, PinFull7, PinUnits float64
 	// MoveUnits is its measured burn now, units per hour (MoverView.Units).
 	MoveUnits float64
 	// SwitchCap5 and SwitchCap7 are Smart Account Switch's caps for it while the switch is on
@@ -391,6 +398,7 @@ type LaneRow struct {
 	// (already off the caps and limits).
 	Pins                     int
 	PinReserve5, PinReserve7 float64
+	PinFull5, PinFull7       float64 // the reserve before it was scaled to the time left
 	// ExpiringRoom: protected, within the switch's expiring window before its weekly reset:
 	// the weekly level it may be drained to then (the aggressive cap less the pin reserve; 0:
 	// not expiring; setup.md 8.6, Expiring room).
@@ -1015,7 +1023,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 					// The new lane at the measured lane burn (setup.md 8.5, The switch's projection):
 					// a size class's cost over its wall time is the average of lanes mostly idle.
 					sl := p.switchLane(lr, lclass, ldur, in.Stats)
-					if why5 := moverOver(in.Mover, acc, v, sl, p, now, freshLanes(in.Mover, leases, acc, sl.rate, p, now)); why5 != "" {
+					if why5 := moverOver(in.Mover, acc, v, sl, p, now, d.On, freshLanes(in.Mover, leases, acc, sl.rate, p, now)); why5 != "" {
 						skip, why, level, capped, soft = true, why5, 3, false, false
 					}
 				}
@@ -1066,7 +1074,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 			row := LaneRow{Key: acc.Key, Protected: prot, Score: sc, Skip: skip, Reason: why, Weekly: v.w, WeeklyM: v.wM, FiveHour: v.h,
 				Reserve: v.wRes, HoursToReset: v.hrs, Leases: v.leaseN, Burst: v.capN, BurstCap: cp, Capped: capped,
 				Added5: v.add5, Meter5: v.m5, Meter7: v.m7, Margin5: v.g5, Margin7: v.g7, WeeklyCap: cap7, FiveHourCap: cap5, SampleAgeMin: v.ageMin, FiveReset: v.fiveRst,
-				Pins: acc.Pins, PinReserve5: acc.PinReserve5, PinReserve7: acc.PinReserve7, ExpiringRoom: expiringCap(in.Mover, acc, prot, v.hrs),
+				Pins: acc.Pins, PinReserve5: acc.PinReserve5, PinReserve7: acc.PinReserve7, PinFull5: acc.PinFull5, PinFull7: acc.PinFull7, ExpiringRoom: expiringCap(in.Mover, acc, prot, v.hrs),
 				Stale: v.stale, Unknown: v.unknown, SkipLevel: level, Last: last, Expiring: expiring && !skip,
 				LeaseCharges: v.charges, Class: class, Drain: d, fwd5: fwdFree != nil, soft: soft}
 			if !v.noTS {
@@ -1348,7 +1356,7 @@ func (m *MoverView) expiring(protected bool, hrs float64) bool {
 // lr 5-hour points per hour runs there ("" when it would not): its projection at its measured
 // burn plus the lane (projection.Levels, the switch's own maths) over the switch's caps less
 // the pin reserve.
-func moverOver(m *MoverView, acc LaneAccount, v laneState, sl switchLaneEst, p LaneParams, now time.Time, fresh []freshLane) string {
+func moverOver(m *MoverView, acc LaneAccount, v laneState, sl switchLaneEst, p LaneParams, now time.Time, drain bool, fresh []freshLane) string {
 	lr, expect := sl.rate, sl.dur
 	pa := p.account(acc)
 	c5, c7 := m.caps(acc.Protected, v.hrs)
@@ -1358,6 +1366,9 @@ func moverOver(m *MoverView, acc LaneAccount, v laneState, sl switchLaneEst, p L
 	h5 := 5.0
 	if !v.fiveRst.IsZero() && v.fiveRst.After(now) {
 		h5 = v.fiveRst.Sub(now).Hours()
+	}
+	if drain && !acc.Protected {
+		c5, c7 = projection.DrainCaps(c5, c7, h5, v.hrs) // the switch's caps for a draining account
 	}
 	// The account's own burn to the resets, as the switch projects it; the new lane as the
 	// switch's trigger will count it once it runs (mover.ExpectFloor): with an expected

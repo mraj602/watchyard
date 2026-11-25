@@ -72,12 +72,21 @@ func livePins(launches []mover.Launch, keyOfDir map[string]string, pins pinSet, 
 }
 
 // pinReserves are the picker's pin reserves from the live pins and the account.pin_reserve_*
-// settings.
-func pinReserves(p mover.Params, live map[string][]string) map[string]picker.PinReserve {
+// settings, with the pins' measured burn (units per hour over the burn window) that the picker
+// scales them by.
+func pinReserves(p mover.Params, live map[string][]string, tokens []picker.TokenUse, now time.Time) map[string]picker.PinReserve {
 	out := map[string]picker.PinReserve{}
+	var burn map[string]burnStat
+	if len(live) > 0 && p.BurnWindow > 0 {
+		burn = burnStats(tokens, now, p.BurnWindow)
+	}
 	for k, ids := range live {
 		r5, r7 := p.PinReserve(len(ids))
-		out[k] = picker.PinReserve{Pins: len(ids), R5: r5, R7: r7}
+		units := 0.0
+		for _, id := range ids {
+			units += burn[id].Units / p.BurnWindow.Hours()
+		}
+		out[k] = picker.PinReserve{Pins: len(ids), R5: r5, R7: r7, Units: units}
 	}
 	return out
 }
@@ -115,7 +124,7 @@ func nextSwitch(e nextEnv, cfg config.Config, slots []picker.Slot, cands []picke
 		dirs = append(dirs, s.Dir)
 	}
 	pins := loadPins(dirs, func(msg string) { fmt.Fprintln(e.stderr, "wy: "+msg) })
-	return pinReserves(p, livePins(launches, keyOfDir, pins, now)), view
+	return pinReserves(p, livePins(launches, keyOfDir, pins, now), tokens, now), view
 }
 
 // pinAlerts keeps the pass's new pin alerts (one per session and window until it resets) with

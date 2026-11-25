@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"path"
 	"sort"
@@ -142,6 +143,17 @@ type anaRange struct {
 	seat     string
 }
 
+// analyticsSlots is how many analytics reports run at once, and analyticsBudget how long one
+// may wait for its turn and run (analytics.md 2). A report scans every request row in its
+// range; on the micro VM, after the hourly backup has pushed the database out of the page
+// cache, one takes up to a minute. The board asks for four at once, and four was the whole
+// read pool: auth lookups, /v1/sessions, ingest and a settings PATCH then queued behind them
+// (503s, a 47 s PATCH). A report waiting for its turn holds no connection.
+const (
+	analyticsSlots  = 1
+	analyticsBudget = 45 * time.Second
+)
+
 func (s *Server) analytics(w http.ResponseWriter, r *http.Request) {
 	report := r.PathValue("report")
 	switch report {
@@ -150,7 +162,16 @@ func (s *Server) analytics(w http.ResponseWriter, r *http.Request) {
 		auth.WriteError(w, http.StatusNotFound, "not_found", "unknown report "+strconv.Quote(report))
 		return
 	}
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), analyticsBudget)
+	defer cancel()
+	select {
+	case s.anaSlots <- struct{}{}:
+		defer func() { <-s.anaSlots }()
+	case <-ctx.Done():
+		auth.WriteError(w, http.StatusServiceUnavailable, "unavailable", "the hub is busy with other reports; try again")
+		return
+	}
+	r = r.WithContext(ctx)
 	rg, msg := s.analyticsRange(r)
 	if msg != "" {
 		auth.WriteError(w, http.StatusBadRequest, "bad_request", msg)

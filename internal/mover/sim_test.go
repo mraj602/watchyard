@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mraj602/watchyard/internal/mover/internal/m5"
+	"github.com/mraj602/watchyard/internal/projection"
 )
 
 // The simulator (setup.md 8.6, Simulator): seven accounts (three protected), lanes placed by
@@ -258,6 +259,7 @@ type simResult struct {
 	// The coordinators layer (pins_sim_test.go).
 	PinStopped, PinStoppedHeavy, PinHits, CoordMoves, CoordReRead, DisplacedMoves, DisplacedPlaces, Alerts float64
 	PinHits7d, CoordBurn, OwnerMoves, PinStoppedNoRoom, PinHitsShared                                      float64
+	Hits7d                                                                                                 float64 // lanes stopped at the weekly limit
 	RunsOver80                                                                                             float64 // runs whose protected level went over 80
 	Over80Min, Over80Owner, Over80NoRoom, Over80Other                                                      float64 // protected minutes over 80, by cause
 	// FalseMoves: moves whose source was under its caps at its true burn; ReReadCost: re-read
@@ -334,6 +336,7 @@ func (r *simResult) add(o simResult) {
 	r.DisplacedPlaces += o.DisplacedPlaces
 	r.Alerts += o.Alerts
 	r.PinHits7d += o.PinHits7d
+	r.Hits7d += o.Hits7d
 	r.CoordBurn += o.CoordBurn
 	r.OwnerMoves += o.OwnerMoves
 	r.PinStoppedNoRoom += o.PinStoppedNoRoom
@@ -354,6 +357,11 @@ type simStrat struct {
 	// p.PinReserve5/7 per live pin (measured: their own heaviest 5-hour window of the last day
 	// instead); abnormal: the second day burns 4-5x.
 	coord, pinned, measured, abnormal bool
+	// scaled: the flat reserve scaled to the time left in each window (projection.PinReserve,
+	// the pins' burn over the last 15 minutes); ramp: the drain aim ramps in the last 6 hours
+	// before a weekly reset (projection.DrainAim7) in the placement and the switch's caps
+	// (setup.md 8.5 Drain aim, 8.6 Pinned sessions).
+	scaled, ramp bool
 	// ownerActs: the owner moves an alerted pinned session by hand 30 minutes after the alert
 	// (to the account wy move would pick).
 	ownerActs bool
@@ -624,7 +632,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 		best := -1
 		var bestK rankKey
 		for i, a := range accs {
-			if !a.loggedIn || a.protected || a.l5 >= 90-r5[i] || a.l7 >= 95-r7[i] || holds(i, m, est, r5[i]) || over(i) {
+			if !a.loggedIn || a.protected || a.l5 >= 90-r5[i] || a.l7 >= simAim7(st, a, m, 95)-r7[i] || holds(i, m, est, r5[i]) || over(i) {
 				continue
 			}
 			k := rankKey{group: 2, l5: a.l5}
@@ -654,7 +662,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 		}
 		// No room under the soft limits: the picker's hard limits (98 less the reserve), then any.
 		for i, a := range accs {
-			if a.loggedIn && !a.protected && a.l5 < 98-r5[i] && a.l7 < 98-r7[i] && !over(i) && (best < 0 || a.l5 < accs[best].l5) {
+			if a.loggedIn && !a.protected && a.l5 < 98-r5[i] && a.l7 < simAim7(st, a, m, 98)-r7[i] && !over(i) && (best < 0 || a.l5 < accs[best].l5) {
 				best = i
 			}
 		}
@@ -719,6 +727,9 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 	for m := 0; m < simDays*1440; m++ {
 		if st.coord && st.pinned {
 			coordReserve(st, lanes, m, rsv5, rsv7, pinsOn)
+			if st.scaled {
+				scaleReserve(accs, lanes, m, rsv5, rsv7, pinsOn)
+			}
 		}
 		for _, a := range accs {
 			if a.r5 >= 0 && m >= a.r5 {
@@ -808,6 +819,9 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 				if atLimit(a) {
 					l.stopped = true
 					res.Hits++
+					if a.l7 >= 100 {
+						res.Hits7d++
+					}
 					res.StoppedMin++
 					if l.owner {
 						res.IntStoppedMin++
@@ -1082,7 +1096,8 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 		for i, a := range accs {
 			v := view[i]
 			acc := Account{Key: a.key, Label: a.key, Protected: a.protected, Ratio: simRatio, Rate: v.rate, RateNote: v.note, LoggedIn: a.loggedIn,
-				Pins: pinsOn[i], Reserve5: rsv5[i], Reserve7: rsv7[i], Meter: v.meter, FromReadings: v.fromReadings && !st.oldRate}
+				Pins: pinsOn[i], Reserve5: rsv5[i], Reserve7: rsv7[i], Meter: v.meter, FromReadings: v.fromReadings && !st.oldRate,
+				Drain: st.ramp && !a.protected && a.r7-m < 6*60}
 			if v.r5 > m {
 				acc.W5 = Window{Level: v.l5, Reset: simAt(v.r5)}
 			}
@@ -1696,3 +1711,45 @@ const (
 // simLaneRate: the picker's new-lane burn the switch's destination counts young lanes at (3×
 // the medium class's 4 points/h, the clamp's top; live Opus lanes measure ~14).
 const simLaneRate = 12.0
+
+// simAim7 is the weekly limit lim of the simulated picker, raised to the drain ramp's aim
+// (plus the 1-point margin, at most 100) in the last 6 hours before a's weekly reset when st
+// ramps (setup.md 8.5, Drain aim).
+func simAim7(st simStrat, a *simAcc, m int, lim float64) float64 {
+	if !st.ramp || a.protected {
+		return lim
+	}
+	h := float64(a.r7-m) / 60
+	if lim >= 98 {
+		return math.Max(lim, math.Min(100, projection.DrainAim7(h)+1))
+	}
+	return math.Max(lim, projection.DrainAim7(h))
+}
+
+// scaleReserve scales each account's flat pin reserve to what its live pins burned over the last
+// 15 minutes (at least projection.PinBaseRate each) can burn before each window resets, twice
+// over (setup.md 8.6, Pinned sessions).
+func scaleReserve(accs []*simAcc, lanes []*simLane, m int, rsv5, rsv7 []float64, pins []int) {
+	rate := make([]float64, len(accs))
+	t := coordHist + m
+	for _, l := range lanes {
+		if l.coord == nil {
+			continue
+		}
+		for u := t - 15; u < t; u++ {
+			rate[l.acc] += l.coord.burned[u] * 4 // points in 15 minutes -> per hour
+		}
+	}
+	for i, a := range accs {
+		if pins[i] == 0 {
+			continue
+		}
+		r := math.Max(rate[i], float64(pins[i])*projection.PinBaseRate)
+		h5 := 5.0
+		if a.r5 >= 0 {
+			h5 = float64(a.r5-m) / 60
+		}
+		rsv5[i] = projection.PinReserve(rsv5[i], r, h5)
+		rsv7[i] = projection.PinReserve(rsv7[i], r/simRatio, float64(a.r7-m)/60)
+	}
+}

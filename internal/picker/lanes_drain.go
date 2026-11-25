@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/mraj602/watchyard/internal/projection"
 )
 
 // Account classes (LaneRow.Class, `--json` lanes.class).
@@ -74,6 +76,10 @@ type DrainInfo struct {
 	Why         string  // the reason when Capacity <= 0
 	WM, HM      float64 // the measured weekly and 5-hour levels it was judged on
 	Target      float64 // the weekly level it is drained to (its limit, the switch's cap less the pin reserve)
+	// AimNow is the weekly level the drain aims at now (Target, the ramp less the pin reserve)
+	// and AimEnd the one at the reset (setup.md 8.5, Drain aim; projection.DrainAim7).
+	AimNow, AimEnd float64
+	WeeklyReset    time.Time // its weekly reset (now + the hours to it)
 	// Owner: the owner drains it (`wy account drain`) until FinishBy, whatever its weekly
 	// reset (setup.md 8.5, Owner drain).
 	Owner     bool
@@ -298,6 +304,35 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	if acc.Protected {
 		lim7 = full7 // a protected account in drain may use the room that would expire (owner Q3)
 	}
+	// The drain aim ramps (setup.md 8.5, Drain aim): 96 while the weekly reset is over 6 hours
+	// away, then up to 100 at the reset; in a draining 5-hour window the ceiling is 98, up to
+	// 100 in its last 2 hours. Both less the pin reserve, and only where no lower limit applies
+	// (an owner's per-account limit, the switch's protected cap).
+	t5 := 5.0
+	if !v.fiveRst.IsZero() && v.fiveRst.After(now) {
+		t5 = v.fiveRst.Sub(now).Hours()
+	}
+	var aimEnd float64
+	base := p.AggrSkip
+	if base <= 0 {
+		base = full98
+	}
+	if acc.Limit7d <= 0 && (acc.SwitchCap7 <= 0 || acc.SwitchCap7 >= base) {
+		ceil7 := pinLess(100, acc.PinReserve7)
+		lim7 = math.Min(ceil7, pinLess(projection.DrainAim7(v.hrs), acc.PinReserve7)+p.DrainMargin)
+		// At the reset the scaled pin reserve is down to its floor (1 point; the full one when
+		// it is not scaled).
+		endR := acc.PinReserve7
+		if acc.PinFull7 > 0 {
+			endR = projection.PinReserve(acc.PinFull7, 0, 0)
+		}
+		aimEnd = pinLess(100, endR) - p.DrainMargin
+		full7 = math.Max(full7, lim7)
+	}
+	if !acc.Protected && acc.Limit5h <= 0 {
+		full = math.Max(full, pinLess(projection.DrainCeil5At(t5), acc.PinReserve5))
+		lim5 = full
+	}
 	d.Target = lim7
 	H := v.hrs
 	guard := p.Guard.Hours()
@@ -322,9 +357,10 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	R5 := math.Max(0, lim7-m-v.wM) * rho
 	A0 := math.Max(0, lim5-v.hM)
 	fiveOpen := !v.fiveRst.IsZero() && v.fiveRst.After(now)
-	t5 := 5.0
-	if fiveOpen {
-		t5 = v.fiveRst.Sub(now).Hours()
+	d.AimNow, d.AimEnd = lim7-m, aimEnd
+	d.WeeklyReset = now.Add(hoursDur(v.hrs))
+	if aimEnd == 0 {
+		d.AimEnd = d.AimNow
 	}
 	// need is at full 5-hour speed (a protected account too: owner Q3, "even at 100%").
 	a0full := math.Max(0, full-v.hM)
@@ -417,6 +453,8 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 		bs := p.Backstop5h
 		if acc.Protected {
 			bs = math.Min(bs, lim5)
+		} else {
+			bs = math.Max(bs, lim5-p.DrainMargin5h) // the ramped 5-hour aim (fit5 keeps a lane under the ceiling)
 		}
 		if v.hM >= bs && !soon {
 			c5 = 0
@@ -552,7 +590,8 @@ func OwnerDrainText(until, now time.Time) string {
 }
 
 // ownerDrainEnds ends the owner drains that are over: past their until, or whose weekly
-// level reached the drain aim (the hard weekly limit less DrainMargin): the account is again
+// level reached the drain aim as it will be at its until (projection.DrainAim7 less the pin
+// reserve; with an owner's own weekly limit, that limit less DrainMargin): the account is again
 // what its mode makes it (setup.md 8.5, Owner drain).
 func (p LaneParams) ownerDrainEnds(accs []LaneAccount, m *MoverView, now time.Time) []LaneAccount {
 	var out []LaneAccount
@@ -560,9 +599,14 @@ func (p LaneParams) ownerDrainEnds(accs []LaneAccount, m *MoverView, now time.Ti
 		if a.DrainUntil.IsZero() {
 			continue
 		}
-		w, _, _ := cleanLaneSample(a.Sample, now).effective(now)
+		w, _, hrs := cleanLaneSample(a.Sample, now).effective(now)
 		full7, _ := p.hard(a)
-		if OwnerDrainOn(a.DrainUntil, now) && w < full7-p.DrainMargin {
+		end := full7 - p.DrainMargin
+		if a.Limit7d <= 0 {
+			// The drain aim at its until (Drain aim): it can only rise before then.
+			end = pinLess(projection.DrainAim7(math.Max(0, hrs-a.DrainUntil.Sub(now).Hours())), a.PinReserve7)
+		}
+		if OwnerDrainOn(a.DrainUntil, now) && w < end {
 			continue
 		}
 		if out == nil {

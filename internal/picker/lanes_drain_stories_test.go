@@ -108,8 +108,8 @@ func TestDrainOwnerStories(t *testing.T) {
 			in.Leases = tiny(dX, 40, 9)
 			return in
 		}, both(none(dX), noProt)},
-		{"tiny lanes, 2% weekly left: a handful, not ten", func() LaneInput {
-			return world(10, func(s map[string]LaneSample) { s[dX] = dsmp(96, 10, 3, 3) })
+		{"tiny lanes, 1% weekly left under the aim (98, 3 h out): a handful, not ten", func() LaneInput {
+			return world(10, func(s map[string]LaneSample) { s[dX] = dsmp(97, 10, 3, 3) })
 		}, func(r LaneResult) string {
 			if n := countOf(r, dX); n == 0 || n > 6 || protPicks(r) != 0 {
 				return fmt.Sprintf("picks %v", picksOf(r))
@@ -178,7 +178,7 @@ func TestDrainOwnerStories(t *testing.T) {
 			return ""
 		}},
 		{"protected claude-5 at 40% resetting in 3 h (even full speed wastes it): drains after X", func() LaneInput {
-			return world(6, func(s map[string]LaneSample) { s[dX] = dsmp(96.5, 10, 2, 3); s[dP] = dsmp(40, 10, 3, 3) })
+			return world(30, func(s map[string]LaneSample) { s[dX] = dsmp(96.5, 10, 2, 3); s[dP] = dsmp(40, 10, 3, 3) })
 		}, func(r LaneResult) string {
 			if r.Picks[0].Key != dX || countOf(r, dP) == 0 {
 				return fmt.Sprintf("picks %v", picksOf(r))

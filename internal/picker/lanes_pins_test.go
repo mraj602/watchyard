@@ -3,6 +3,7 @@ package picker
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // setup.md 8.6, Pinned sessions: an account's live pinned sessions keep a reserve free; every
@@ -42,7 +43,7 @@ func TestLanesPinReserve(t *testing.T) {
 	if v.Pins != 1 || v.PinReserve5hPct != 15 || v.PinReserve7dPct != 3 {
 		t.Fatalf("view %+v", v)
 	}
-	if l := pinLine("claude-2", v); l != "Pins claude-2: 1 live pinned session keeps 15% of the 5-hour window and 3% of the week free (caps now 5h 83, 7d 95)" {
+	if l := pinLine("claude-2", v, time.Now()); l != "Pins claude-2: 1 live pinned session keeps 15% of the 5-hour window and 3% of the week free (caps now 5h 83, 7d 95)" {
 		t.Fatalf("line %q", l)
 	}
 }

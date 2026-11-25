@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -273,7 +274,7 @@ func explainLanes(w io.Writer, res Result) error {
 			continue
 		}
 		pinned[r.key] = true
-		fmt.Fprintln(w, pinLine(r.Label, *r.Lanes))
+		fmt.Fprintln(w, pinLine(r.Label, *r.Lanes, res.Now))
 	}
 	expiring := map[string]bool{}
 	for _, r := range res.Ranked {
@@ -327,13 +328,38 @@ func explainLanes(w io.Writer, res Result) error {
 
 // pinLine is the --explain line of an account with live pinned sessions: "Pins claude-3: 2
 // live pinned sessions keep 30% of the 5-hour window and 6% of the week free (caps 5h 15, 7d 79)".
-func pinLine(label string, v LaneView) string {
+// When the reserve is scaled to the time left (setup.md 8.6, Pinned sessions) each window says
+// until when: "... 20% of the 5-hour window and 2.1% of the week free until Thu 03:30, scaled
+// to time left (full 10) (caps now ...)".
+func pinLine(label string, v LaneView, now time.Time) string {
 	n := "1 live pinned session keeps"
 	if v.Pins != 1 {
 		n = fmt.Sprintf("%d live pinned sessions keep", v.Pins)
 	}
-	return fmt.Sprintf("Pins %s: %s %s%% of the 5-hour window and %s%% of the week free (caps now 5h %s, 7d %s)", label, n,
-		f0(v.PinReserve5hPct), f0(v.PinReserve7dPct), f0(v.FiveHourCap), f0(v.WeeklyCap))
+	pct := func(x float64) string {
+		if x == math.Trunc(x) {
+			return f0(x)
+		}
+		return strconv.FormatFloat(x, 'f', 1, 64)
+	}
+	var r5, r7 *time.Time
+	if v.FiveHourResetsAt != nil {
+		r5 = v.FiveHourResetsAt
+	}
+	if v.HoursToReset > 0 {
+		t := now.Add(hoursDur(v.HoursToReset))
+		r7 = &t
+	}
+	scaled := func(r, full float64, what string, until *time.Time) string {
+		if full > r+0.05 && until != nil {
+			return "; the " + what + " part until " + when(*until, now) + ", scaled to time left (full " + pct(full) + ")"
+		}
+		return ""
+	}
+	return fmt.Sprintf("Pins %s: %s %s%% of the 5-hour window and %s%% of the week free%s%s (caps now 5h %s, 7d %s)", label, n,
+		pct(v.PinReserve5hPct), pct(v.PinReserve7dPct),
+		scaled(v.PinReserve5hPct, v.PinFull5hPct, "5-hour", r5), scaled(v.PinReserve7dPct, v.PinFull7dPct, "weekly", r7),
+		f0(v.FiveHourCap), f0(v.WeeklyCap))
 }
 
 // drainLine is the --explain line of a draining account: "Drain claude-2: room 9.3% (71 pts),
@@ -365,6 +391,13 @@ func drainLine(label string, d DrainView, now time.Time) string {
 	}
 	if d.FinishBy != nil {
 		s += "; finish by " + d.FinishBy.Local().Format("15:04")
+	}
+	if d.AimPct != nil && d.AimAtResetPct != nil {
+		// "aim 98.3% now, 99% at 03:20" (the ramp; setup.md 8.5, Drain aim)
+		s += fmt.Sprintf("; aim %.1f%% now", *d.AimPct)
+		if d.ResetsAt != nil && *d.AimAtResetPct > *d.AimPct+0.05 {
+			s += fmt.Sprintf(", %s%% at %s", strconv.FormatFloat(*d.AimAtResetPct, 'f', -1, 64), when(*d.ResetsAt, now))
+		}
 	}
 	return s
 }

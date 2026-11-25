@@ -173,11 +173,11 @@ func TestDrainScenarios(t *testing.T) {
 				t.Errorf("X drain %v skip %v %s", row.Drain.On, row.Skip, row.Reason)
 			}
 		}},
-		{"S07 X w96 H2: the end game gives exactly one lane", func(t *testing.T) {
+		{"S07 X w96 H2: the end game (the ramp's aim 98.7 two hours out) gives two lanes", func(t *testing.T) {
 			s := dworld()
 			s[dX] = dsmp(96, 10, 2, 3)
 			r := rank(t, laneIn(s, 3))
-			if countOf(r, dX) != 1 || r.Picks[0].Key != dX {
+			if countOf(r, dX) != 2 || r.Picks[0].Key != dX {
 				t.Errorf("picks %v", picksOf(r))
 			}
 		}},
@@ -257,7 +257,8 @@ func TestDrainScenarios(t *testing.T) {
 			s[dX] = dsmp(85, 0, 10, 3)
 			r := rank(t, laneIn(s, 10))
 			d := drainOf(t, r, dX)
-			if d.Capacity != 10 || countOf(r, dX) != 10 {
+			// aim 96 (10 hours from the reset): 11 points of room
+			if d.Capacity != 9 || countOf(r, dX) != 9 {
 				t.Errorf("capacity %d picks %v", d.Capacity, picksOf(r))
 			}
 		}},
@@ -357,7 +358,7 @@ func TestDrainScenarios(t *testing.T) {
 			}
 			d := drainOf(t, rank(t, in), dX)
 			// each runs about 3 h more, cut at its lease life (2 h left): 3 × 5 × 2 = 30
-			if !near1(d.ForwardBurn, 30, 0.5) || d.CapWeekly != 4 {
+			if !near1(d.ForwardBurn, 30, 0.5) || d.CapWeekly != 3 { // aim 96
 				t.Errorf("drain %+v", d)
 			}
 		}},
@@ -554,14 +555,14 @@ func TestDrainScenarios(t *testing.T) {
 			s[dX] = x
 			in := laneIn(s, 1)
 			in.HubDown = true
-			if d := drainOf(t, rank(t, in), dX); !near1(d.RoomPct, 98-2-85, 1e-9) {
+			if d := drainOf(t, rank(t, in), dX); !near1(d.RoomPct, 97-2-85, 1e-9) { // the aim 96 plus its margin, less twice it
 				t.Errorf("room %.2f", d.RoomPct)
 			}
 		}},
 		{"S42 no lane statistics: the fallbacks (8 points, 15 minutes)", func(t *testing.T) {
 			s := dworld()
 			s[dX] = dsmp(85, 0, 10, 3)
-			if d := drainOf(t, rank(t, laneIn(s, 1)), dX); d.CapWeekly != 10 {
+			if d := drainOf(t, rank(t, laneIn(s, 1)), dX); d.CapWeekly != 9 { // aim 96
 				t.Errorf("capacity %d", d.CapWeekly)
 			}
 		}},
@@ -708,7 +709,7 @@ func TestDrainScenarios(t *testing.T) {
 			in := laneIn(s, 1)
 			in.Accounts[2].Ratio = 10
 			r := rank(t, in)
-			if x, y := drainOf(t, r, dX), drainOf(t, r, dY); !near1(x.RoomPts, 9*7.2, 1e-9) || !near1(y.RoomPts, 90, 1e-9) {
+			if x, y := drainOf(t, r, dX), drainOf(t, r, dY); !near1(x.RoomPts, 8*7.2, 1e-9) || !near1(y.RoomPts, 80, 1e-9) { // aim 96
 				t.Errorf("room pts %.1f %.1f", x.RoomPts, y.RoomPts)
 			}
 		}},
@@ -796,7 +797,7 @@ func TestDrainScenarios(t *testing.T) {
 			s[dX] = dsmp(85, 0, 10, 3)
 			in := laneIn(s, 1)
 			in.Accounts[1].Ratio, in.Accounts[1].F5 = 0, 0
-			if d := drainOf(t, rank(t, in), dX); !near1(d.RoomPts, 12*7.2, 1e-9) {
+			if d := drainOf(t, rank(t, in), dX); !near1(d.RoomPts, 11*7.2, 1e-9) { // aim 96
 				t.Errorf("room %.1f", d.RoomPts)
 			}
 		}},

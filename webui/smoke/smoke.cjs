@@ -560,6 +560,32 @@ async function usageFlow(page, sizeName) {
   await page.evaluate(() => { window.fetch = window.__fetch; });
   await choose('aggressive'); // a good save clears the reason
   await page.waitForFunction(() => !document.querySelector('[data-key=mode-error-seat_personal]'), { timeout: 4000 }).catch(() => fail(t('the reason stayed after a good save')));
+
+  // Drain: the Until field is a date and time, prefilled and wide enough to read; Change sends
+  // exactly what it shows (2026-11-25: an "07:20" time field turned a Sunday end into Thursday's).
+  const hubDrain = () => page.evaluate(async () => (await (await fetch('/v1/accounts', { cache: 'no-store' })).json()).accounts.find((a) => a.id === 'seat_personal').drain_until);
+  const field = () => page.$eval('[data-key=drain-time-seat_personal]', (e) => ({ type: e.type, value: e.value, w: e.getBoundingClientRect().width }));
+  await choose('drain');
+  await page.waitForSelector('[data-key=drain-time-seat_personal]', { timeout: 3000 }).catch(() => fail(t('Drain shows no Until field')));
+  let f = await field();
+  if (f.type !== 'datetime-local' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(f.value) || f.w < 150) fail(t(`Until field ${JSON.stringify(f)}`));
+  const later = await page.evaluate(() => { const d = new Date(); d.setDate(d.getDate() + 2); d.setHours(7, 20, 0, 0); return d.toISOString(); });
+  const laterLocal = await page.evaluate((iso) => { const d = new Date(iso); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; }, later);
+  await page.$eval('[data-key=drain-time-seat_personal]', (e, v) => { e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); }, laterLocal);
+  await page.click('[data-key=drain-save-seat_personal]');
+  await page.waitForFunction(async (want) => Date.parse((await (await fetch('/v1/accounts', { cache: 'no-store' })).json()).accounts.find((a) => a.id === 'seat_personal').drain_until || '') === Date.parse(want), { timeout: 4000 }, later)
+    .catch(() => fail(t('Start draining did not send the time shown')));
+  await page.waitForSelector('[data-key=drain-stop-seat_personal]', { timeout: 3000 }).catch(() => fail(t('no Stop draining while draining')));
+  f = await field();
+  if (f.value !== laterLocal) fail(t(`while draining the field shows ${f.value}, want ${laterLocal}`));
+  await sleep(150);
+  await page.click('[data-key=drain-save-seat_personal]'); // Change, untouched: the same instant
+  await sleep(500);
+  if (Date.parse((await hubDrain()) || '') !== Date.parse(later)) fail(t(`Change moved the end to ${await hubDrain()}`));
+  await shot(page, `${sizeName}-o-drain-field`);
+  await page.click('[data-key=drain-stop-seat_personal]');
+  await page.waitForFunction(async () => !(await (await fetch('/v1/accounts', { cache: 'no-store' })).json()).accounts.find((a) => a.id === 'seat_personal').drain_until, { timeout: 4000 })
+    .catch(() => fail(t('Stop draining did not clear the end')));
   await choose('protected');
   await page.waitForSelector('[data-key=mode-opt-seat_personal-protected]:checked', { timeout: 3000 }).catch(() => fail(t('protected is not back')));
 

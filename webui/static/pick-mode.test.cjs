@@ -64,9 +64,17 @@ test('drain: end, text, key', () => {
   assert.equal(P.seatModeKey({ mode: 'off', drain_until: at(25, 23, 59) }, now), 'off');
   assert.equal(P.drainText({ mode: 'off', drain_until: at(25, 23, 59) }, now), '');
   assert.equal(P.drainText({}, now), '');
-  assert.equal(P.drainInputTime(today, now), '23:59');
-  assert.equal(P.drainInputTime({ drain_until: at(26, 6, 30) }, now), '06:30');
-  assert.equal(P.drainInputTime({}, now), '23:59');
+  assert.equal(P.drainInputValue(today, now), '2026-11-25T23:59');
+  assert.equal(P.drainInputValue({ drain_until: at(26, 6, 30) }, now), '2026-11-26T06:30');
+  assert.equal(P.drainInputValue({}, now), '2026-11-25T23:59');
+  // 2026-11-25: the CLI set Sun 07:20; the field showed only "07:20" and Change sent Thu 07:20.
+  // The field now carries the date, and sending it gives back the same instant.
+  const cli = { mode: 'protected', drain_until: at(29, 7, 20) };
+  assert.equal(P.drainInputValue(cli, now), '2026-11-29T07:20');
+  assert.equal(P.drainUntilISO(P.drainInputValue(cli, now), now), at(29, 7, 20));
+  assert.deepEqual(JSON.parse(JSON.stringify(P.modeBody('drain', P.drainInputValue(cli, now), now))), { drain_until: at(29, 7, 20) });
+  // After 23:59 has passed, the default is tomorrow's.
+  assert.equal(P.drainInputValue({}, new Date(2026, 10, 25, 23, 59, 30).getTime()), '2026-11-26T23:59');
 });
 
 test('drain: the time field to an instant, and the PATCH bodies', () => {
@@ -76,6 +84,12 @@ test('drain: the time field to an instant, and the PATCH bodies', () => {
   assert.equal(P.drainUntilISO('14:00', now), new Date(2026, 10, 26, 14, 0).toISOString());
   assert.equal(P.drainUntilISO('', now), null);
   assert.equal(P.drainUntilISO('25:00', now), null);
+  // The datetime field is sent exactly as shown, never moved to another day.
+  assert.equal(P.drainUntilISO('2026-11-27T09:00', now), new Date(2026, 10, 27, 9, 0).toISOString());
+  assert.equal(P.drainUntilISO('2026-11-25T09:00', now), null); // past: refused, not tomorrow
+  assert.equal(P.drainUntilISO('2026-11-25T14:00', now), null);
+  assert.equal(P.drainUntilISO('2026-02-30T09:00', now), null);
+  assert.equal(P.drainUntilISO('2026-11-27T24:00', now), null);
   assert.deepEqual(j(P.modeBody('drain', '', now)), { drain_until: new Date(2026, 10, 25, 23, 59).toISOString() });
   assert.deepEqual(j(P.modeBody('drain', 'zz', now)), null);
   assert.deepEqual(j(P.modeBody('off')), { mode: 'off', drain_until: null });

@@ -14,6 +14,7 @@ import (
 	"github.com/mraj602/watchyard/internal/calib"
 	"github.com/mraj602/watchyard/internal/config"
 	"github.com/mraj602/watchyard/internal/leases"
+	"github.com/mraj602/watchyard/internal/projection"
 )
 
 // Lane data rules (setup.md 8.5).
@@ -67,6 +68,10 @@ type LaneView struct {
 	Pins            int     `json:"pins"`
 	PinReserve5hPct float64 `json:"pin_reserve_5h_pct"`
 	PinReserve7dPct float64 `json:"pin_reserve_7d_pct"`
+	// PinFull5hPct and PinFull7dPct: the reserve before it was scaled to the time left in each
+	// window (pins × account.pin_reserve_*); the reserve above is at most these.
+	PinFull5hPct float64 `json:"pin_reserve_full_5h_pct,omitempty"`
+	PinFull7dPct float64 `json:"pin_reserve_full_7d_pct,omitempty"`
 	// ExpiringRoom: a protected account near its weekly reset whose weekly cap is the
 	// aggressive one until then (setup.md 8.6, Expiring room).
 	ExpiringRoom float64    `json:"expiring_room_cap_7d,omitempty"`
@@ -93,6 +98,11 @@ type DrainView struct {
 	FinishBy       *time.Time `json:"finish_by"`
 	// Owner: the owner's drain (`wy account drain`), until FinishBy.
 	Owner bool `json:"owner,omitempty"`
+	// AimPct is the weekly level it is drained to now and AimAtResetPct the one just before its
+	// weekly reset at ResetsAt (the ramp, less the pin reserve; setup.md 8.5, Drain aim).
+	AimPct        *float64   `json:"aim_pct,omitempty"`
+	AimAtResetPct *float64   `json:"aim_at_reset_pct,omitempty"`
+	ResetsAt      *time.Time `json:"weekly_resets_at,omitempty"`
 }
 
 func drainView(d DrainInfo) *DrainView {
@@ -110,6 +120,13 @@ func drainView(d DrainInfo) *DrainView {
 	pr, un := pyRound(d.Projected, 1), pyRound(d.Unavoidable, 1)
 	fb := d.FinishBy.UTC()
 	v.ProjectedPct, v.UnavoidablePct, v.FinishBy = &pr, &un, &fb
+	if d.AimNow > 0 {
+		an, ae, rs := pyRound(d.AimNow, 1), pyRound(d.AimEnd, 1), d.WeeklyReset.UTC()
+		v.AimPct, v.AimAtResetPct = &an, &ae
+		if !d.WeeklyReset.IsZero() {
+			v.ResetsAt = &rs
+		}
+	}
 	return v
 }
 
@@ -672,6 +689,7 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		views[g.key] = cv
 		for _, i := range g.idxs {
 			acc.Live = acc.Live || cands[i].LiveSessions > 0
+			acc.HubRead = acc.HubRead || (!in.HubDown && cands[i].SeatID != "" && strings.HasPrefix(cands[i].Source, "hub"))
 		}
 		for sid, hs := range in.Outbox.Sessions {
 			if keyOf[sid] == g.key && !hs.Ended && now.Sub(hs.Last) <= hookLive {
@@ -698,13 +716,15 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		}
 		if pr, ok := in.PinReserves[g.key]; ok && pr.Pins > 0 {
 			acc.Pins, acc.PinReserve5, acc.PinReserve7 = pr.Pins, math.Max(0, pr.R5), math.Max(0, pr.R7)
+			acc.PinUnits = math.Max(0, pr.Units)
 		}
 		accts = append(accts, acc)
 	}
 
 	f5Of := map[string]float64{}
-	for _, a := range accts {
+	for i, a := range accts {
 		f5Of[a.Key] = p.account(a).F5
+		scalePins(&accts[i], p, now)
 	}
 	lin := LaneInput{Now: now, Params: p, Mover: in.Mover, Accounts: accts, Leases: ls, N: n, SIDs: in.SIDs, Urgent: in.Urgent,
 		Stats: measureLanes(in.Leases, ls[:nLocal], ls[nLocal:], f5Of, res.Model, now), Expect: in.Expect, HubDown: in.HubDown, Expects: in.Expects}
@@ -849,7 +869,7 @@ func laneView(row LaneRow, extra float64, now time.Time) LaneView {
 		Leases: row.Leases, Burst: row.Burst, BurstCap: row.BurstCap, Capped: row.Capped, Expiring: row.Expiring,
 		Stale: row.Stale, Unknown: append([]string{}, row.Unknown...), SkipLevel: row.SkipLevel,
 		WeeklyCap: pyRound(row.WeeklyCap, 1), FiveHourCap: pyRound(row.FiveHourCap, 1),
-		Pins: row.Pins, PinReserve5hPct: pyRound(row.PinReserve5, 1), PinReserve7dPct: pyRound(row.PinReserve7, 1), ExpiringRoom: pyRound(row.ExpiringRoom, 1),
+		Pins: row.Pins, PinReserve5hPct: pyRound(row.PinReserve5, 1), PinReserve7dPct: pyRound(row.PinReserve7, 1), PinFull5hPct: pyRound(row.PinFull5, 1), PinFull7dPct: pyRound(row.PinFull7, 1), ExpiringRoom: pyRound(row.ExpiringRoom, 1),
 		LeaseCharges: []LeaseChargeView{}, Class: row.Class}
 	if row.Class != "" {
 		v.Drain = drainView(row.Drain)
@@ -1151,4 +1171,27 @@ func quantile(xs []float64, q float64) float64 {
 		return xs[len(xs)-1]
 	}
 	return xs[i] + (pos-float64(i))*(xs[i+1]-xs[i])
+}
+
+// scalePins scales acc's pin reserve to what its pinned sessions can plausibly burn before each
+// window resets (setup.md 8.6, Pinned sessions; projection.PinReserve): their measured burn, at
+// least projection.PinBaseRate each, times the hours left, times two. Far from a reset that is
+// the full reserve; in the last hours it shrinks, so a drain can use the rest of the week.
+func scalePins(acc *LaneAccount, p LaneParams, now time.Time) {
+	if acc.Pins <= 0 {
+		return
+	}
+	acc.PinFull5, acc.PinFull7 = acc.PinReserve5, acc.PinReserve7
+	pa := p.account(*acc)
+	rate := math.Max(acc.PinUnits*pa.F5, float64(acc.Pins)*projection.PinBaseRate)
+	c := cleanLaneSample(acc.Sample, now)
+	h5, h7 := 5.0, -1.0 // a 5-hour window not started is a whole window away; an unknown week keeps it all
+	if c.fiveRst.After(now) {
+		h5 = c.fiveRst.Sub(now).Hours()
+	}
+	if c.weeklyRst.After(now) {
+		h7 = c.weeklyRst.Sub(now).Hours()
+	}
+	acc.PinReserve5 = projection.PinReserve(acc.PinFull5, rate, h5)
+	acc.PinReserve7 = projection.PinReserve(acc.PinFull7, rate/pa.ratio(), h7)
 }
