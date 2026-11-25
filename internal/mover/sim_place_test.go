@@ -2,6 +2,7 @@ package mover
 
 import (
 	"fmt"
+	"github.com/mraj602/watchyard/internal/projection"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -52,6 +53,10 @@ func rankOf(st simStrat, a *simAcc, m int, r5, r7, fwd float64) rankKey {
 	if st.capTarget {
 		t7, t5 = math.Min(98, st.p.Cap7)-r7, math.Min(98, st.p.Cap5)-r5
 		dr7 = t7
+	}
+	if st.ramp && !a.protected && hrs < projection.DrainRampH {
+		dr7 = simAim7(st, a, m, 98) - 1 - r7 // the ramped aim (Drain aim)
+		t7 = math.Max(t7, dr7)
 	}
 	need := math.Max(0, t7-a.l7) * simRatio / t5 * 5
 	room := dr7 - 0.5 - a.l7

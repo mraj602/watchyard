@@ -2116,6 +2116,24 @@ pins at 4-5× their burn) every strategy stops the pins more than twice as long;
 to 5.6 a day. The modelled pins use about 27% of a week each, more than the 3-10% they use
 normally, so these numbers are on the heavy side.
 
+**Simulator, scaled reserve and drain ramp** (2026-11-25; the same coordinators layer, reserve
+10/5, `WY_SIM_PINS="reserve 10/5"`, 10 patterns × 60 runs × 2 days, per day per run; *waste* is
+the weekly room left at a reset, *weekly stops* lanes stopped at the weekly limit):
+
+| Strategy | Pinned stopped min | Pinned hits | All stopped min | Waste % | Weekly stops |
+| --- | --- | --- | --- | --- | --- |
+| reserve 10/5 (flat) | 286.9 | 0.92 | 993 | 20.4 | 4.89 |
+| scaled | 269.0 | 0.83 | 941 | 20.6 | 4.68 |
+| drain ramp | 284.0 | 0.89 | 976 | 20.2 | 5.02 |
+| **scaled + drain ramp (this release)** | **269.7** | 0.86 | 949 | 20.3 | 4.80 |
+
+Scaling does not stop the pins more: their stopped minutes fall 6% (the reserve near a reset
+was room the other sessions needed) and all stopped minutes 4%. The weekly waste barely moves in
+this model (-0.1 points): its simplified picker sends few lanes to an account in its last hours,
+so most of the 20% is on accounts nobody drains; the gain is the live case (an owner drain the
+flat reserve held at 88%). The weekly stops are not zero in any strategy (lanes the model runs
+past the limit); the ramp alone adds 0.13 a day, with the scaled reserve 0.09 fewer than flat.
+
 **The picker and the switch.** While the switch is on, `wy account next` (lanes strategy, 8.5)
 places no new lane on an account where the switch would move a session off: the switch's
 projection (`internal/projection`, the same function on both sides) of the account's measured
