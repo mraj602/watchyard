@@ -13,7 +13,9 @@ All notable changes to Watchyard are recorded here. The format follows
   the day before its weekly reset: new lanes go to it first up to its drain aims (97 weekly, 96
   five-hour), the switch moves nothing off it before a 5-hour near hit and pulls the biggest
   movable burners in (the biggest that fits first, at least `move_pull_min_burn` 3
-  points/h) while its 5-hour projection has room. `--explain`, `--plan` and the board
+  points/h, counted at least at the lane rate, `move_pull_margin` 10 under its caps, none
+  within `move_pull_quiet_min` 15 min of a move off it) while its 5-hour projection has room.
+  The digest's weekly room marks it "(draining)". `--explain`, `--plan` and the board
   show "draining (owner, until 23:59)". It ends at `until` or at the weekly drain aim. Stored
   as `next.accounts.<label>.drain_until` on this machine.
 - **Re-check after the step wait** (setup.md 8.6, Re-check). A mid-turn move is re-chosen on

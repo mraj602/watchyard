@@ -117,6 +117,12 @@ type Params struct {
 	// points per hour (a mid-turn restart re-reads the context: live 2026-11-25, a 1.1
 	// points/h lane was proposed); 0: MinBurn alone.
 	PullMinBurn float64
+	// PullMargin: a pull must keep the draining account's projections this far under its
+	// caps until its resets (more than Hysteresis: a pulled lane in a low phase burns more
+	// later; live pre12, ai-lane-H pulled at 3.3 points/h burned 14.8 and claude-4 went to
+	// P5 101%). PullQuiet: no pull within this long after a move off it.
+	PullMargin float64
+	PullQuiet  time.Duration
 }
 
 // PinReserve is the reserve of an account with pins live pinned sessions: pins x
@@ -142,7 +148,7 @@ var DefaultParams = Params{
 	Cooldown: 20 * time.Minute, NoReturn: time.Hour, AccountMoves: 5, AccountBurn: 40, AccountWindow: 15 * time.Minute,
 	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, PassWait: 90 * time.Second, Orgs: OrgsAny,
 	PinReserve5: 10, PinReserve7: 5, PinAlertWithin: 2 * time.Hour,
-	CheapMoves: true, YoungGate: 15 * time.Minute, MinBurn: 1, PullMinBurn: 3,
+	CheapMoves: true, YoungGate: 15 * time.Minute, MinBurn: 1, PullMinBurn: 3, PullMargin: 10, PullQuiet: 15 * time.Minute,
 }
 
 // PinIdle: a pinned session idle this long holds no reserve (the caller counts the live pins).
@@ -770,11 +776,13 @@ func (p Params) near5h(pr Projection) bool {
 	return t <= pr.Reset5.Hours() && t < p.UrgentWithin.Hours()
 }
 
-// pullIn: an account the owner drains whose 5-hour projection (with this pass's moves) is
-// under its cap − Hysteresis takes the biggest busy burners of the other accounts (not
-// pinned, not interactive, not young, out of cooldown, at least MinBurn), each that still fits
-// as the destination check counts it (the account rate limit too), so its weekly room is used
-// by the owner's until (setup.md 8.6, Owner drain).
+// pullIn: an account the owner drains whose projections (with this pass's moves) are under
+// its caps − PullMargin, with no move off it this pass or within PullQuiet, takes the biggest
+// busy burners of the other accounts (not pinned, not interactive, not young, out of
+// cooldown, at least PullMinBurn), each counted at max(its burn, the lane rate) and taken
+// when it still fits PullMargin under the caps as the destination check counts it (the
+// account rate limit too), so its weekly room is used by the owner's until (setup.md 8.6,
+// Owner drain).
 func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]float64, byAcc map[string][]Session) {
 	now := in.Now
 	moving := map[string]bool{}
@@ -789,15 +797,25 @@ func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]fl
 		if !d.ownerDrain(now) || !d.LoggedIn || d.Stale || d.Excluded || p.staleFor(d, now) > 0 {
 			continue
 		}
-		if pr := p.Project(d, byAcc[d.Key], delta[d.Key], now); pr.P5 > pr.Cap5-p.Hysteresis || pr.P7 > pr.Cap7-p.Hysteresis {
+		pp := p
+		pp.Hysteresis = math.Max(p.Hysteresis, p.PullMargin)
+		if pr := p.Project(d, byAcc[d.Key], delta[d.Key], now); pr.P5 > pr.Cap5-pp.Hysteresis || pr.P7 > pr.Cap7-pp.Hysteresis {
+			continue
+		}
+		if p.movedOff(d.Key, in, res, now) {
 			continue
 		}
 		var cands []Session
+		measured := map[string]float64{}
 		for _, s := range in.Sessions {
 			if s.Account == d.Key || draining[s.Account] || moving[s.ID] || !s.Busy || s.Pinned || s.Interactive || s.Stopped || !s.Movable ||
 				p.young(s, now) || s.Rate < math.Max(math.Max(p.MinBurn, p.PullMinBurn), 1e-9) || p.excluded(s, st, now) != "" {
 				continue
 			}
+			// A lane in a low phase burns more later: counted at least at the lane rate, as
+			// the destination check counts a young lane.
+			measured[s.ID] = s.Rate
+			s.Rate = math.Max(s.Rate, in.LaneRate)
 			cands = append(cands, s)
 		}
 		// The biggest burner that fits first: each is checked against the room the pulls
@@ -807,13 +825,16 @@ func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]fl
 			if cands[i].Rate != cands[j].Rate {
 				return cands[i].Rate > cands[j].Rate
 			}
+			if mi, mj := measured[cands[i].ID], measured[cands[j].ID]; mi != mj {
+				return mi > mj
+			}
 			return cands[i].ID < cands[j].ID
 		})
 		one := in
 		one.Accounts = []Account{d}
 		text := OwnerDrainText(d.DrainUntil, now)
 		for _, s := range cands {
-			if to, _ := p.destination(one, s, st, delta, urgency{hit: -1}); to != d.Key {
+			if to, _ := pp.destination(one, s, st, delta, urgency{hit: -1}); to != d.Key {
 				continue
 			}
 			var from Account
@@ -822,25 +843,45 @@ func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]fl
 					from = a
 				}
 			}
-			mv := Move{Session: s.ID, From: s.Account, To: d.Key, MidTurn: s.Busy, Rate: s.Rate, Interactive: s.Interactive, Pull: text,
+			m := measured[s.ID]
+			mv := Move{Session: s.ID, From: s.Account, To: d.Key, MidTurn: s.Busy, Rate: m, Interactive: s.Interactive, Pull: text,
 				OrgChanged: Org(d.Key) != from.Org()}
-			mv.Reason = fmt.Sprintf("pulled in: %s is %s at %.1f points/h of burn", d.Label, text, s.Rate)
+			mv.Reason = fmt.Sprintf("pulled in: %s is %s at %.1f points/h of burn", d.Label, text, m)
+			if s.Rate > m {
+				mv.Reason += fmt.Sprintf(" (counted at the lane rate %.1f)", s.Rate)
+			}
 			if mv.MidTurn {
 				mv.Reason += "; mid-turn"
 			}
 			if mv.OrgChanged {
 				mv.Reason += "; another organisation"
 			}
-			if p.countsAsMove(s.Rate) {
+			if p.countsAsMove(m) {
 				st.movedIn[d.Key]++
 			}
 			st.burnIn[d.Key] += s.Rate
 			delta[d.Key] += s.Rate
-			delta[s.Account] -= s.Rate
+			delta[s.Account] -= m
 			moving[s.ID] = true
 			res.Moves = append(res.Moves, mv)
 		}
 	}
+}
+
+// movedOff: a session moved off key this pass or within PullQuiet (a near hit's move off a
+// draining account; a pull then would ping-pong).
+func (p Params) movedOff(key string, in Input, res *Result, now time.Time) bool {
+	for _, m := range res.Moves {
+		if m.From == key {
+			return true
+		}
+	}
+	for _, r := range in.Recent {
+		if r.From == key && now.Sub(r.At) < p.PullQuiet {
+			return true
+		}
+	}
+	return false
 }
 
 func hasStopped(ss []Session) bool {

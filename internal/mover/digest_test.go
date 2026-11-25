@@ -99,3 +99,24 @@ func TestDigestDue(t *testing.T) {
 		}
 	}
 }
+
+// A drained account is in the weekly room with "(draining)".
+func TestDigestDraining(t *testing.T) {
+	st := State{Dir: t.TempDir()}
+	t0 := time.Date(2026, 11, 25, 15, 0, 0, 0, time.UTC)
+	if err := st.AppendPass(PassRecord{At: t0, Accounts: []PassAccount{
+		{Key: "claude-2", Label: "claude-2", Level7: 35, P7: 40, Reset7S: 3600},
+		{Key: "claude-4", Label: "claude-4", Level7: 61, P7: 65, Reset7S: 3600, Draining: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	d := st.BuildDigest(t0.Add(-time.Hour), t0.Add(time.Minute), tname, nil)
+	txt, sum := d.Text(), d.Summary()
+	if !strings.Contains(txt, "  claude-4: 35 points left (level 61%, resets") || !strings.Contains(txt, ") (draining)\n") ||
+		strings.Contains(txt, "claude-2: 60 points left (level 35%, resets Wed 16:00) (draining)") {
+		t.Errorf("text:\n%s", txt)
+	}
+	if !strings.Contains(sum, "claude-4 35 (draining)") || strings.Contains(sum, "claude-2 60 (draining)") {
+		t.Errorf("summary: %s", sum)
+	}
+}
