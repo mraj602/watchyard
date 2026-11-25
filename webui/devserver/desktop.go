@@ -3,6 +3,7 @@ package devserver
 import (
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Desktop mock (desktop.md C10): PATCH /v1/accounts/{seat} and desktop pairing codes.
@@ -93,11 +94,31 @@ func (s *Server) patchSeat(w http.ResponseWriter, r *http.Request, c *caller) {
 				next[k] = nil
 				break
 			}
-			if str, ok := v.(string); !ok || (str != "protected" && str != "aggressive") {
-				writeErr(w, 400, "bad_request", "mode must be protected, aggressive or null")
+			if str, ok := v.(string); !ok || (str != "protected" && str != "aggressive" && str != "off") {
+				writeErr(w, 400, "bad_request", "mode must be protected, aggressive, off or null")
 				return
 			}
 			next[k] = v
+			if v == "off" {
+				next["drain_until"] = nil
+			}
+		case "drain_until":
+			// As the hub (store.SeatPatch): RFC 3339 in the next 8 days, or null; never with off.
+			if v == nil {
+				next[k] = nil
+				break
+			}
+			str, ok := v.(string)
+			t, err := time.Parse(time.RFC3339, str)
+			if now := s.opts.Now(); !ok || err != nil || !t.After(now) || t.After(now.Add(8*24*time.Hour)) {
+				writeErr(w, 400, "bad_request", "drain_until must be in the next 8 days")
+				return
+			}
+			if m, _ := raw["mode"].(string); m == "off" || (raw["mode"] == nil && seat["mode"] == "off") {
+				writeErr(w, 400, "bad_request", "an account that is off cannot drain")
+				return
+			}
+			next[k] = t.UTC().Format(time.RFC3339)
 		default:
 			writeErr(w, 400, "bad_request", "unknown field "+k)
 			return
