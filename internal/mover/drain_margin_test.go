@@ -24,13 +24,13 @@ func TestDrainNoHysteresis(t *testing.T) {
 		t.Fatalf("draining: moves %v", got)
 	}
 	pr := DefaultParams.Project(in.Accounts[1], nil, 20, t0)
-	if !pr.Draining || DefaultParams.hyst(pr) != 0 {
-		t.Fatalf("draining projection %+v, hyst %v", pr, DefaultParams.hyst(pr))
+	if h5, h7 := DefaultParams.hyst(pr); !pr.Draining || h5 != 0 || h7 != 0 {
+		t.Fatalf("draining projection %+v, hyst %v/%v", pr, h5, h7)
 	}
 	pp := DefaultParams
-	pp.pullMargin = true
-	if pp.hyst(pr) != DefaultParams.Hysteresis {
-		t.Fatalf("pull margin lost: %v", pp.hyst(pr))
+	pp.Hysteresis, pp.pullMargin = pp.PullMargin, true
+	if h5, h7 := pp.hyst(pr); h5 != 10 || h7 != 10/7.2 {
+		t.Fatalf("pull margin %v/%v, want 10 and 10/7.2", h5, h7)
 	}
 	// The moves off a draining source aim at its caps, not 5 under: one burner over is enough.
 	src := acc("c", 90, time.Hour, 30)

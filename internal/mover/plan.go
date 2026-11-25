@@ -867,7 +867,18 @@ func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]fl
 	for _, d := range in.Accounts {
 		draining[d.Key], off[d.Key] = d.ownerDrain(now), d.Off
 	}
-	for _, d := range in.Accounts {
+	// The account whose room expires soonest pulls first (its weekly reset, then the drain's
+	// until): the picker's drain order (live pre16: a pull went to claude-4, draining until
+	// Sunday, while claude-3's room was lost at its reset that night).
+	drains := append([]Account(nil), in.Accounts...)
+	sort.SliceStable(drains, func(i, j int) bool {
+		ei, ej := roomExpires(drains[i], now), roomExpires(drains[j], now)
+		if !ei.Equal(ej) {
+			return ei.Before(ej)
+		}
+		return drains[i].DrainUntil.Before(drains[j].DrainUntil)
+	})
+	for _, d := range drains {
 		if !d.ownerDrain(now) || !d.LoggedIn || d.Excluded || d.Off {
 			continue
 		}
@@ -886,7 +897,8 @@ func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]fl
 		}
 		pp := p
 		pp.Hysteresis, pp.pullMargin = math.Max(p.Hysteresis, p.PullMargin), true
-		if pr := p.Project(d, byAcc[d.Key], delta[d.Key], now); pr.P5 > pr.Cap5-pp.Hysteresis || pr.P7 > pr.Cap7-pp.Hysteresis {
+		pr := p.Project(d, byAcc[d.Key], delta[d.Key], now)
+		if m5, m7 := pp.hyst(pr); pr.P5 > pr.Cap5-m5 || pr.P7 > pr.Cap7-m7 {
 			continue
 		}
 		if p.movedOff(d.Key, in, res, now) {
@@ -953,6 +965,16 @@ func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]fl
 			res.Moves = append(res.Moves, mv)
 		}
 	}
+}
+
+// roomExpires is when a draining account's weekly room is lost: its weekly reset (the drain's
+// until when the reset is not known or later).
+func roomExpires(a Account, now time.Time) time.Time {
+	t := a.DrainUntil
+	if a.W7.Reset.After(now) && (t.IsZero() || a.W7.Reset.Before(t)) {
+		t = a.W7.Reset
+	}
+	return t
 }
 
 // movedOff: a session moved off key this pass or within PullQuiet (a near hit's move off a
@@ -1078,15 +1100,15 @@ func (pr Projection) overBy(m float64) bool {
 // the level now, so that target could never be met and every burner would be moved off). With
 // MinBurn negative (the simulator's tables before it), always Hysteresis.
 func (p Params) margins(pr Projection) (m5, m7 float64) {
-	h := p.hyst(pr)
-	m5, m7 = h, h
+	h5, h7 := p.hyst(pr)
+	m5, m7 = h5, h7
 	if p.MinBurn < 0 || p.IdleMoves {
 		return m5, m7
 	}
-	if pr.Level5 >= pr.Cap5-h {
+	if pr.Level5 >= pr.Cap5-h5 {
 		m5 = 0
 	}
-	if pr.Level7 >= pr.Cap7-h {
+	if pr.Level7 >= pr.Cap7-h7 {
 		m7 = 0
 	}
 	return m5, m7
@@ -1096,11 +1118,20 @@ func (p Params) margins(pr Projection) (m5, m7 float64) {
 // none for a draining account, whose caps are already the drain aim (setup.md 8.5, Drain aim):
 // with the margin a drain could never come within Hysteresis of its aim (live pre15: claude-3
 // at 89%, lanes refused at a projected 91% against "cap 95% less the switch margin").
-func (p Params) hyst(pr Projection) float64 {
-	if pr.Draining && !p.pullMargin {
-		return 0
+//
+// A pull onto an owner drain (pullMargin) keeps Hysteresis (PullMargin) under the 5-hour cap,
+// and the same burn's weekly share under the weekly cap: PullMargin is a margin for a lane's
+// burn running higher than measured, in 5-hour points, and a weekly point is ratio 5-hour
+// points (live pre16: claude-3 at 89%, aim 96, reset in 4 h, refused every pull because 89 was
+// over 96 − 10; the pull went to claude-4, whose room lasts until Sunday).
+func (p Params) hyst(pr Projection) (h5, h7 float64) {
+	switch {
+	case pr.Draining && p.pullMargin:
+		return p.Hysteresis, p.Hysteresis / math.Max(1, pr.ratio)
+	case pr.Draining:
+		return 0, 0
 	}
-	return p.Hysteresis
+	return p.Hysteresis, p.Hysteresis
 }
 
 // overTarget reports whether a projection is still over what the moves aim for (margins).
@@ -1356,8 +1387,8 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 			pr.P5 -= r * math.Max(0, pr.Reset5.Hours()-e)
 			pr.P7 -= r / pr.ratio * math.Max(0, math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())-e)
 		}
-		h := p.hyst(pr)
-		return pr, pr.P5 <= pr.Cap5-h && pr.P7 <= pr.Cap7-h && pr.Level5 < pr.Cap5-h && pr.Level7 < pr.Cap7-h
+		h5, h7 := p.hyst(pr)
+		return pr, pr.P5 <= pr.Cap5-h5 && pr.P7 <= pr.Cap7-h7 && pr.Level5 < pr.Cap5-h5 && pr.Level7 < pr.Cap7-h7
 	}
 	if p.DestHorizon > 0 && p.oldDest {
 		full := room
@@ -1375,8 +1406,8 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 			r := math.Max(0, s.Rate)
 			pr.P5 += r * min(h, pr.Reset5).Hours()
 			pr.P7 += r / pr.ratio * math.Min(h.Hours(), math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours()))
-			hy := p.hyst(pr)
-			return pr, pr.P5 <= pr.Cap5-hy && pr.P7 <= pr.Cap7-hy && pr.Level5 < pr.Cap5-hy && pr.Level7 < pr.Cap7-hy
+			h5, h7 := p.hyst(pr)
+			return pr, pr.P5 <= pr.Cap5-h5 && pr.P7 <= pr.Cap7-h7 && pr.Level5 < pr.Cap5-h5 && pr.Level7 < pr.Cap7-h7
 		}
 	}
 	idx := map[string]int{}

@@ -192,6 +192,11 @@ All notable changes to Watchyard are recorded here. The format follows
   (claude-3 at 89%: "projection 91%, over its cap 95% less the switch margin"), so a drain
   never got near its aim. For a draining account the picker's check and the switch's moves use
   the aim as the cap with no margin; other accounts keep it, and pulls keep `PullMargin`.
+- **Pulls go to the drain that expires first** (setup.md 8.6, Owner drain). With two owner
+  drains, a 10.7 points/h session went to claude-4 (draining until Sunday) while claude-3, at
+  89% with its week resetting in 4 hours, pulled nothing: the pull margin of 10 points applied
+  to the weekly cap too (89 over 96 − 10). The weekly margin is now the same burn's weekly share
+  (10 ÷ the ratio), and the account whose room is lost first pulls first.
 - **Board drain field** (pwa.md 3.0a). The Until field was a time-only input that the radio
   buttons' style shrank to an 18 px box, and Change sent the next time the clock showed it, so a
   drain the CLI set for Sunday 07:20 became Thursday 07:20. It is now a date-and-time field,
