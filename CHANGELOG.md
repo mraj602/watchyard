@@ -187,6 +187,11 @@ All notable changes to Watchyard are recorded here. The format follows
   scaled reserve, with the lane fit and landing guard unchanged. The switch's caps, the hub's
   and the board's drain end follow. `--explain`, `--plan` and `--json` show the scaled reserve
   and the aim.
+- **No switch margin under a drain's aim** (setup.md 8.5 Drain aim). The picker still refused
+  lanes on a draining account once the switch's projection came within 5 points of the aim
+  (claude-3 at 89%: "projection 91%, over its cap 95% less the switch margin"), so a drain
+  never got near its aim. For a draining account the picker's check and the switch's moves use
+  the aim as the cap with no margin; other accounts keep it, and pulls keep `PullMargin`.
 - **Board drain field** (pwa.md 3.0a). The Until field was a time-only input that the radio
   buttons' style shrank to an 18 px box, and Change sent the next time the clock showed it, so a
   drain the CLI set for Sunday 07:20 became Thursday 07:20. It is now a date-and-time field,
