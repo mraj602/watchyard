@@ -562,9 +562,15 @@ async function usageFlow(page, sizeName) {
   await page.waitForSelector('[data-key=mode-opt-seat_personal-protected]:checked', { timeout: 3000 }).catch(() => fail(t('protected is not back')));
 
   // The work account was never chosen: the highlighted line and the read of its local override.
-  await page.click('[data-key=seat-toggle-seat_work]');
+  // Scrolled to the middle first: with the five mode choices open above it, the row lands under
+  // the phone's fixed tab bar, which would take the click.
+  const workToggle = async () => {
+    await page.$eval('[data-key=seat-toggle-seat_work]', (e) => e.scrollIntoView({ block: 'center' }));
+    await page.click('[data-key=seat-toggle-seat_work]');
+  };
+  await workToggle();
   await page.waitForSelector('[data-key=mode-unset-seat_work]', { timeout: 3000 }).catch(() => fail(t('an unchosen account has no highlighted line')));
-  await page.click('[data-key=seat-toggle-seat_work]');
+  await workToggle();
 
   // Usage and the picker, opened.
   await page.click('[data-key=rel-seat_personal] > summary');
