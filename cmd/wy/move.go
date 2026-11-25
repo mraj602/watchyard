@@ -1302,6 +1302,7 @@ func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mov
 		l.Message = w.humanMessage(cfg, l, t, mv, e.now())
 	}
 	log := filepath.Join(st.Dir, "logs", l.SessionID+".log")
+	launched := time.Now()
 	argv, err := mover.Execute(host, l, t, cfg.Account.MoveLaunch, note, log)
 	from := w.labelOfDir[l.Slot]
 	entry := mover.LogEntry{At: e.now(), SessionID: l.SessionID, Name: l.Name, From: w.keyOfDir[l.Slot], To: t.Key, FromDir: l.Slot, ToDir: t.Dir,
@@ -1310,6 +1311,16 @@ func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mov
 		entry.Error = err.Error()
 		_ = st.Append(entry)
 		return laneNotice{}, fmt.Errorf("move %s: %w", short(l.SessionID), err)
+	}
+	if l.Kind == mover.KindBackground {
+		// Claude Code may resume the session under a new id (live 2026-11-26): record it, or
+		// that it was not seen, instead of a bare success.
+		switch id := mover.AwaitResumed(host, l, t, launched); {
+		case id == "":
+			entry.Warn = "resumed session not seen on " + t.Label + "; see " + log
+		case id != l.SessionID:
+			entry.ResumedAs = id
+		}
 	}
 	_ = st.Append(entry)
 	protected := false

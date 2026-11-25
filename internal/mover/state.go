@@ -179,6 +179,10 @@ type LogEntry struct {
 	RateKnown bool     `json:"rate_known,omitempty"`
 	Argv      []string `json:"argv,omitempty"`
 	Error     string   `json:"error,omitempty"`
+	// ResumedAs: claude resumed a background session under this new session id (a fork); it
+	// goes on there. Warn: the move ran but the resumed session was not seen on the new account.
+	ResumedAs string `json:"resumed_as,omitempty"`
+	Warn      string `json:"warn,omitempty"`
 	// Recheck: the re-check after its step wait changed its destination (Move.Recheck).
 	Recheck string `json:"recheck,omitempty"`
 }
@@ -201,7 +205,12 @@ func (s State) Append(e LogEntry) error {
 }
 
 // Log returns the moves since since, oldest first (failed ones left out).
-func (s State) Log(since time.Time) []LogEntry {
+func (s State) Log(since time.Time) []LogEntry { return s.readLog(since, false) }
+
+// Failed returns the moves since since that failed (they carry an error), oldest first.
+func (s State) Failed(since time.Time) []LogEntry { return s.readLog(since, true) }
+
+func (s State) readLog(since time.Time, failed bool) []LogEntry {
 	f, err := os.Open(s.path("moves.jsonl"))
 	if err != nil {
 		return nil
@@ -212,7 +221,7 @@ func (s State) Log(since time.Time) []LogEntry {
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
 	for sc.Scan() {
 		var e LogEntry
-		if json.Unmarshal(sc.Bytes(), &e) == nil && e.Error == "" && !e.At.Before(since) {
+		if json.Unmarshal(sc.Bytes(), &e) == nil && (e.Error != "") == failed && !e.At.Before(since) {
 			out = append(out, e)
 		}
 	}

@@ -75,6 +75,11 @@ func (h *recHost) Start(dir string, argv []string, log string) error {
 	h.calls = append(h.calls, "start "+strings.Join(argv, " "))
 	return nil
 }
+func (h *recHost) StartWait(dir string, argv []string, log string, wait time.Duration) error {
+	h.calls = append(h.calls, "start "+strings.Join(argv, " "))
+	return nil
+}
+func (h *recHost) Resumed(l mover.Launch, to string, since time.Time) string { return l.SessionID }
 func (h *recHost) Order(pid int, o mover.RunOrder) error {
 	h.calls = append(h.calls, "order "+strconv.Itoa(pid))
 	return nil

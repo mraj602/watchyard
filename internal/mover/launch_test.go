@@ -107,6 +107,8 @@ type fakeHost struct {
 	copyUntil, stops int
 	// stopIgnored: claude stop does not end the process (an older claude).
 	stopIgnored bool
+	// resumed: the session id Resumed reports on the new account.
+	resumed string
 }
 
 func (h *fakeHost) rec(s string) error {
@@ -143,6 +145,10 @@ func (h *fakeHost) Tmux(args ...string) error { return h.rec("tmux " + strings.J
 func (h *fakeHost) Start(dir string, argv []string, log string) error {
 	return h.rec("start " + dir + ": " + strings.Join(argv, " ") + " > " + log)
 }
+func (h *fakeHost) StartWait(dir string, argv []string, log string, wait time.Duration) error {
+	return h.rec("start " + dir + ": " + strings.Join(argv, " ") + " > " + log)
+}
+func (h *fakeHost) Resumed(l Launch, to string, since time.Time) string { return h.resumed }
 func (h *fakeHost) Order(pid int, o RunOrder) error {
 	return h.rec("order " + strconv.Itoa(pid) + ": " + strings.Join(o.Argv, " "))
 }
@@ -163,7 +169,7 @@ func TestExecuteByKind(t *testing.T) {
 		{KindTmux, []string{"note s1", "tmux set-option -p -t %5 remain-on-exit on", "kill 42", "carry s1 /h/.claude-4 -> /h/.claude-2",
 			"tmux respawn-pane -k -t %5 -c /w bash -ic '" + cmd + "'", "tmux set-option -p -u -t %5 remain-on-exit"}},
 		{KindWrapped, []string{"note s1", "order 40: " + cmd, "kill 42"}},
-		{KindBackground, []string{"stop s1 in /h/.claude-4", "carry s1 /h/.claude-4 -> /h/.claude-2", "start /w: " + cmd + " --bg N" + PromptTail + " > "}},
+		{KindBackground, []string{"stop s1 in /h/.claude-4", "carry s1 /h/.claude-4 -> /h/.claude-2", "start /w: " + cmd + " --bg N" + PromptTail + " > /log"}},
 		{KindHeadless, []string{"kill 42", "carry s1 /h/.claude-4 -> /h/.claude-2", "start /w: env CLAUDE_CONFIG_DIR=/h/.claude-2 claude -p --model opus --resume s1 N" + PromptTail + " > /log"}},
 		// A plain terminal goes on as a background session; with no message nothing is written.
 		{KindTerminal, []string{"kill 42", "carry s1 /h/.claude-4 -> /h/.claude-2", "start /w: " + cmd + " --bg N" + PromptTail + " > "}},

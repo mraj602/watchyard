@@ -20,6 +20,15 @@ type Host interface {
 	Tmux(args ...string) error
 	// Start starts argv detached in dir, its output appended to log ("" discards it).
 	Start(dir string, argv []string, log string) error
+	// StartWait is Start for a launch command that hands the session to a supervisor and
+	// exits (claude --bg): its output goes to log, it waits up to wait for the command to end
+	// and returns its failure (exit status and the end of the log). A command still running
+	// after wait is left running and is not an error.
+	StartWait(dir string, argv []string, log string, wait time.Duration) error
+	// Resumed is the id of the live session on target config folder to that started at or
+	// after since in l's folder under l's name ("" none): claude may resume a session under a
+	// new id (a fork).
+	Resumed(l Launch, to string, since time.Time) string
 	// Order leaves the relaunch order for the `wy run` wrapper with pid wrapper.
 	Order(wrapper int, o RunOrder) error
 	// Note leaves the one-line move note for the session's SessionStart hook.
@@ -43,6 +52,14 @@ type Host interface {
 // Settle is how long a background move watches the old account for a copy its supervisor
 // restarted before it resumes the session elsewhere.
 var Settle = 5 * time.Second
+
+// LaunchWait is how long a background move waits for its launch command (claude --bg) to
+// end before it takes the launch as started; ResumeSeen is how long it then looks for the
+// resumed session on the new account.
+var (
+	LaunchWait = 30 * time.Second
+	ResumeSeen = 15 * time.Second
+)
 
 // AfterWatch is how long a background move goes on watching the old account once the session
 // runs on the new one: its supervisor restarted a job killed mid-turn 6 s after the resume
@@ -183,11 +200,15 @@ func Execute(h Host, l Launch, t Target, template, note, log string) ([]string, 
 		if err := h.Carry(l, t.Dir); err != nil {
 			return argv, fmt.Errorf("transcript: %w (copy it into %s/projects by hand, then: cd %s && %s)", err, t.Dir, Shell([]string{l.CWD}), Shell(argv))
 		}
-		lg := ""
+		var err error
 		if l.Kind == KindHeadless {
-			lg = log
+			err = h.Start(l.CWD, run, log)
+		} else {
+			// The launch's own output and exit status say whether the supervisor took the
+			// job (live 2026-11-26: it was discarded, a failed launch left no trace).
+			err = h.StartWait(l.CWD, run, log, LaunchWait)
 		}
-		if err := h.Start(l.CWD, run, lg); err != nil {
+		if err != nil {
 			return argv, fmt.Errorf("start: %w (start it by hand: cd %s && %s)", err, Shell([]string{l.CWD}), Shell(argv))
 		}
 		if l.Kind == KindBackground {
@@ -195,6 +216,22 @@ func Execute(h Host, l Launch, t Target, template, note, log string) ([]string, 
 		}
 	}
 	return argv, nil
+}
+
+// AwaitResumed looks for up to ResumeSeen for l's resumed session on t after a background
+// launch at since. id is its session id when it runs ("" when none was seen); a session id
+// other than l's means claude resumed it as a new session (a fork): its transcript and job
+// continue under that id (live 2026-11-26: 5c0f0b81 went on as 3c4dbb08).
+func AwaitResumed(h Host, l Launch, t Target, since time.Time) string {
+	for deadline := time.Now().Add(ResumeSeen); ; {
+		if id := h.Resumed(l, t.Dir, since); id != "" {
+			return id
+		}
+		if !time.Now().Before(deadline) {
+			return ""
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 // StopWait is how long stopOld waits for claude stop to end the session's process before it

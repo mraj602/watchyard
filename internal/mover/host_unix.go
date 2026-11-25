@@ -64,6 +64,71 @@ func (h RealHost) Start(dir string, argv []string, log string) error {
 	return cmd.Process.Release()
 }
 
+func (h RealHost) StartWait(dir string, argv []string, log string, wait time.Duration) error {
+	if err := os.MkdirAll(filepath.Dir(log), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = dir
+	cmd.Env = CleanEnv(os.Environ())
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdout, cmd.Stderr = f, f
+	off, _ := f.Seek(0, 2)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			return nil
+		}
+		return errors.New(err.Error() + logTail(log, off))
+	case <-time.After(wait):
+		return nil
+	}
+}
+
+// logTail is the end (at most 300 bytes) of what was written to log after offset off, as
+// ": text" ("" when nothing).
+func logTail(log string, off int64) string {
+	b, err := os.ReadFile(log)
+	if err != nil || int64(len(b)) <= off {
+		return ""
+	}
+	b = b[off:]
+	if len(b) > 300 {
+		b = b[len(b)-300:]
+	}
+	return ": " + strings.TrimSpace(string(b))
+}
+
+func (h RealHost) Resumed(l Launch, to string, since time.Time) string {
+	found := ""
+	for _, e := range peers.ReadRegistry(identity.OSFS{}, identity.Slot{Dir: to}) {
+		if e.PID <= 1 || e.SessionID == "" || e.CWD != l.CWD || e.StartedAt < since.UnixMilli() {
+			continue
+		}
+		if e.SessionID != l.SessionID && (l.Name == "" || e.Name != l.Name) {
+			continue
+		}
+		if st, err := h.Proc.StartTime(e.PID); err != nil || !peers.ProcStartMatches(e.ProcStartString(), st) {
+			continue
+		}
+		if e.SessionID == l.SessionID {
+			return e.SessionID
+		}
+		found = e.SessionID
+	}
+	return found
+}
+
 func (h RealHost) StopJob(dir, sid string) error {
 	bin := ClaudeBin(h.sessionExes(dir, sid)...)
 	run := func(args ...string) ([]byte, error) {

@@ -2477,8 +2477,13 @@ direct push only as the fallback.
 **Records.** `<state>/move/alerts.json`: the pin alerts (`at`, `session`, `name`, `account`,
 `window`, `hit_at`, `reset_at`, `rate`, `command`), each kept until its window resets.
 `<state>/move/moves.jsonl`: `{"at", "session_id", "from", "to", "from_dir", "to_dir",
-"kind", "auto", "reason", "argv", "error"}` per move (failed ones with `error`; `name` is the
-session's name when it has one). `<state>/move/notify.json`: the push cursor and the moves waiting
+"kind", "auto", "reason", "argv", "error", "resumed_as", "warn"}` per move (failed ones with
+`error`; `name` is the session's name when it has one). A background move waits up to 30 s for
+its `claude --bg` launch to end (output in `<state>/move/logs/<session>.log`); a non-zero exit is
+the move's `error`. It then looks up to 15 s for the resumed session in the new account's
+registry: `resumed_as` is its session id when Claude Code resumed it under a new id (a fork:
+the transcript and job go on under that id), `warn` says none was seen. The digest shows both
+and lists the failed moves. `<state>/move/notify.json`: the push cursor and the moves waiting
 for the next push. `<state>/move/digest.stamp`: the day the digest was last sent.
 `<state>/move/passes.jsonl`: each auto pass's projections per account (`at`, `accounts`: `key`,
 `label`, `protected`, `l5`, `l7`, `p5`, `p7`, `cap5`, `cap7`, `r5`, `reset7_s`, `window`,
