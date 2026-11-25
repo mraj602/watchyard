@@ -346,6 +346,8 @@ type moveWorld struct {
 	// sw is the switch state of the last auto pass (the spike filter, the notices).
 	sw       mover.SwitchState
 	warnings []string
+	// hubErr: why the hub could not be read this pass ("" when it was, or there is none).
+	hubErr string
 	// pins are the live pinned sessions by account key (they hold its reserve).
 	pins map[string][]string
 	// pinSet are the pins (Claude Code's jobs/pins.json, the only source); pinWarns
@@ -404,7 +406,12 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	}
 	src := picker.Sources{Machine: m.ID}
 	if !noHub {
-		if hd, herr := nextHub(e.nextEnv, cfg, slots, m.ID, now); herr != nil {
+		ne := e.nextEnv
+		if ne.hubTimeout == 0 {
+			ne.hubTimeout = moveHubTimeout
+		}
+		if hd, herr := nextHub(ne, cfg, slots, m.ID, now); herr != nil {
+			w.hubErr = herr.Error()
 			w.warnings = append(w.warnings, "hub not read: "+herr.Error())
 		} else if hd != nil {
 			src.Hub = hd
@@ -490,7 +497,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		t, loggedIn := w.targets[a.Key]
 		ma := mover.Account{Key: a.Key, Label: t.Label, Protected: a.Protected, Ratio: a.Ratio, Stale: a.Stale, LoggedIn: loggedIn,
 			Drain: drain[a.Key], W5: mover.Window{Level: a.FiveHour, Reset: a.FiveReset}, W7: mover.Window{Level: a.Weekly, Reset: a.WeeklyReset},
-			ReadAt: a.ReadingAt, DrainUntil: a.DrainUntil, Off: a.Off}
+			ReadAt: a.ReadingAt, Quiet: a.Quiet, DrainUntil: a.DrainUntil, Off: a.Off}
 		if ma.Label == "" {
 			ma.Label = a.Key
 		}

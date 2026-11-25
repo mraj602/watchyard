@@ -1941,9 +1941,36 @@ environment of another process is never read (keys.md 8).
   the level (live, pre6 05:37, the hub migrating: claude-4 read "5h 100%" from a reading 3 h 37
   min old, the meter since then ~87 points, while the account was at ~68%). Only its sessions
   stopped at a limit still move (their limit reply is fresh evidence). `--plan` says "data stale
-  (3 h 37 min), no moves". When it lasts over 30 minutes the pass alerts the owner once (a line
-  in its log and a push as the digest's: the hub's `switch_digest` alert, or direct push when
-  the hub is away); a new alert comes only when the set of stale accounts changes. An account
+  (3 h 37 min), no moves".
+
+  *Where readings come from.* An account's level is read from Claude Code's status line (each
+  render of an interactive session carries `rate_limits`; `wy statusline` keeps it locally and
+  sends it to the hub) and from claude.ai's usage page (`web`, read by the desktop app for the
+  accounts signed in there, about every 5 minutes). Headless sessions (`claude -p`, agents) have
+  no status line, so an account that only runs them, or runs nothing, is read only through
+  claude.ai; an account signed in to neither goes stale while idle (live 2026-11-25: claude-5's
+  newest reading 108 hours old). There is no supported way to read a level without a session's
+  status line or claude.ai (the usage endpoint needs the OAuth token, which Watchyard never reads).
+
+  *Quiet accounts.* With the hub read in the pass, an account on which nothing ran since its
+  reading (no live session on any machine, no running lane, no tokens since: `Account.Quiet`) is
+  not stale: its levels can only have held or fallen (a window that reset since counts as 0), so
+  the old reading is an upper bound, and it is a destination like any other.
+
+  *The hub not read.* A switch pass reads the hub within 20 seconds (`wy account next`: 5). When
+  that fails, it plans on this machine's own readings, usually hours old for accounts that run
+  only headless sessions (live 2026-11-25 20:06: the hub's hourly backup, 20:02:57 to 20:08:03,
+  slowed `GET /v1/usage` past 5 s and every pass in it saw claude-4 "7 h 38 min old").
+
+  *Alert.* The owner is told only when stale data held back a move this pass
+  (`Result.StaleBlocks`): a source over its cap with sessions on it, an account left out as the
+  destination of a session that found no other, or a draining account whose pull of a busy
+  burner was skipped; and only with data over 30 minutes old, at most once per account per 6
+  hours (`<state>/move/stale-alerts.json`). It is a line in the pass's log and a push as the
+  digest's (the hub's `switch_digest` alert, or direct push when the hub is away): "Smart Account
+  Switch held back a move on stale data: claude-5 (data 108 h 16 min old: left out as the
+  destination of a session that found no other). no new usage reading came in for it (…)"; it
+  says "the hub could not be read this pass (…)" only when this pass's hub read failed. An account
   with no reading time is not stale by this rule (the picker's own stale and unknown rules
   hold). For the picker with the switch on, an old sample's level neither blocks an aggressive
   account nor draws a lane: such an account is ranked after the accounts with fresh data, and

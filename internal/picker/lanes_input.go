@@ -672,6 +672,7 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		views[g.key] = cv
 		for _, i := range g.idxs {
 			acc.Live = acc.Live || cands[i].LiveSessions > 0
+			acc.HubRead = acc.HubRead || (!in.HubDown && cands[i].SeatID != "" && strings.HasPrefix(cands[i].Source, "hub"))
 		}
 		for sid, hs := range in.Outbox.Sessions {
 			if keyOf[sid] == g.key && !hs.Ended && now.Sub(hs.Last) <= hookLive {

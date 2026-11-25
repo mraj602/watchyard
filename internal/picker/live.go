@@ -33,6 +33,10 @@ type LiveAccount struct {
 	DrainUntil time.Time
 	// Off: the owner keeps it out (setup.md 8.5, Kind): the switch moves nothing in or out.
 	Off bool
+	// Quiet: the hub was read and nothing ran on it since its reading (no live session on any
+	// machine, no running lane, no tokens since): its levels can only have held or fallen, so the
+	// switch may use an old reading of it (setup.md 8.6, Stale data).
+	Quiet bool
 }
 
 // LiveLane is one running lane (a lease whose session runs): its burn over the last
@@ -74,6 +78,7 @@ func (in LaneInput) Live() ([]LiveAccount, []LiveLane) {
 		if !c.noTS {
 			la.ReadingAt = c.ts
 		}
+		la.Quiet = a.HubRead && !a.Live && !c.noTS && !running(in.Leases, a.Key)
 		accs = append(accs, la)
 		f5[a.Key] = pa.F5
 	}
@@ -90,4 +95,14 @@ func (in LaneInput) Live() ([]LiveAccount, []LiveLane) {
 		lanes = append(lanes, LiveLane{Key: L.Key, SID: L.SID, T0: L.T0, Rate: r, Measured: L.RecentOK, Expect: L.Expect, ExpectEnd: L.ExpectEnd})
 	}
 	return accs, lanes
+}
+
+// running reports whether a lane of the account runs (launched, not ended).
+func running(ls []LaneLease, key string) bool {
+	for _, L := range ls {
+		if L.Key == key && L.Launched && !L.Ended {
+			return true
+		}
+	}
+	return false
 }

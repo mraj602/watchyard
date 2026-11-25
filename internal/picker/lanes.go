@@ -247,6 +247,9 @@ type LaneAccount struct {
 	WebStale bool
 	// Live: a session of the account is running (it ran since the reading).
 	Live bool
+	// HubRead: its data came from the hub this run (a seat matched, the hub answered), so Live
+	// knows the sessions of every machine.
+	HubRead bool
 	// Limit7d and Limit5h replace the weekly limit (aggressive) or target (protected) and the
 	// 5-hour limit (aggressive) or floor (protected); 0 keeps the parameter.
 	Limit7d, Limit5h float64

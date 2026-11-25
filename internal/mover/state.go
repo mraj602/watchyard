@@ -401,3 +401,30 @@ func (s State) Rechecks(since time.Time) []RecheckEntry {
 	}
 	return out
 }
+
+// StaleAlertDue returns the keys not alerted about within every (<state>/move/stale-alerts.json)
+// and records them as alerted at now: a stale-data alert at most once per account per every.
+func (s State) StaleAlertDue(keys []string, now time.Time, every time.Duration) []string {
+	p := s.path("stale-alerts.json")
+	last := map[string]time.Time{}
+	if b, err := os.ReadFile(p); err == nil {
+		_ = json.Unmarshal(b, &last)
+	}
+	var due []string
+	for _, k := range keys {
+		if t, ok := last[k]; ok && now.Sub(t) < every && !t.After(now) {
+			continue
+		}
+		due = append(due, k)
+		last[k] = now
+	}
+	for k, t := range last {
+		if now.Sub(t) > 7*24*time.Hour {
+			delete(last, k)
+		}
+	}
+	if len(due) > 0 {
+		_ = s.write(p, last)
+	}
+	return due
+}

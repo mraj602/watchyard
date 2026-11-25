@@ -89,9 +89,32 @@ test('golden: switch notices (push.md 3.9): the machine, the hub title without i
   );
   assert.deepEqual(
     notifyText({ alert: { id: 'w2', trigger: 'switch_digest', machine: 'mc1' } }),
-    { title: 'mc1', body: 'switch digest', route: '#/machines?machine=mc1' },
+    { title: 'Smart Account Switch', body: 'switch digest', route: '#/machines?machine=mc1' },
   );
   assert.equal(notifyText({ alert: { id: 'w3', trigger: 'session_moved' } }).title, 'Smart Account Switch');
+});
+
+// 2026-11-25 21:58: the title showed the machine id and the body only "mraj602 · Switch digest".
+test('switch and drain notices: the machine name from the hub title, never the id, and the hub message', () => {
+  const id = 'm_01M4ZZ1035J482MZDTAFRX0NX1';
+  assert.deepEqual(
+    notifyText({ alert: { id: 'w4', trigger: 'switch_digest', machine: id, title: 'mraj602 · Switch digest',
+      body: '  Last 24h: 4 moves, 1 limit hits\n weekly room: claude-4 12% ' } }),
+    { title: 'mraj602', body: 'Switch digest\nLast 24h: 4 moves, 1 limit hits weekly room: claude-4 12%', route: `#/machines?machine=${id}` },
+  );
+  const moved = notifyText({ alert: { id: 'w5', trigger: 'session_moved', machine: id, title: 'worker · Moved a session', body: 'api claude-2 -> claude-4: 5h 96% >= 95' } });
+  assert.equal(moved.title, 'worker');
+  assert.equal(moved.body, 'Moved a session\napi claude-2 -> claude-4: 5h 96% >= 95');
+  const pulled = notifyText({ alert: { id: 'd1', trigger: 'drain_pulled', machine: id, title: 'worker · Pulled 2 sessions into a draining account', body: '2 moves: a x->y; b x->y' } });
+  assert.deepEqual(pulled, { title: 'worker', body: 'Pulled 2 sessions into a draining account\n2 moves: a x->y; b x->y', route: `#/machines?machine=${id}` });
+  const started = notifyText({ alert: { id: 'd2', trigger: 'drain_started', seat: 'st4', title: 'claude-4 · draining until 18:00', body: 'New sessions go to it first' }, seat: { id: 'st4', label: 'claude-4' } });
+  assert.deepEqual(started, { title: 'claude-4', body: 'draining until 18:00\nNew sessions go to it first', route: '#/accounts?seat=st4' });
+  const ended = notifyText({ alert: { id: 'd3', trigger: 'drain_ended', seat: 'st4', title: 'claude-4 · drain ended', body: 'Its week reached 97%; back to its usual mode' } });
+  assert.equal(ended.title, 'claude-4');
+  assert.equal(ended.body, 'drain ended\nIts week reached 97%; back to its usual mode');
+  for (const n of [moved, pulled, started, ended]) assert.ok(!n.title.includes('m_01'), n.title);
+  // A long message is cut to the body limit.
+  assert.ok(notifyText({ alert: { id: 'w6', trigger: 'switch_digest', title: 'a · Switch digest', body: 'x'.repeat(400) } }).body.length <= 180);
 });
 
 test('title falls back from label to the email local part to Unattributed', () => {

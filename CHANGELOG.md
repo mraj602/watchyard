@@ -178,6 +178,16 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **Stale-data alerts only when they matter** (setup.md 8.6, Stale data). The switch told the
+  owner "moves nothing off or onto … (is the hub reachable?)" whenever an account's reading was
+  old, every hour for idle accounts. It now alerts only when stale data held back a move (a
+  source over its cap, a session with no other destination, a drain's pull), at most once per
+  account per 6 hours, and names the hub only when that pass's hub read failed. An account on
+  which nothing ran since its reading is no longer stale (its level can only have held or
+  fallen). A switch pass waits 20 s for the hub (was 5 s): the hub's hourly backup slowed
+  `GET /v1/usage` past 5 s, and those passes saw every account stale.
+- **Desktop notifications of switch and drain notices** name the machine (not its id) and show
+  the hub's message (the moves, the digest's summary) under the title.
 - **A moved session is not a new one** (setup.md 8.6, Young sessions). Its age is its first
   lease in the ledger, not its last move's, and its burn counts on its new account at once:
   live 54c4e1e8, moved onto claude-6 at 10:35, stayed "under 15 min old" while claude-6 was
