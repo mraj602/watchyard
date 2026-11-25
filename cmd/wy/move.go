@@ -147,8 +147,11 @@ func moveCmd(e moveEnv, args []string) error {
 			return "~/" + filepath.Base(dir)
 		}
 		for _, x := range es {
-<<<<<<< HEAD
-			line := fmt.Sprintf("%s  %s  %s -> %s  %s  %s", x.At.Local().Format("01-02 15:04"), short(x.SessionID), name(x.FromDir, x.From), name(x.ToDir, x.To), x.Kind, x.Reason)
+			reason := x.Reason
+			if x.Recheck != "" {
+				reason += " (" + x.Recheck + ")"
+			}
+			line := fmt.Sprintf("%s  %s  %s -> %s  %s  %s", x.At.Local().Format("01-02 15:04"), short(x.SessionID), name(x.FromDir, x.From), name(x.ToDir, x.To), x.Kind, reason)
 			if x.Error != "" {
 				line += "  FAILED: " + x.Error
 			}
@@ -156,13 +159,6 @@ func moveCmd(e moveEnv, args []string) error {
 		}
 		if len(es) == 0 {
 			fmt.Fprintf(e.stdout, "No moves in the last %s.\n", *since)
-=======
-			reason := x.Reason
-			if x.Recheck != "" {
-				reason += " (" + x.Recheck + ")"
-			}
-			fmt.Fprintf(e.stdout, "%s  %s  %s -> %s  %s  %s\n", x.At.Local().Format("01-02 15:04"), short(x.SessionID), name(x.FromDir, x.From), name(x.ToDir, x.To), x.Kind, reason)
->>>>>>> origin/feat/smart-switch-v2
 		}
 		printPinRows(e.stdout, pins)
 		for _, x := range warns {
