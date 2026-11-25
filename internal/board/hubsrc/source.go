@@ -66,8 +66,9 @@ type Options struct {
 	// WarpColour maps a seat colour to Warp's colour name; nil is board's built-in table.
 	// wy passes internal/warp's, the table the tab configs use.
 	WarpColour func(hex string) string
-	// Drains: board.Options.Drains.
+	// Drains and Offs: board.Options.Drains and Offs.
 	Drains func() map[string]time.Time
+	Offs   func() map[string]bool
 	// Loc is the zone of the reset times shown; nil is time.Local.
 	Loc *time.Location
 	// Now, Backoff, PingTimeout and FetchTimeout are test seams (zero: the T3 values).
@@ -289,7 +290,7 @@ func (s *Source) compose(st *state) (board.View, bool) {
 		hub.OfflineSince = nil
 		v := s.o.Build(BuildInput{
 			Now: now, Loc: s.o.Loc, Machine: s.o.Machine, ThisSession: s.o.ThisSession, Hub: hub, Source: board.SourceHub,
-			IncludeEnded: s.o.IncludeEnded, WarpColour: s.o.WarpColour, Drains: s.o.Drains,
+			IncludeEnded: s.o.IncludeEnded, WarpColour: s.o.WarpColour, Drains: s.o.Drains, Offs: s.o.Offs,
 			Seats: st.seats, Sessions: st.sessions, MachineCount: len(liveMachines(st.ov)),
 		})
 		st.lastHub, st.unsaved = &v, true
@@ -326,7 +327,7 @@ func (s *Source) compose(st *state) (board.View, bool) {
 // boardOptions are the builder options of this source at now.
 func (s *Source) boardOptions(now time.Time) board.Options {
 	return board.Options{Now: now, Loc: s.o.Loc, Machine: s.o.Machine, SessionID: s.o.ThisSession,
-		IncludeEnded: s.o.IncludeEnded, WarpColour: s.o.WarpColour, Drains: s.o.Drains}
+		IncludeEnded: s.o.IncludeEnded, WarpColour: s.o.WarpColour, Drains: s.o.Drains, Offs: s.o.Offs}
 }
 
 func (s *Source) maybeSave(st *state, now time.Time, force bool) {

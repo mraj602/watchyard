@@ -97,6 +97,10 @@ export const notifications = {
     notificationsState.channels.set(id, ch);
     return ch;
   },
+  async openChannelSettingsAsync(id: string) {
+    rec('notifications.openChannelSettingsAsync', [id]);
+    return true;
+  },
   async setNotificationCategoryAsync(id: string, actions: unknown, options?: unknown) {
     rec('notifications.setNotificationCategoryAsync', [id, actions, options]);
     notificationsState.categories.set(id, actions);

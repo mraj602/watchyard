@@ -13,7 +13,7 @@ do anything: snooze and seen change only the hub's own alert rows.
 
 | Word | Meaning |
 | --- | --- |
-| **Trigger** | A kind of condition: `needs_permission`, `asked`, `failed`, `limit_80`, `limit_95`, `reset`, `machine_silent`, the usage notices `limit_change`, `usage_reset`, `seat_change`, `weekly_drop`, and the switch notices `session_moved`, `switch_digest` (3.9). |
+| **Trigger** | A kind of condition: `needs_permission`, `asked`, `failed`, `limit_80`, `limit_95`, `reset`, `machine_silent`, the usage notices `limit_change`, `usage_reset`, `seat_change`, `weekly_drop`, the switch notices `session_moved`, `switch_digest`, and the drain notices `drain_started`, `drain_ended`, `drain_pulled` (3.9). |
 | **Rule** | Whether, and after how long, a trigger notifies, for which seats/projects/machines/windows. Global, owned by the owner (section 3). |
 | **Episode** | One continuous occurrence of a condition: one session sitting in one needs-you state, one window instance crossing 80%, one silence of one machine. Identified by its **episode key** (3.2). |
 | **Alert** | The hub's row for one episode (`alert` table): due time, status, snooze, seen. At most one per episode (unique key): this is the dedupe. |
@@ -74,6 +74,9 @@ it.
 | `weekly_drop` | seat | the weekly use dropped more than 10 points without a reset, and it is not a `usage_reset` (3.9) | on, delay 0 | as above |
 | `session_moved` | machine | the machine's Smart Account Switch moved sessions on its own and sent a `switch_notice` record (3.9; at most one per 5 minutes per machine) | on, delay 0 | as above |
 | `switch_digest` | machine | the machine sent its daily switch digest as a `switch_notice` record (3.9) | on, delay 0 | as above |
+| `drain_started` | seat | the owner set the seat's hub drain (`seat.drain_until`, setup.md 8.5 Owner drain) and it has not ended (3.9) | on, delay 0 | as above |
+| `drain_ended` | seat | the drain reached its `drain_until` (`time`) or the seat's weekly peak reached 97 % (`aim`; the hub clears `drain_until`) (3.9) | on, delay 0 | as above |
+| `drain_pulled` | machine | the machine's switch pulled sessions into a draining account and sent a `switch_notice` record with trigger `drain_pulled` (3.9; batched like `session_moved`) | on, delay 0 | as above |
 
 Not triggers (by design): "turn finished" (board only) and "context 90%"
 (reserved).
@@ -97,6 +100,9 @@ sends exactly one push" also holds for a window that jumps straight past 95%.
 | `weekly_drop` | `w:<seat id>:<weekly resets_at ms>:<ms of the first low reading>` |
 | `session_moved` | `sw:<machine id>:m:<ms of the batch's first move>` (the record's `episode` behind the machine id) |
 | `switch_digest` | `sw:<machine id>:d:<the machine's local day YYYY-MM-DD>` |
+| `drain_started` | `d:<seat id>:<drain_until ms>:on` (a new end time is a new drain) |
+| `drain_ended` | `d:<seat id>:<drain_until ms>:end` |
+| `drain_pulled` | `sw:<machine id>:p:<ms of the batch's first pull>` |
 
 - `since_at` moves only when the *state* changes (states.md 3), so a second
   `permission_prompt`, a `PermissionRequest` for the same prompt, or a second StopFailure
@@ -394,6 +400,21 @@ was already pushed by the machine's direct push because it could not reach the h
 5): its alert is kept for the board and the phone's list but created `skipped` with reason
 `direct`, and nothing is sent. A hub older than this ignores the kind (stored untyped).
 
+**Drain notices** (`drain_started`, `drain_ended`, `drain_pulled`; schema v25). A drain set on the
+hub (`seat.drain_until`, written by `PATCH /v1/accounts/{seat}`, `PUT /v1/accounts/{seat}/drain`
+or `wy account drain`) is shared by every machine (setup.md 8.5, Owner drain). The scheduler's
+sweep (3.6, every 60 s) reads the seats with a drain: while `drain_until` is in the future and
+the seat's weekly peak is under 97 %, it hands a `drain_started` notice (once per drain, by its
+episode); when `drain_until` has passed, or the weekly peak reached 97 % (the drain aim), it
+clears `drain_until` (only if it was not changed meanwhile) and hands a `drain_ended` notice
+with detail `time` or `aim`. A drain the owner turns off by hand ends without a notice. Subject:
+the seat. `drain_pulled` comes from a machine like `session_moved`: the machine's switch keeps
+the moves that pulled a session into a draining account (reason `pulled in: …`) apart from its
+other moves and sends them as their own `switch_notice` (trigger `drain_pulled`, episode
+`p:<ms>`, batched at most once per 5 minutes); the subject is the machine. All three follow the
+timing and life above, have the rules `rule_drain_started`, `rule_drain_ended`,
+`rule_drain_pulled` (on) and go to the Drain category (5.4).
+
 ## 4. Alert lifecycle
 
 | Status | Meaning | `due_at` |
@@ -520,10 +541,30 @@ with no device (an ntfy topic the owner added) use `push_target.prefs`.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `mute` | `[]` | Triggers this device does not receive. A device cannot receive a trigger whose rule is off. |
+| `mute_categories` | `[]` | Categories (below) this device does not receive at all: a trigger of a muted category is skipped with reason `muted` like a muted trigger. Unknown names are a 400. |
 | `quiet_hours` | `null` | `null` = follow the hub; an object = this device's own (5.2). |
 | `private` | `null` | `null` = hub default; `true`/`false` overrides (5.5). |
 | `tap` | `"auto"` | What tapping a push opens: `session` (the web app's session page), `claude` (the Remote Control link when there is one), `auto` (session page if the hub answers within 1.5 s, else the Remote Control link; pwa.md 5). |
 | `tz` | `null` | Time zone for times in push text ("resets 17:00"). The web app sends `Intl.DateTimeFormat().resolvedOptions().timeZone` when it registers. |
+
+**Categories and channels.** Every trigger belongs to one category; the payload carries the
+category (`category`) and the Android channel it goes to (`channel`, phone.md P6.1), so the
+phone can give each its own sound and the owner can turn a whole category off per device:
+
+| Category | Triggers | Android channel |
+| --- | --- | --- |
+| `sessions` | `needs_permission`, `asked`, `failed`, summaries | `wy_needs_you` |
+| `limits` | `limit_80`, `limit_95`, `reset` | `wy_limits` |
+| `switch` | `session_moved`, `switch_digest` | `wy_switch` |
+| `drain` | `drain_started`, `drain_ended`, `drain_pulled` | `wy_drain` |
+| `usage` | `limit_change`, `usage_reset`, `seat_change`, `weekly_drop` | `wy_usage` |
+| `machines` | `machine_silent` | `wy_machines` |
+| `test` | test pushes (never muted) | `wy_test` |
+
+A category off (`mute_categories`) means nothing of it is sent to that device; sound,
+vibration and the lock screen are set per channel in Android's own settings (the phone's
+Notifications screen opens the channel's page). ntfy has no custom channels: the ntfy app
+files messages by priority (7.2), and only `mute_categories` applies.
 
 The phone's Alerts screen (`PhoneAlerts`) shows the rule list with the global delays
 read-only and a switch per trigger that edits `mute`; the owner's board shows the same list
@@ -554,6 +595,9 @@ to fit (title 80, body 180 characters, with `…`).
 | `weekly_drop` | `work · 7-day dropped 64% → 31%` | "Something changed, check · no reset (resets Thu 09:00)" |
 | `session_moved` | `gpu-box · Moved a session` (`Moved 3 sessions`) | The machine's text: "api ~/.claude -> ~/.claude-2: 5h 96% >= 95", or "3 moves: a x->y; b ..." |
 | `switch_digest` | `gpu-box · Switch digest` | The digest's summary: "Last 24h: 4 moves, 1 limit hits ..." |
+| `drain_started` | `claude-4 · draining until 18:00` | "New sessions go to it first and busy ones are pulled in, up to 97% of its week" |
+| `drain_ended` | `claude-4 · drain ended` | `aim`: "Its week reached 97%; back to its usual mode"; `time`: "Its end time came at 64% of its week; back to its usual mode" |
+| `drain_pulled` | `gpu-box · Pulled a session into a draining account` (`Pulled 2 sessions …`) | The machine's text of the pulls |
 | snooze re-push | as the trigger, title prefixed `Still waiting · 19 min · ` | as the trigger |
 | summary | `3 sessions need you` | up to four `work · api — asked` lines, then `+2 more` |
 
@@ -563,7 +607,8 @@ allowed; otherwise the generic body is used.
 **Private pushes** (`prefs.private` or hub default) replace title and body with:
 "Watchyard" / "1 session needs you" (session triggers), "N sessions need you" (summary),
 "An account is near its limit" (limits), "A limit has reset", "A machine went quiet",
-"Account usage changed" (usage notices). The
+"Account usage changed" (usage notices), "A session moved to another account", "An account is
+draining", "An account's drain ended", "Sessions moved to a draining account". The
 deep link becomes `/#/alerts/<alert id>`, which the web app resolves after it has loaded
 (pwa.md 3), so neither the text nor the link names a project, account or session.
 
@@ -760,6 +805,7 @@ holds the Go type.
 
 | Field | Meaning |
 | --- | --- |
+| `category` / `channel` | The trigger's category and Android channel id (5.4); absent from a hub before v25. |
 | `type` | `alert`, `summary` or `test`; `refresh` only in a link `refresh` frame (13.5: never shown, not this object's other fields). |
 | `alert` / `alerts` | The alert (for `summary`: the first) and the alerts in the push, at most 20 ids: a larger summary lists the first ones (and fewer if the payload would not fit 3 000 bytes); the app refetches the list. |
 | `tag` | Notification tag: `wy-s-<session>`, `wy-l-<seat>-<window>`, `wy-r-<seat>-<window>`, `wy-m-<machine>`, `wy-u-<trigger>-<seat or model>`, `wy-summary`, `wy-test`. The same tag replaces the earlier notification. |
@@ -846,7 +892,7 @@ UTF-8 titles intact:
 - Priority: 4 for session triggers, `limit_95` and summaries; 3 for `limit_80` and
   `machine_silent`; 2 for `reset` and the usage notices. Tags (ntfy emoji): `lock`
   (permission), `question` (asked), `rotating_light` (failed), `warning` (limits), `zzz`
-  (silent), `bar_chart` (usage notices), `bell` (summary).
+  (silent), `bar_chart` (usage notices), `hourglass_flowing_sand` (drain notices), `bell` (summary).
 - Private: title and body as 5.5, `click` = `/#/alerts/<id>` deep link, no Remote Control
   action (ntfy sees the text, unlike Web Push), Snooze and Seen kept. Their URLs reveal the hub's host name and a
   24-hour action token to the ntfy server (a leaked token can only snooze or mark that one alert seen, 24 hours); that is the price of
@@ -1202,6 +1248,8 @@ moves; "expect" lists sends and final alert status.
 | 52 | Switch notice | a machine sends a `switch_notice` (`session_moved`, 2 moves); a device mutes `session_moved` | One low-urgency push to the other targets, linked to `/#/machines?machine=<id>`, tag `wy-u-session_moved-<machine>`; the muted device's delivery `skipped` / `muted`; the same record again is one alert; a `switch_digest` is its own alert |
 | 53 | Switch notice sent direct | `switch_notice` with `direct: true` | `skipped` / `direct`, nothing sent |
 | 54 | Switch notice rule off | `session_moved` rule disabled | `skipped` / `rule_off` |
+| 55 | Drain notices | the owner drains a seat until 4 h from now; later its week reaches 97 % | One `drain_started` (category `drain`, channel `wy_drain`), none to a device with `mute_categories: ["drain"]`; then one `drain_ended` (`aim`) and `drain_until` cleared; a drain whose time passed ends with `time` |
+| 56 | Categories | a `session_moved` and a `drain_pulled` notice; a device mutes the `drain` category | `session_moved` on `wy_switch` to both; `drain_pulled` on `wy_drain` only to the other |
 
 The detectors of 3.9 are pure (`internal/calib`, `watch.go`) and get table tests on synthetic
 series: a server or owner reset (5-hour and weekly to 0 with the same weekly `resets_at`, three

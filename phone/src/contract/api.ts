@@ -50,7 +50,13 @@ export type Trigger =
   | 'seat_change'
   | 'weekly_drop'
   | 'session_moved'
-  | 'switch_digest';
+  | 'switch_digest'
+  | 'drain_started'
+  | 'drain_ended'
+  | 'drain_pulled';
+
+/** Notification categories (push.md): each has its own Android channel; a device can mute any of them. */
+export type NotifyCategory = 'sessions' | 'limits' | 'switch' | 'drain' | 'usage' | 'machines';
 
 /** api.yaml AlertBrief. */
 export interface AlertBrief {
@@ -164,7 +170,8 @@ export interface Window {
 }
 
 /** api.yaml Seat.mode: the picker's use of an account. */
-export type PickMode = 'protected' | 'aggressive';
+/** `off` is stricter than protected: never picked, nothing moved in; sessions already there stay. */
+export type PickMode = 'protected' | 'aggressive' | 'off';
 
 /** api.yaml SeatPatch: what PATCH /v1/accounts/{seat} takes (owner only). A missing key leaves the field; `mode: null` is not chosen. */
 export interface SeatPatch {
@@ -173,6 +180,8 @@ export interface SeatPatch {
   order?: number;
   hidden?: boolean;
   mode?: PickMode | null;
+  /** Drain until this time (RFC 3339, in the future), or null to stop; refused with mode `off`. */
+  drain_until?: Iso | null;
 }
 
 /** api.yaml Seat (an account card). */
@@ -188,6 +197,8 @@ export interface Seat {
   order?: number;
   /** How `wy account next` uses the account, the same on every machine (setup.md 8.5 Kind); null or missing: not chosen, treated as aggressive. */
   mode?: PickMode | null;
+  /** Draining (used up first) until this time; non-null only while in the future. */
+  drain_until?: Iso | null;
   hidden?: boolean;
   windows?: Window[];
   live_sessions?: number;
@@ -263,6 +274,8 @@ export type TapMode = 'auto' | 'session' | 'claude';
 /** api.yaml DevicePrefs (push.md 5.4); `widgets` turns widget refresh frames over the link on. */
 export interface DevicePrefs {
   mute?: Trigger[] | string[];
+  /** Categories this device does not get at all (the hub does not send them); missing: none muted. */
+  mute_categories?: NotifyCategory[] | string[];
   quiet_hours?: QuietHours | null;
   private?: boolean | null;
   tap?: TapMode;

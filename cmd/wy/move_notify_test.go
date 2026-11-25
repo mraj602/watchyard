@@ -118,6 +118,38 @@ func TestMoveNoticesPush(t *testing.T) {
 	}
 }
 
+// Pulls into an owner-drained account go out as their own drain_pulled batch (the Drain
+// channel); the other moves of the same batch stay session_moved (push.md 3.9).
+func TestMoveNoticesSplitPulls(t *testing.T) {
+	f := newNextFixture(t)
+	st := mover.NewState(f.dirs.State.Path)
+	t0 := time.Date(2026, 11, 24, 14, 0, 0, 0, time.UTC)
+	cfg := config.Defaults()
+	var got []record.SwitchNoticePayload
+	o := moveOut{Hub: func(p record.SwitchNoticePayload) error { got = append(got, p); return nil }}
+	if err := runMoveNotices(context.Background(), f.dirs, cfg, t0, o); err != nil {
+		t.Fatal(err)
+	}
+	for i, r := range []string{"5h over", "pulled in: claude-4 is draining (owner, until 18:00) and has room", "pulled in: claude-4 is draining"} {
+		if err := st.Append(mover.LogEntry{At: t0.Add(time.Duration(i+1) * time.Minute), SessionID: fmt.Sprint("s", i), Name: fmt.Sprint("s", i),
+			FromDir: "/h/.claude-a", ToDir: "/h/.claude-b", Auto: true, Reason: r}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runMoveNotices(context.Background(), f.dirs, cfg, t0.Add(10*time.Minute), o); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("payloads %+v", got)
+	}
+	if got[0].Trigger != record.SwitchNoticeMoved || got[0].Moves != 1 || !strings.HasPrefix(got[0].Episode, "m:") {
+		t.Errorf("moved %+v", got[0])
+	}
+	if got[1].Trigger != record.SwitchNoticePulled || got[1].Moves != 2 || !strings.HasPrefix(got[1].Episode, "p:") {
+		t.Errorf("pulled %+v", got[1])
+	}
+}
+
 func TestMoveDigestPush(t *testing.T) {
 	day := time.Date(2026, 11, 24, 0, 0, 0, 0, time.Local)
 	for _, c := range []struct {

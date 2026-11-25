@@ -9,11 +9,13 @@
 // run in wy-link's ActionReceiver. So no notification response ever reaches JS on Android.
 import { requireOptionalNativeModule } from 'expo';
 import { Platform } from 'react-native';
+import { ANDROID_CHANNELS } from '../../src/contract/constants';
 
 type Permission = { granted: boolean; status: 'granted' | 'denied' | 'undetermined'; canAskAgain: boolean };
 
 type Native = {
   setChannel(id: string, name: string, importance: number): Promise<void>;
+  openChannelSettings(channelId: string): Promise<void>;
   getPermission(): Promise<Permission>;
   requestPermission(): Promise<Permission>;
   setBadgeCount(n: number): Promise<boolean>;
@@ -35,6 +37,18 @@ const UNKNOWN: Permission = { granted: false, status: 'undetermined', canAskAgai
 export async function setNotificationChannelAsync(id: string, channel: { name: string; importance: number }): Promise<null> {
   await native?.setChannel(id, channel.name, channel.importance);
   return null;
+}
+
+/**
+ * Opens Android's settings page for one of the P6.1 channels (sound, importance), creating the
+ * channel first when it does not exist yet. False where there is no native module (iOS, Expo Go).
+ */
+export async function openChannelSettingsAsync(id: string): Promise<boolean> {
+  if (!native) return false;
+  const ch = ANDROID_CHANNELS.find((c) => c.id === id);
+  if (ch) await native.setChannel(ch.id, ch.name, AndroidImportance[ch.importance]);
+  await native.openChannelSettings(id);
+  return true;
 }
 
 /**

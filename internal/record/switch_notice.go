@@ -15,6 +15,9 @@ const KindSwitchNotice = "switch_notice"
 const (
 	SwitchNoticeMoved  = "session_moved"
 	SwitchNoticeDigest = "switch_digest"
+	// SwitchNoticePulled: sessions pulled into an owner-drained account (setup.md 8.6, Owner
+	// drain), batched like session_moved.
+	SwitchNoticePulled = "drain_pulled"
 )
 
 // Bounds of a switch_notice payload.
@@ -40,7 +43,7 @@ type SwitchNoticePayload struct {
 
 // Validate checks the fields record.md 4.12 requires.
 func (p SwitchNoticePayload) Validate() error {
-	if p.Trigger != SwitchNoticeMoved && p.Trigger != SwitchNoticeDigest {
+	if p.Trigger != SwitchNoticeMoved && p.Trigger != SwitchNoticeDigest && p.Trigger != SwitchNoticePulled {
 		return fmt.Errorf("switch_notice: bad trigger %q", p.Trigger)
 	}
 	if p.Episode == "" || len(p.Episode) > SwitchNoticeMaxEpisode {
@@ -49,7 +52,7 @@ func (p SwitchNoticePayload) Validate() error {
 	if _, err := time.Parse(time.RFC3339, p.SinceAt); err != nil {
 		return fmt.Errorf("switch_notice: bad since_at")
 	}
-	if p.Moves < 0 || p.Moves > SwitchNoticeMaxMoves || (p.Trigger == SwitchNoticeMoved && p.Moves < 1) {
+	if p.Moves < 0 || p.Moves > SwitchNoticeMaxMoves || ((p.Trigger == SwitchNoticeMoved || p.Trigger == SwitchNoticePulled) && p.Moves < 1) {
 		return fmt.Errorf("switch_notice: bad moves %d", p.Moves)
 	}
 	if p.Text == "" || len(p.Text) > SwitchNoticeMaxText || !utf8.ValidString(p.Text) {

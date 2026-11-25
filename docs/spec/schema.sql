@@ -34,6 +34,8 @@
 --   v22 session.moved_from_seat/moved_at, session_move (identity.md 5.3: a session moved to another account).
 --   v23 the switch-notice base rules session_moved and switch_digest (push.md 3.9; record.md 4.12).
 --   v24 switch_move: the Smart Account Switch log, one row per move (record.md 4.13; setup.md 8.6 Switch log).
+--   v25 seat.pick_off, seat.drain_until and the drain-notice base rules (setup.md 8.5, Kind and
+--       Owner drain; push.md 3.9).
 --
 -- Conventions
 --   * Times are INTEGER milliseconds since the Unix epoch, UTC (`*_at`, `ts`).
@@ -58,7 +60,7 @@ CREATE TABLE schema_version (
 ) STRICT;
 
 INSERT INTO schema_version (version, applied_at, wy_version)
-VALUES (24, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
+VALUES (25, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
 
 -- Hub-wide settings that are not secrets (retention days, last-message policy, …).
 CREATE TABLE setting (
@@ -110,7 +112,7 @@ CREATE TABLE seat (
   sort_order    INTEGER NOT NULL DEFAULT 0,
   hidden        INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0, 1)),
   track_web     INTEGER NOT NULL DEFAULT 1 CHECK (track_web IN (0, 1)),
-  created_at    INTEGER NOT NULL, look_src TEXT CHECK (look_src IS NULL OR look_src IN ('ui', 'slot', 'import')), pick_mode TEXT CHECK (pick_mode IS NULL OR pick_mode IN ('protected', 'aggressive')), pick_mode_src TEXT CHECK (pick_mode_src IS NULL OR pick_mode_src IN ('ui', 'slot')),
+  created_at    INTEGER NOT NULL, look_src TEXT CHECK (look_src IS NULL OR look_src IN ('ui', 'slot', 'import')), pick_mode TEXT CHECK (pick_mode IS NULL OR pick_mode IN ('protected', 'aggressive')), pick_mode_src TEXT CHECK (pick_mode_src IS NULL OR pick_mode_src IN ('ui', 'slot')), pick_off INTEGER NOT NULL DEFAULT 0 CHECK (pick_off IN (0, 1)), drain_until INTEGER,
   UNIQUE (account_uuid, org_uuid)
 ) STRICT;
 -- sort_order: the display position (`order` on Seat). PUT /v1/seats/order puts the listed seats
@@ -123,6 +125,10 @@ CREATE TABLE seat (
 -- applied only while pick_mode and pick_mode_src are both NULL: nobody has chosen). Added by
 -- migration 0020 (ALTER TABLE ADD COLUMN), so the columns sit on the created_at line, as
 -- SQLite writes them.
+-- pick_off, drain_until: v25 (setup.md 8.5, Kind and Owner drain). pick_off 1: the account
+-- is Off (never picked, nothing moved into it; pick_mode kept for when it is on again).
+-- drain_until: the owner's drain end (ms), NULL when not draining; the alert engine clears it
+-- when the drain ends. Added by migration 0024, on the created_at line too.
 -- look_src: v5 (desktop.md C10). Who set label and colour last: 'ui' (PATCH /v1/accounts/{seat}),
 -- 'slot' (slot_info; applies only while look_src is NULL or 'slot'), 'import' (rows imported by earlier versions; nothing writes it now).
 
@@ -607,6 +613,11 @@ INSERT INTO rule (id, trigger, base, enabled, delay_s, bypass_quiet, scope, upda
 INSERT INTO rule (id, trigger, base, enabled, delay_s, bypass_quiet, scope, updated_at) VALUES
   ('rule_session_moved',    'session_moved',    1, 1,    0, 0, '{}', 0),
   ('rule_switch_digest',    'switch_digest',    1, 1,    0, 0, '{}', 0);
+-- v25: the owner drain notices (push.md 3.9).
+INSERT INTO rule (id, trigger, base, enabled, delay_s, bypass_quiet, scope, updated_at) VALUES
+  ('rule_drain_started',    'drain_started',    1, 1,    0, 0, '{}', 0),
+  ('rule_drain_ended',      'drain_ended',      1, 1,    0, 0, '{}', 0),
+  ('rule_drain_pulled',     'drain_pulled',     1, 1,    0, 0, '{}', 0);
 
 -- One row per episode (push.md 3.2 and 4).
 CREATE TABLE alert (

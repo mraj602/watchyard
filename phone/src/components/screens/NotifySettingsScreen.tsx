@@ -1,10 +1,13 @@
 // Settings → Notifications (phone.md P6.7, N1): the wy-link module's switch and state, the
 // battery check with the maker guide, the permission, the verification state, the ping
-// interval, the test notification and the Web Push backup.
+// interval, the per-category switches (hub-side mute) with a button to each channel's system
+// settings (sound), the test notification and the Web Push backup.
 import { useCallback, useEffect, useState } from 'react';
 import { Linking, Switch, Text, View } from 'react-native';
 import type { LinkState } from '../../contract/link';
 import type { PushTestResult } from '../../contract/api';
+import * as Notifications from '../../../modules/wy-notify';
+import { NOTIFY_CATEGORIES } from '../../contract/constants';
 import { batteryWords, knownMaker, linkErrorWords, linkStatusWords, makerGuide, PING_CHOICES_S, verifiedWords } from '../../lib/notify';
 import { useHubApi } from '../hub-api';
 import { switchColors, useTheme } from '../theme';
@@ -19,7 +22,7 @@ export default function NotifySettingsScreen() {
   const api = useHubApi();
   const t = useTheme();
   const toast = useToast();
-  const { self } = useSelf(toast.show);
+  const { self, savePrefs } = useSelf(toast.show);
   const link = api.link;
   const [s, setS] = useState<LinkState | null>(null);
   const [test, setTest] = useState<PushTestResult | null>(null);
@@ -111,6 +114,18 @@ export default function NotifySettingsScreen() {
     }
   };
 
+  const muted = new Set<string>(self?.prefs?.mute_categories ?? []);
+  const setCategory = (id: string, on: boolean) => {
+    const next = new Set(muted);
+    if (on) next.delete(id);
+    else next.add(id);
+    // The catalogue's order first; values this app does not know are kept as they were.
+    const known: string[] = NOTIFY_CATEGORIES.map((c) => c.id).filter((c) => next.has(c));
+    const other = [...next].filter((c) => !known.includes(c));
+    return savePrefs({ mute_categories: [...known, ...other] });
+  };
+  const openSound = (channel: string) => act('Could not open settings', () => Notifications.openChannelSettingsAsync(channel));
+
   const guide = makerGuide(api.app.maker);
   const showGuide = !!s && (!s.batteryExempt || knownMaker(api.app.maker));
   const origin = api.client?.origin;
@@ -196,6 +211,31 @@ export default function NotifySettingsScreen() {
           </Card>
         </Section>
       ) : null}
+
+      <Section title="Categories">
+        <Card>
+          {NOTIFY_CATEGORIES.map((c) => (
+            <View key={c.id} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 6 }}>
+              <View style={{ flexShrink: 1, paddingRight: 8 }}>
+                <Text style={{ color: t.text, fontWeight: '600' }}>{c.name}</Text>
+                <Muted>{c.words}</Muted>
+                <View style={{ flexDirection: 'row' }}>
+                  <Btn label="Sound…" testID={`cat-sound-${c.id}`} onPress={() => void openSound(c.channel)} />
+                </View>
+              </View>
+              <Switch
+                {...switchColors(t)}
+                accessibilityLabel={c.name}
+                testID={`cat-${c.id}`}
+                value={!muted.has(c.id)}
+                disabled={!self}
+                onValueChange={(on) => void setCategory(c.id, on)}
+              />
+            </View>
+          ))}
+          <Muted>{"Off: your hub does not send them to this phone. Sound and importance: your phone's settings for each channel."}</Muted>
+        </Card>
+      </Section>
 
       <Section title="Test">
         <Card>

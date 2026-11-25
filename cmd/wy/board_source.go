@@ -46,7 +46,7 @@ func selectBoardSource(sel boardSelection) (board.Source, error) {
 		return board.NewLocalSource(board.LocalOptions{
 			Options: board.Options{
 				Machine: machine, SessionID: sel.Session, IncludeEnded: true,
-				Hub: board.HubInfo{State: state, URL: hubURL}, WarpColour: warp.Nearest, Drains: boardDrains(sel.ConfigPath),
+				Hub: board.HubInfo{State: state, URL: hubURL}, WarpColour: warp.Nearest, Drains: boardDrains(sel.ConfigPath), Offs: boardOffs(sel.ConfigPath),
 			},
 			Env:       sel.Env,
 			OutboxDir: filepath.Join(sel.StateDir, "outbox"),
@@ -106,7 +106,7 @@ func selectBoardSource(sel boardSelection) (board.Source, error) {
 		Machine: machine, ThisSession: sel.Session, StateDir: state,
 		Local:        local(board.HubLive),
 		OnUnpaired:   func() { _, _ = board.RemoveTokenIf(state, tok.Token) },
-		IncludeEnded: true, WarpColour: warp.Nearest, Drains: boardDrains(sel.ConfigPath),
+		IncludeEnded: true, WarpColour: warp.Nearest, Drains: boardDrains(sel.ConfigPath), Offs: boardOffs(sel.ConfigPath),
 	})
 	if err != nil {
 		return nil, err
@@ -145,6 +145,30 @@ func probeBoardHub(ctx context.Context, hubURL, token string, tr http.RoundTripp
 
 // boardDrains reads the owner's drains (next.accounts.<label>.drain_until) at each board
 // build: until when, by account label.
+// boardOffs reads this machine's account modes for the board's Off note, at each build.
+func boardOffs(configPath string) func() map[string]bool {
+	if configPath == "" {
+		return nil
+	}
+	return func() map[string]bool {
+		f, err := config.Load(configPath)
+		if err != nil {
+			return nil
+		}
+		c, err := f.Typed()
+		if err != nil {
+			return nil
+		}
+		out := map[string]bool{}
+		for k, a := range c.Next.Accounts {
+			if a.Mode != "" {
+				out[k] = a.Mode == config.NextModeOff
+			}
+		}
+		return out
+	}
+}
+
 func boardDrains(configPath string) func() map[string]time.Time {
 	if configPath == "" {
 		return nil

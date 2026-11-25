@@ -140,6 +140,8 @@ func tagsFor(p model.Payload) []string {
 		return []string{"bar_chart"}
 	case model.TriggerSessionMoved, model.TriggerSwitchDigest:
 		return []string{"twisted_rightwards_arrows"}
+	case model.TriggerDrainStarted, model.TriggerDrainEnded, model.TriggerDrainPulled:
+		return []string{"hourglass_flowing_sand"}
 	}
 	return nil
 }

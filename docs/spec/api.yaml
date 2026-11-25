@@ -344,7 +344,11 @@ paths:
         desktop.md C10. `null` clears `label` or `colour`; a missing key leaves it.
         Sets `seat.look_src = 'ui'`, so a later `slot_info` label or colour no longer applies
         (record.md 4.7). `mode` (setup.md 8.5, Kind) is `protected`, `aggressive` or `null`
-        (not chosen) and sets `seat.pick_mode_src = 'ui'`. Publishes a `usage` stream event.
+        (not chosen) and sets `seat.pick_mode_src = 'ui'`; `off` (schema v25, `seat.pick_off`)
+        keeps the account out: never picked, nothing moved into it, sessions already there stay
+        (it keeps `pick_mode` for when it is turned on again, and ends a drain). `drain_until`
+        (setup.md 8.5, Owner drain) is RFC 3339 in the next 8 days, or null to stop; 400 for an
+        account that is off. Publishes a `usage` stream event.
       x-scopes: [owner]
       parameters:
         - {name: seat, in: path, required: true, schema: {type: string}}
@@ -353,6 +357,42 @@ paths:
         content:
           application/json:
             schema: {$ref: "#/components/schemas/SeatPatch"}
+      responses:
+        "200":
+          description: The seat after the change.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Seat"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /v1/accounts/{seat}/drain:
+    put:
+      tags: [read]
+      operationId: putSeatDrain
+      summary: Set or stop the owner's drain of a seat (wy account drain)
+      description: |
+        setup.md 8.5, Owner drain. The same as `drain_until` of PATCH /v1/accounts/{seat}, also
+        for a machine's token, so `wy account drain` sets it for every machine. While it is on
+        the picker drains the seat on every machine (a machine's own
+        `next.accounts.<key>.drain_until` wins there). The alert engine sends `drain_started`,
+        and `drain_ended` when `until` passes or the seat's weekly level reaches 97, clearing it.
+        400 for a seat that is off or a time not in the next 8 days.
+      x-scopes: [owner, write]
+      parameters:
+        - {name: seat, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [until]
+              properties:
+                until: {type: [string, "null"], format: date-time}
+              additionalProperties: false
       responses:
         "200":
           description: The seat after the change.
@@ -2388,11 +2428,18 @@ components:
         order: {type: integer, description: "Display position: seats are listed by it (PUT /v1/seats/order sets it, 0..n-1)."}
         mode:
           type: [string, "null"]
-          enum: [protected, aggressive, null]
+          enum: [protected, aggressive, "off", null]
           description: >-
             How `wy account next` should use the account (setup.md 8.5, Kind), the same on every
-            machine; null: not chosen, treated as aggressive. A machine's own
-            `next.accounts.<key>.mode` wins on that machine.
+            machine; null: not chosen, treated as aggressive; off: never picked and nothing moved
+            into it (sessions already there stay). A machine's own `next.accounts.<key>.mode`
+            wins on that machine.
+        drain_until:
+          type: [string, "null"]
+          format: date-time
+          description: >-
+            The owner drains the account until then (setup.md 8.5, Owner drain), the same on
+            every machine; null when not draining (also once it ended).
         hidden: {type: boolean}
         windows:
           type: array
@@ -2538,7 +2585,8 @@ components:
         colour: {type: [string, "null"], pattern: "^#[0-9a-f]{6}$"}
         order: {type: integer}
         hidden: {type: boolean}
-        mode: {type: [string, "null"], enum: [protected, aggressive, null], description: "The picker's use of the account (Seat.mode); null: not chosen."}
+        mode: {type: [string, "null"], enum: [protected, aggressive, "off", null], description: "The picker's use of the account (Seat.mode); null: not chosen."}
+        drain_until: {type: [string, "null"], format: date-time, description: "The owner's drain until then (setup.md 8.5, Owner drain); null stops it."}
       additionalProperties: false
 
     MachinePatch:
@@ -2606,7 +2654,8 @@ components:
         account: {type: string, description: Account uuid.}
         org: {type: string, description: Org uuid.}
         label: {type: [string, "null"]}
-        mode: {type: [string, "null"], enum: [protected, aggressive, null], description: "The seat's hub setting for the picker (Seat.mode); null: not chosen."}
+        mode: {type: [string, "null"], enum: [protected, aggressive, "off", null], description: "The seat's hub setting for the picker (Seat.mode); null: not chosen."}
+        drain_until: {type: [string, "null"], format: date-time, description: "Seat.drain_until."}
         windows:
           type: array
           items: {$ref: "#/components/schemas/Window"}
@@ -3329,6 +3378,13 @@ components:
           type: boolean
           default: false
           description: Widget refresh frames to this device's link target (push.md 13.5).
+        mute_categories:
+          type: array
+          uniqueItems: true
+          items: {type: string, enum: [sessions, limits, switch, drain, usage, machines]}
+          description: >-
+            Whole notification categories this target gets none of (push.md 5.5): not sent at
+            all. Each push carries its `category` and the phone's Android `channel`.
 
     PushSettings:
       type: object
@@ -3456,7 +3512,7 @@ components:
     RuleInput:
       type: object
       properties:
-        trigger: {type: string, enum: [needs_permission, asked, failed, limit_80, limit_95, reset, machine_silent, limit_change, usage_reset, seat_change, weekly_drop, session_moved, switch_digest]}
+        trigger: {type: string, enum: [needs_permission, asked, failed, limit_80, limit_95, reset, machine_silent, limit_change, usage_reset, seat_change, weekly_drop, session_moved, switch_digest, drain_started, drain_ended, drain_pulled]}
         enabled: {type: boolean}
         delay_s: {type: integer, minimum: 0, maximum: 86400}
         bypass_quiet: {type: boolean}

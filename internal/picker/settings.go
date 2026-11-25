@@ -36,17 +36,22 @@ const (
 // setup questions; the board's components/pick-mode.js and the phone's
 // lib/format/pickMode.ts say the same.
 var ModeWords = struct {
-	Protected, Aggressive, NotChosen string
+	Protected, Aggressive, Off, NotChosen string
 }{
 	Protected:  "Kept for you. Used last: new sessions go here only when no aggressive account can take them, or for room that would expire unused anyway.",
 	Aggressive: "Use it up. Sessions go here until 98% of the week or 5 hours.",
+	Off:        "Never picked and nothing is moved into it; sessions already there stay and their use still shows.",
 	NotChosen:  "Not chosen yet; treated as aggressive.",
 }
 
-// ValidHubMode reports whether m is a hub or proposed mode: protected or aggressive.
+// ValidHubMode reports whether m is a hub or proposed mode: protected or aggressive (off
+// only from the hub: ValidSeatMode).
 func ValidHubMode(m string) bool {
 	return m == config.NextModeProtected || m == config.NextModeAggressive
 }
+
+// ValidSeatMode reports whether m is a hub seat's mode: protected, aggressive or off.
+func ValidSeatMode(m string) bool { return ValidHubMode(m) || m == config.NextModeOff }
 
 // SettingsFrom resolves the typed [next] table; zero or invalid values take the defaults.
 func SettingsFrom(n config.Next) Settings {
@@ -89,6 +94,7 @@ type Preset struct {
 var Presets = map[string]Preset{
 	config.NextModeConservative: {Cap5h: 60, Cap7d: 70, CapModel: 70, Pref: 0.6},
 	config.NextModeProtected:    {Cap5h: 60, Cap7d: 70, CapModel: 70, Pref: 0.6},
+	config.NextModeOff:          {Cap5h: 60, Cap7d: 70, CapModel: 70, Pref: 0.6},
 	config.NextModeNormal:       {Cap5h: 90, Cap7d: 90, CapModel: 90, Pref: 1},
 	config.NextModeAggressive:   {Cap5h: 98, Cap7d: 98, CapModel: 98, Pref: 1.4},
 }
@@ -119,10 +125,14 @@ type Policy struct {
 }
 
 // Protected reports whether the lanes strategy keeps the account for its owner: mode
-// protected or conservative. Every other mode, and none, is aggressive.
+// protected, conservative or off. Every other mode, and none, is aggressive.
 func (p Policy) Protected() bool {
-	return p.Mode == config.NextModeProtected || p.Mode == config.NextModeConservative
+	return p.Mode == config.NextModeProtected || p.Mode == config.NextModeConservative || p.Off()
 }
+
+// Off reports whether the owner keeps the account out (setup.md 8.5, Kind): never picked,
+// nothing moved into it.
+func (p Policy) Off() bool { return p.Mode == config.NextModeOff }
 
 // PolicyFor finds the account's settings: the next.accounts key equal to its hub seat id,
 // then its email, then its folder, then its label on this machine, then its hub label.
@@ -154,7 +164,7 @@ func (s Settings) PolicyFor(c Candidate) (Policy, []string) {
 		}
 	}
 	hubMode := ""
-	if ValidHubMode(c.HubMode) {
+	if ValidSeatMode(c.HubMode) {
 		hubMode = c.HubMode
 	}
 	mode, from := "", ModeFromNone
@@ -162,7 +172,7 @@ func (s Settings) PolicyFor(c Candidate) (Policy, []string) {
 		if _, ok := Presets[a.Mode]; ok {
 			mode, from = a.Mode, ModeFromLocal
 		} else {
-			warn = append(warn, fmt.Sprintf("next.accounts.%s.mode %q is not protected, conservative, normal or aggressive; ignoring it", key, a.Mode))
+			warn = append(warn, fmt.Sprintf("next.accounts.%s.mode %q is not protected, conservative, normal, aggressive or off; ignoring it", key, a.Mode))
 		}
 	}
 	if mode == "" && hubMode != "" {
@@ -198,6 +208,7 @@ func (s Settings) PolicyFor(c Candidate) (Policy, []string) {
 	if a.Weight > 0 {
 		p.Weight = a.Weight
 	}
+	p.DrainUntil = c.HubDrainUntil
 	if a.DrainUntil != "" {
 		if t, err := time.Parse(time.RFC3339, a.DrainUntil); err == nil {
 			p.DrainUntil = t

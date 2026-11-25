@@ -12,6 +12,7 @@ import {
   validateMe,
   validateOverview,
   validatePairClaimReply,
+  validateDevicePrefs,
   validatePayload,
   validatePeerAudit,
   validatePushTarget,
@@ -59,6 +60,13 @@ describe('validators reject what the contract forbids', () => {
   it('a payload with keys out of Go order', () => {
     const { v, ...rest } = alert;
     expect(validatePayload({ ...rest, v }, 'payload', true).join()).toMatch(/Go order/);
+  });
+
+  it('channel and category are optional strings, anywhere in the order; an unknown category is refused', () => {
+    expect(validatePayload({ ...alert, channel: 'wy_drain', category: 'drain' }, 'payload', true)).toEqual([]);
+    expect(validatePayload({ channel: 'wy_switch', ...alert, category: 'switch' }, 'payload', true)).toEqual([]);
+    expect(validatePayload({ ...alert, channel: 3 }, 'payload', true).join()).toMatch(/channel/);
+    expect(validatePayload({ ...alert, category: 'pigeons' }, 'payload', true).join()).toMatch(/category/);
   });
 
   it('a refresh payload passes, with an extra key it does not', () => {
@@ -130,5 +138,21 @@ describe('phone.md P11, P12 examples', () => {
         started_at: '2026-10-13T14:02:00.000Z',
       }),
     ).toEqual([]);
+  });
+});
+
+describe('seat mode, drain and device prefs', () => {
+  const seat = { id: 'seat_a', account: 'a', org: 'o' };
+  it('accepts mode off and drain_until, null or missing', () => {
+    for (const mode of ['protected', 'aggressive', 'off', null]) expect(validateSeat({ ...seat, mode })).toEqual([]);
+    expect(validateSeat({ ...seat, mode: 'off', drain_until: null })).toEqual([]);
+    expect(validateSeat({ ...seat, drain_until: '2026-11-25T18:29:00.000Z' })).toEqual([]);
+    expect(validateSeat({ ...seat, mode: 'normal' }).join()).toMatch(/mode/);
+    expect(validateSeat({ ...seat, drain_until: 'tonight' }).join()).toMatch(/drain_until/);
+  });
+  it('accepts mute_categories as a list of strings', () => {
+    expect(validateDevicePrefs({ mute_categories: ['drain', 'usage'] })).toEqual([]);
+    expect(validateDevicePrefs({ mute_categories: 'drain' }).join()).toMatch(/mute_categories/);
+    expect(validateDevicePrefs({ mute_categories: [3] }).join()).toMatch(/mute_categories/);
   });
 });

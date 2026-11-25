@@ -502,7 +502,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		t, loggedIn := w.targets[a.Key]
 		ma := mover.Account{Key: a.Key, Label: t.Label, Protected: a.Protected, Ratio: a.Ratio, Stale: a.Stale, LoggedIn: loggedIn,
 			Drain: drain[a.Key], W5: mover.Window{Level: a.FiveHour, Reset: a.FiveReset}, W7: mover.Window{Level: a.Weekly, Reset: a.WeeklyReset},
-			ReadAt: a.ReadingAt, DrainUntil: a.DrainUntil}
+			ReadAt: a.ReadingAt, DrainUntil: a.DrainUntil, Off: a.Off}
 		if ma.Label == "" {
 			ma.Label = a.Key
 		}
@@ -909,8 +909,9 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 	fmt.Fprintln(tw, "ACCOUNT\t5H\t7D\tBURN/H\tP5\tP7\tCAPS\tPIN RESERVE\tSTATE")
 	loggedIn := map[string]bool{}
 	drainUntil := map[string]time.Time{}
+	off := map[string]bool{}
 	for _, a := range w.input.Accounts {
-		loggedIn[a.Key] = a.LoggedIn
+		loggedIn[a.Key], off[a.Key] = a.LoggedIn, a.Off
 		if a.DrainUntil.After(w.input.Now) {
 			drainUntil[a.Key] = a.DrainUntil
 		}
@@ -939,6 +940,9 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		}
 		if u, ok := drainUntil[pr.Key]; ok {
 			state = mover.OwnerDrainText(u, w.input.Now) + "; " + state
+		}
+		if off[pr.Key] {
+			state = "off (owner): never picked, nothing moves in or out; " + state
 		}
 		if !loggedIn[pr.Key] {
 			state += "; not logged in here (never a destination)"

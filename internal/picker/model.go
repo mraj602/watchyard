@@ -59,6 +59,9 @@ type Candidate struct {
 	HubMode  string // the seat's hub mode: protected, aggressive or "" (setup.md 8.5, Kind)
 	// HubModeCached: HubMode is the kept copy (<state>/next/modes.json), the hub was not read.
 	HubModeCached bool
+	// HubDrainUntil: the seat's owner drain on the hub (zero: none); a machine's own
+	// next.accounts.<key>.drain_until wins on that machine.
+	HubDrainUntil time.Time
 	MatchedBy     string // how the hub seat was found: "account", "place", "email"
 	// SignedOut is set when the hub lists this folder on this machine as signed out.
 	SignedOut    *time.Time

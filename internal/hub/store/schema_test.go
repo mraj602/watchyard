@@ -142,8 +142,8 @@ func TestSchemaV3Seeds(t *testing.T) {
 	if n := count(`SELECT count(*) FROM channel WHERE kind IN ('webpush', 'ntfy') AND enabled = 1`); n != 2 {
 		t.Errorf("channels seeded: %d, want 2", n)
 	}
-	if n := count(`SELECT count(*) FROM rule WHERE base = 1`); n != 13 {
-		t.Errorf("base rules seeded: %d, want 13", n)
+	if n := count(`SELECT count(*) FROM rule WHERE base = 1`); n != 16 {
+		t.Errorf("base rules seeded: %d, want 16", n)
 	}
 	if n := count(`SELECT enabled FROM rule WHERE id = 'rule_reset'`); n != 0 {
 		t.Errorf("rule_reset must be off by default")

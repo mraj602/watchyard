@@ -119,6 +119,9 @@ func (e *Engine) pass() {
 			if err := w.expireNotices(); err != nil {
 				return err
 			}
+			if err := w.drains(); err != nil {
+				return err
+			}
 			_, seats, _, err := tx.AlertSubjects(w.nowMS)
 			if err != nil {
 				return err
@@ -641,6 +644,12 @@ func (w *work) render(ps []*push) error {
 			}
 		}
 		pl.Title, pl.Body, pl.URL, pl.Tag = txt.Title, txt.Body, txt.URL, txt.Tag
+		// A summary batches session alerts (fanOut): the sessions category.
+		pl.Category = model.CategorySessions
+		if !summary {
+			pl.Category = trig.Category()
+		}
+		pl.Channel = model.Channel(pl.Category)
 		p.msg = model.Message{Payload: pl, TTL: rules.TTL(trig, summary, resets, w.nowMS), Urgency: rules.Urgency(trig, summary),
 			Priority: rules.Priority(trig, summary), HubURL: w.hub}
 		for _, d := range p.ds {

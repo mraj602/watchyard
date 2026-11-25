@@ -1,6 +1,7 @@
 package picker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -32,14 +33,17 @@ type HubWindow struct {
 
 // HubSeat is api.yaml Seat, the fields the picker reads.
 type HubSeat struct {
-	ID      string      `json:"id"`
-	Account string      `json:"account"`
-	Org     string      `json:"org"`
-	Email   *string     `json:"email"`
-	Label   *string     `json:"label"`
-	Mode    *string     `json:"mode"` // the seat's picker mode (setup.md 8.5, Kind); nil: none
-	Windows []HubWindow `json:"windows"`
-	Places  []struct {
+	ID      string  `json:"id"`
+	Account string  `json:"account"`
+	Org     string  `json:"org"`
+	Email   *string `json:"email"`
+	Label   *string `json:"label"`
+	Mode    *string `json:"mode"` // the seat's picker mode (setup.md 8.5, Kind); nil: none
+	// DrainUntil: the owner's drain of the seat, the same on every machine (setup.md 8.5,
+	// Owner drain); nil: none.
+	DrainUntil *time.Time  `json:"drain_until"`
+	Windows    []HubWindow `json:"windows"`
+	Places     []struct {
 		Machine string  `json:"machine"`
 		Slot    *string `json:"slot"`
 	} `json:"places"`
@@ -162,6 +166,7 @@ func (h HubClient) FetchUsage(ctx context.Context, now time.Time) (HubData, erro
 			Org          string          `json:"org"`
 			Label        *string         `json:"label"`
 			Mode         *string         `json:"mode"`
+			DrainUntil   *time.Time      `json:"drain_until"`
 			Windows      []HubWindow     `json:"windows"`
 			Samples      []HubSample     `json:"samples"`
 			Leases       []HubLease      `json:"leases"`
@@ -188,7 +193,7 @@ func (h HubClient) FetchUsage(ctx context.Context, now time.Time) (HubData, erro
 	d := HubData{Samples: map[string][]HubSample{}, Leases: map[string][]HubLease{}, OwnLeases: map[string][]HubLease{},
 		Calib: map[string]calib.Factors{}}
 	for _, x := range doc.Seats {
-		s := HubSeat{ID: x.ID, Account: x.Account, Org: x.Org, Label: x.Label, Mode: x.Mode, Windows: x.Windows, LiveSessions: x.LiveSessions}
+		s := HubSeat{ID: x.ID, Account: x.Account, Org: x.Org, Label: x.Label, Mode: x.Mode, DrainUntil: x.DrainUntil, Windows: x.Windows, LiveSessions: x.LiveSessions}
 		for _, p := range x.Places {
 			slot := p.Slot
 			s.Places = append(s.Places, struct {
@@ -250,4 +255,47 @@ func (h HubClient) get(ctx context.Context, path string, into any) error {
 		return fmt.Errorf("the hub's reply to %s is over %d bytes", strings.SplitN(path, "?", 2)[0], maxReply)
 	}
 	return json.Unmarshal(b, into)
+}
+
+// PutDrain sets (until non-nil) or stops the owner's drain of a seat on the hub: PUT
+// /v1/accounts/{seat}/drain (setup.md 8.5, Owner drain), with this machine's token.
+func (h HubClient) PutDrain(ctx context.Context, seat string, until *time.Time) error {
+	body := []byte(`{"until":null}`)
+	if until != nil {
+		body = []byte(`{"until":"` + until.UTC().Format(time.RFC3339) + `"}`)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, strings.TrimRight(h.URL, "/")+"/v1/accounts/"+url.PathEscape(seat)+"/drain", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+h.Token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "wy-account-drain")
+	hc := h.HTTP
+	if hc == nil {
+		hc = &http.Client{Timeout: 10 * time.Second}
+	}
+	c := *hc
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := c.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusNotFound:
+		return errors.New("the hub has no such seat, or is older than this wy (no PUT /v1/accounts/{seat}/drain)")
+	case http.StatusMethodNotAllowed:
+		return errors.New("the hub is older than this wy (no PUT /v1/accounts/{seat}/drain)")
+	}
+	var e struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(b, &e) == nil && e.Error != "" {
+		return fmt.Errorf("the hub answered %d: %s", resp.StatusCode, e.Error)
+	}
+	return fmt.Errorf("the hub answered %d", resp.StatusCode)
 }

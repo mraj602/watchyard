@@ -127,6 +127,7 @@ type Seat struct {
 	Label        *string           `json:"label"`
 	Colour       *string           `json:"colour"`
 	Mode         *string           `json:"mode"`
+	DrainUntil   store.Time        `json:"drain_until"`
 	Order        int64             `json:"order"`
 	Hidden       bool              `json:"hidden"`
 	Windows      []Window          `json:"windows"`
@@ -136,6 +137,14 @@ type Seat struct {
 	Places       []store.Place     `json:"places"`
 	SignedOut    []store.SlotPlace `json:"signed_out"`
 	LiveSessions int               `json:"live_sessions"`
+}
+
+// drainOf is a seat's drain_until for the API (null when not draining).
+func drainOf(x store.SeatRow) store.Time {
+	if x.DrainUntil == nil {
+		return 0
+	}
+	return store.Time(*x.DrainUntil)
 }
 
 func (s *Server) seats(r *http.Request, includeHidden bool) ([]Seat, error) {
@@ -151,7 +160,7 @@ func (s *Server) seats(r *http.Request, includeHidden bool) ([]Seat, error) {
 			return nil, err
 		}
 		seat := Seat{ID: x.ID, Account: x.Account, Org: x.Org, Email: x.Email, OrgName: x.OrgName, Plan: x.Plan, Label: x.Label,
-			Colour: x.Colour, Mode: x.Mode, Order: x.Order, Hidden: x.Hidden, Windows: windowsOf(ws, now), ExtraUsage: x.ExtraUsage,
+			Colour: x.Colour, Mode: x.Mode, DrainUntil: drainOf(x), Order: x.Order, Hidden: x.Hidden, Windows: windowsOf(ws, now), ExtraUsage: x.ExtraUsage,
 			Spend: x.Spend, WebRawAt: store.Time(x.WebRawAt), Places: x.Places, SignedOut: x.SignedOut,
 			LiveSessions: x.LiveSessions}
 		if seat.ExtraUsage == nil {

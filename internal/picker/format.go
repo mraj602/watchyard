@@ -473,7 +473,7 @@ func KindText(r Ranked) string {
 // (ModeWords), then, when a logged-in account is not chosen, how to choose (with its email,
 // else its label, when it is the only one).
 func kindLines(rs []Ranked) []string {
-	var prot, aggr, none bool
+	var prot, aggr, off, none bool
 	var unchosen []Ranked
 	seen := map[string]bool{}
 	for _, r := range rs {
@@ -490,6 +490,8 @@ func kindLines(rs []Ranked) []string {
 			none = true
 		case kind == config.NextModeProtected:
 			prot = true
+		case kind == config.NextModeOff:
+			off = true
 		default:
 			aggr = true
 		}
@@ -500,6 +502,9 @@ func kindLines(rs []Ranked) []string {
 	}
 	if aggr {
 		out = append(out, "Aggressive: "+ModeWords.Aggressive)
+	}
+	if off {
+		out = append(out, "Off: "+ModeWords.Off)
 	}
 	if none {
 		out = append(out, "Not chosen: "+ModeWords.NotChosen)

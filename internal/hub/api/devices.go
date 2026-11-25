@@ -245,6 +245,9 @@ func devCheckPrefs(raw json.RawMessage) (model.Prefs, error) {
 		}
 		seen[t] = true
 	}
+	if msg := checkMuteCategories(p.MuteCategories); msg != "" {
+		return p, errors.New("prefs." + msg)
+	}
 	switch p.Tap {
 	case "", model.TapAuto, model.TapSession, model.TapClaude:
 	default:

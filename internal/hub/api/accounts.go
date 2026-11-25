@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/mraj602/watchyard/internal/hub/auth"
 	"github.com/mraj602/watchyard/internal/hub/ingest"
@@ -15,9 +16,37 @@ import (
 // enforced by the route table, so a read, write or desktop token gets 403 before this runs.
 func init() {
 	Register("PATCH", "/v1/accounts/{seat}", func(s *Server) http.Handler { return http.HandlerFunc(s.patchSeat) })
+	Register("PUT", "/v1/accounts/{seat}/drain", func(s *Server) http.Handler { return http.HandlerFunc(s.putSeatDrain) })
 }
 
-var seatPatchKeys = map[string]bool{"label": true, "colour": true, "order": true, "hidden": true, "mode": true}
+// putSeatDrain is PUT /v1/accounts/{seat}/drain (setup.md 8.5, Owner drain): the owner's
+// drain of a seat, the same on every machine, from `wy account drain` on a machine (its
+// write token) or the owner. Body {"until": RFC 3339 | null}.
+func (s *Server) putSeatDrain(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
+	var body struct {
+		Until *string `json:"until"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		auth.WriteError(w, http.StatusBadRequest, "bad_request", `the body must be {"until": "<RFC 3339>"} or {"until": null}`)
+		return
+	}
+	p := store.SeatPatch{DrainSet: true, NowMS: s.now().UnixMilli()}
+	if body.Until != nil {
+		t, err := time.Parse(time.RFC3339, *body.Until)
+		if err != nil {
+			auth.WriteError(w, http.StatusBadRequest, "bad_request", "until must be RFC 3339")
+			return
+		}
+		ms := t.UnixMilli()
+		p.DrainUntil = &ms
+	}
+	s.applySeatPatch(w, r, r.PathValue("seat"), p)
+}
+
+var seatPatchKeys = map[string]bool{"label": true, "colour": true, "order": true, "hidden": true, "mode": true, "drain_until": true}
 
 // decodeSeatPatch reads a SeatPatch, keeping which keys were present (null clears).
 func decodeSeatPatch(r *http.Request, w http.ResponseWriter) (store.SeatPatch, bool) {
@@ -49,6 +78,20 @@ func decodeSeatPatch(r *http.Request, w http.ResponseWriter) (store.SeatPatch, b
 				return p, false
 			}
 			p.ModeSet, p.Mode = true, sp
+		case "drain_until":
+			var sp *string
+			if json.Unmarshal(v, &sp) != nil {
+				return p, false
+			}
+			p.DrainSet = true
+			if sp != nil {
+				t, err := time.Parse(time.RFC3339, *sp)
+				if err != nil {
+					return p, false
+				}
+				ms := t.UnixMilli()
+				p.DrainUntil = &ms
+			}
 		case "order":
 			var n int64
 			if isNull || json.Unmarshal(v, &n) != nil {
@@ -70,9 +113,15 @@ func (s *Server) patchSeat(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("seat")
 	p, ok := decodeSeatPatch(r, w)
 	if !ok {
-		auth.WriteError(w, http.StatusBadRequest, "bad_request", "the body must be a JSON object with label, colour, order, hidden or mode")
+		auth.WriteError(w, http.StatusBadRequest, "bad_request", "the body must be a JSON object with label, colour, order, hidden, mode or drain_until (RFC 3339)")
 		return
 	}
+	p.NowMS = s.now().UnixMilli()
+	s.applySeatPatch(w, r, id, p)
+}
+
+// applySeatPatch validates and applies p, then answers with the seat.
+func (s *Server) applySeatPatch(w http.ResponseWriter, r *http.Request, id string, p store.SeatPatch) {
 	if err := p.Validate(); err != nil {
 		auth.WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return

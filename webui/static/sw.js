@@ -30,6 +30,7 @@ const ASSETS = [
   'components/nav.js',
   'components/switches-fmt.js',
   'components/pair-error.js',
+  'components/notif-cats.js',
   'components/notif-note.js',
   'components/order.js',
   'components/peers-fmt.js',

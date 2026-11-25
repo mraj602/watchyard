@@ -655,6 +655,9 @@ func (s *Server) getDevice(w http.ResponseWriter, r *http.Request, c *caller) {
 
 var tapValues = map[string]bool{"auto": true, "session": true, "claude": true}
 
+// categoryNames are the notification categories (push.md 5.4, model.Categories).
+var categoryNames = map[string]bool{"sessions": true, "limits": true, "switch": true, "drain": true, "usage": true, "machines": true}
+
 // parsePrefs validates a DevicePrefs body and fills the defaults.
 func parsePrefs(raw map[string]any) (M, bool) {
 	out := defaultPrefs()
@@ -674,6 +677,21 @@ func parsePrefs(raw map[string]any) (M, bool) {
 				mute = append(mute, str)
 			}
 			out["mute"] = mute
+		case "mute_categories":
+			// As the hub (push.md 5.4): known category names only.
+			arr, ok := v.([]any)
+			if !ok {
+				return nil, false
+			}
+			cats := []string{}
+			for _, x := range arr {
+				str, ok := x.(string)
+				if !ok || !categoryNames[str] {
+					return nil, false
+				}
+				cats = append(cats, str)
+			}
+			out["mute_categories"] = cats
 		case "quiet_hours":
 			if v != nil {
 				if _, ok := v.(map[string]any); !ok {

@@ -9,7 +9,7 @@ more, so you set things up once.
 Use only your own accounts, each used within the terms of its plan. Watchyard never
 switches or rotates accounts for you, and it never shares a login between folders.
 
-## Choosing protected or aggressive
+## Choosing protected, aggressive or off
 
 `wy account next` (below) decides where new Claude Code sessions go. Tell it, once per
 account, how to treat that account:
@@ -20,6 +20,10 @@ account, how to treat that account:
   anyway, and nothing ever falls back onto it when the other accounts are full.
 - **Aggressive**: use it up. Sessions go here until 98% of the week or 5 hours. Choose it for
   accounts that only run agents.
+- **Off**: never picked and nothing is moved into it; sessions already there stay. Stricter
+  than protected: no new session goes there even when every other account is full, the Smart
+  Account Switch never moves a session into it or off it, and a drain on it is ignored. Its
+  usage is still shown. Use it for an account you want left alone completely for a while.
 - **Not chosen**: treated as aggressive, as before this setting existed. The board, the phone
   app and `wy account next --explain` show "Not chosen yet; treated as aggressive." with the
   choice one click away.
@@ -31,7 +35,8 @@ machine uses it. `wy setup` and `wy account add` also ask once per account that 
 in this machine's config.
 
 **A setting on one machine still wins there.** `wy config set next.accounts.<email>.mode
-protected` (or `aggressive`) overrides the hub's choice on that machine only; `--explain` says
+protected` (or `aggressive`, `off`), or `wy account mode <label> protected|aggressive|off|none`,
+overrides the hub's choice on that machine only; `--explain` says
 "set on this machine", and the board names the machine when its setting differs from the
 hub's. Settings made this way before this release keep working unchanged; to share one, pick
 the same mode on the board and delete the `mode` line from this machine's config.toml (`wy paths`
@@ -117,6 +122,14 @@ The default strategy, `lanes`, treats each account as **aggressive** (use its ro
 or **protected** (kept for you and used last: it is preferred while its week is behind an even pace
 plus 10 points, under 85 %, and its 5 hours under 45 %; past that it still takes a session when no
 aggressive account can, so work never waits while any account can safely take it).
+
+**Draining an account on purpose.** On the board or in the phone app (Accounts, the account,
+choose **Drain** and its end time), or with `wy account drain <label> [--until 18:00]` (default: the end of today),
+you can make an account drain now: new sessions go to it first, and with Smart Account Switch on
+busy sessions of other accounts are pulled into it, up to 97% of its week. The drain is kept on
+the hub, so every machine drains it (`--local`: this machine only), and it ends by itself at
+its end time or at 97% of the week. `wy account drain <label> off` ends it early. Your phone
+gets a notice when a drain starts, ends and pulls sessions in (the Drain notification category).
 
 An aggressive account **drains** when its week resets soon with room left: within a day, or
 within twice the time it would need to use that room running flat out. A draining account goes
