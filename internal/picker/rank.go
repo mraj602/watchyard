@@ -89,6 +89,10 @@ type MoverView struct {
 type PinReserve struct {
 	Pins   int
 	R5, R7 float64
+	// Units is the pinned sessions' measured burn, weighted token units per hour (0: none
+	// measured). The picker scales R5 and R7 down to what they can burn before each window
+	// resets (projection.PinReserve).
+	Units float64
 }
 
 // Ranked is one account in the result.

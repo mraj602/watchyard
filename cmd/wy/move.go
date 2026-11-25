@@ -466,7 +466,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	}
 	w.pinSet = pins
 	w.pins = livePins(w.launches, w.keyOfDir, pins, now)
-	in.PinReserves = pinReserves(params, w.pins)
+	in.PinReserves = pinReserves(params, w.pins, ob.Tokens, now)
 	in.Mover = moverView(cfg, w.launches, w.keyOfDir, ob.Tokens, in.Candidates, now)
 	var lin *picker.LaneInput
 	in.OnLanes = func(l picker.LaneInput) { lin = &l }
@@ -502,7 +502,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 			ma.Label = a.Key
 		}
 		ma.Pins = len(w.pins[a.Key])
-		ma.Reserve5, ma.Reserve7 = params.PinReserve(ma.Pins)
+		ma.Reserve5, ma.Reserve7 = params.PinReserve(ma.Pins) // scaled to the time left once the pins' burn is known
 		if inject != nil {
 			inject.applyAccount(&ma, now)
 		}
@@ -626,6 +626,19 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		}
 		w.input.Sessions = append(w.input.Sessions, s)
 		w.byID[s.ID] = s
+	}
+	// The pin reserve, scaled to what the pinned sessions can burn before each window resets
+	// (setup.md 8.6, Pinned sessions): their burn as measured above.
+	for i := range w.input.Accounts {
+		a := &w.input.Accounts[i]
+		if a.Pins == 0 {
+			continue
+		}
+		rate := 0.0
+		for _, id := range w.pins[a.Key] {
+			rate += w.byID[id].Rate
+		}
+		a.Reserve5, a.Reserve7 = params.ScaledPinReserve(*a, rate, now)
 	}
 	// The account's burn (setup.md 8.6, Burn): its sessions' meter here plus other machines'
 	// sessions the hub measured, cross-checked with the readings' slope (which also sees
@@ -944,7 +957,8 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		}
 		reserve := "-"
 		if pr.Pins > 0 {
-			reserve = fmt.Sprintf("%d pinned: %.0f/%.0f", pr.Pins, pr.Reserve5, pr.Reserve7)
+			reserve = fmt.Sprintf("%d pinned: %s/%s", pr.Pins, pct1(pr.Reserve5), pct1(pr.Reserve7))
+			state += scaledReserveNote(w.input.Params, pr, w.input.Now)
 		}
 		fmt.Fprintf(tw, "%s\t%.0f%%\t%.0f%%\t%.1f\t%.0f%%\t%.0f%%\t%.0f/%.0f\t%s\t%s\n", pr.Label, pr.Level5, pr.Level7, pr.R5, pr.P5, pr.P7,
 			pr.Cap5, pr.Cap7, reserve, state)
@@ -965,8 +979,8 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		pinned = pinned || pr.Pins > 0
 	}
 	if p := w.input.Params; pinned && (p.PinReserve5 > 0 || p.PinReserve7 > 0) {
-		fmt.Fprintf(out, "Each live pinned session keeps %.0f%% of its account's 5-hour window and %.0f%% of its week free (CAPS are less that).\n",
-			p.PinReserve5, p.PinReserve7)
+		fmt.Fprintf(out, "Each live pinned session keeps %.0f%% of its account's 5-hour window and %.0f%% of its week free (CAPS are less that); "+
+			"close to a reset, only twice what the pins can burn before it.\n", p.PinReserve5, p.PinReserve7)
 	}
 	printPinRows(out, pinRows(w.launches, w.labelOfDir, w.keyOfDir, w.pinSet, w.pins))
 	for _, a := range r.Alerts {
@@ -1452,4 +1466,38 @@ func laneExpect(lanes []picker.LiveLane, ledger []leases.Lease, now time.Time) m
 		}
 	}
 	return out
+}
+
+// pct1 is a percentage with one decimal when it has one ("2.1", "10").
+func pct1(x float64) string {
+	x = math.Round(x*10) / 10
+	if x == math.Trunc(x) {
+		return strconv.FormatFloat(x, 'f', 0, 64)
+	}
+	return strconv.FormatFloat(x, 'f', 1, 64)
+}
+
+// scaledReserveNote is the --plan note of an account whose pin reserve was scaled to the time
+// left (setup.md 8.6, Pinned sessions): "; pin reserve 7d 2.1% until Thu 03:30, scaled to time
+// left (full 10)"; "" when it is the full reserve.
+func scaledReserveNote(p mover.Params, pr mover.Projection, now time.Time) string {
+	f5, f7 := p.PinReserve(pr.Pins)
+	var parts []string
+	at := func(d time.Duration) string {
+		t := now.Add(d).Local()
+		if y, m, dd := t.Date(); y == now.Local().Year() && m == now.Local().Month() && dd == now.Local().Day() {
+			return t.Format("15:04")
+		}
+		return t.Format("Mon 15:04")
+	}
+	if pr.Reserve5 < f5-0.05 {
+		parts = append(parts, fmt.Sprintf("5h %s%% until %s", pct1(pr.Reserve5), at(pr.Reset5)))
+	}
+	if pr.Reserve7 < f7-0.05 {
+		parts = append(parts, fmt.Sprintf("7d %s%% until %s", pct1(pr.Reserve7), at(pr.Reset7)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; pin reserve %s, scaled to time left (full %s/%s)", strings.Join(parts, ", "), pct1(f5), pct1(f7))
 }

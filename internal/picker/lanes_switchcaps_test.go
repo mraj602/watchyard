@@ -1,6 +1,7 @@
 package picker
 
 import (
+	"github.com/mraj602/watchyard/internal/projection"
 	"strings"
 	"testing"
 	"time"
@@ -57,8 +58,9 @@ func TestLanesProtectedDrainStopsAtSwitchCap(t *testing.T) {
 		in.Mover = mv
 		return rowOf(rank(t, in), x)
 	}
-	if r := mk(nil); r.Class != ClassDrain || !r.Drain.On || r.Drain.Target != 98 {
-		t.Fatalf("switch off: class %q drain %+v, want drain to 98", r.Class, r.Drain)
+	// Two hours from its reset the drain aim has ramped to 98.7 (target: the aim plus its margin).
+	if r := mk(nil); r.Class != ClassDrain || !r.Drain.On || !near1(r.Drain.Target, projection.DrainAim7(2)+1, 1e-9) {
+		t.Fatalf("switch off: class %q drain %+v, want drain to %.2f", r.Class, r.Drain, projection.DrainAim7(2)+1)
 	}
 	mv := &MoverView{Cap5: 95, Cap7: 98, Cap5Protected: 80, Cap7Protected: 80, WeekSpanH: 5, Units: map[string]float64{}}
 	if r := mk(mv); r.Drain.On || r.Class == ClassDrain {

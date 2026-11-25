@@ -991,11 +991,13 @@ func TestPlanOwnerDrainNoPingPong(t *testing.T) {
 		reason string
 	}{
 		{"15:09:57, 95 s after the near-hit move off it", world(day(15, 9, 57), 80, off), false, ""},
-		// 75 + 0.6 h × (6 + 14) = 87, over 95 − 10; at its measured 3.3 it would be 80.6.
-		{"15:24, quiet over: ai-lane-H counted at the lane rate 14 does not fit 10 under the cap", world(day(15, 24, 0), 75, off), false, ""},
+		// The 5-hour cap of a draining account ramps (Drain aim): 0.6 h from its reset it is
+		// 98 + 2 × (1 − 0.6/2) − 2 = 97.4. 76 + 0.6 h × (6 + 14) = 88, over 97.4 − 10; at its
+		// measured 3.3 it would be 81.6.
+		{"15:24, quiet over: ai-lane-H counted at the lane rate 14 does not fit 10 under the cap", world(day(15, 24, 0), 76, off), false, ""},
 		{"15:24 at its measured burn (no lane rate): it fits", func() Input { in := world(day(15, 24, 0), 75, off); in.LaneRate = 0; return in }(), true, "at 3.3 points/h of burn"},
-		// 80 + 0.6 h × (6 + 3.3) = 85.6: under 95 − 5, over 95 − 10.
-		{"15:24 at its measured burn, 10 under the cap needed", func() Input { in := world(day(15, 24, 0), 80, off); in.LaneRate = 0; return in }(), false, ""},
+		// 82 + 0.6 h × (6 + 3.3) = 87.6: under 97.4 − 5, over 97.4 − 10.
+		{"15:24 at its measured burn, 10 under the cap needed", func() Input { in := world(day(15, 24, 0), 82, off); in.LaneRate = 0; return in }(), false, ""},
 		{"15:24 with room: pulled, counted at the lane rate", world(day(15, 24, 0), 60, off), true, "at 3.3 points/h of burn (counted at the lane rate 14.0)"},
 	} {
 		r := Plan(c.in)

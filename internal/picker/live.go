@@ -37,6 +37,9 @@ type LiveAccount struct {
 	// machine, no running lane, no tokens since): its levels can only have held or fallen, so the
 	// switch may use an old reading of it (setup.md 8.6, Stale data).
 	Quiet bool
+	// PinReserve5 and PinReserve7: the points kept free for its live pinned sessions, scaled to
+	// the time left in each window (LaneAccount.PinReserve5/7; 0: no pins).
+	PinReserve5, PinReserve7 float64
 }
 
 // LiveLane is one running lane (a lease whose session runs): its burn over the last
@@ -62,7 +65,8 @@ func (in LaneInput) Live() ([]LiveAccount, []LiveLane) {
 		v := laneLive(a, c, now, p, in.Leases)
 		pa := p.account(a)
 		la := LiveAccount{Key: a.Key, Protected: a.Protected, FiveHour: v.hM, Weekly: v.wM, FiveReset: c.fiveRst,
-			Ratio: pa.ratio(), F5: pa.F5, Stale: v.stale || len(v.unknown) > 0, DrainUntil: a.DrainUntil, Off: a.Off}
+			Ratio: pa.ratio(), F5: pa.F5, Stale: v.stale || len(v.unknown) > 0, DrainUntil: a.DrainUntil, Off: a.Off,
+			PinReserve5: a.PinReserve5, PinReserve7: a.PinReserve7}
 		if !la.FiveReset.After(now) {
 			la.FiveReset, la.FiveHour = time.Time{}, 0
 		}

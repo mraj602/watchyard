@@ -1306,12 +1306,33 @@ account out of the drain; they only limit how many more it takes).
   this machine's key; when the hub cannot be reached the command says "on this machine only".
   This machine's key overrides the hub's on this machine. An account that is off cannot drain
   (the hub answers 400; locally the drain is ignored). The hub ends its drain at `drain_until` or
-  when the seat's weekly peak reaches 97 %, and pushes `drain_started` / `drain_ended` on the
+  when the seat's weekly peak reaches the drain aim as it will be at `drain_until` (*Drain aim*
+  below, at most 99 %), and pushes `drain_started` / `drain_ended` on the
   Drain channel (push.md 3.9). While `until` is in the future the account drains as
   an **aggressive** drain account (a protected one too) whatever its hours to the weekly reset:
-  `H = min(H, until − now + guard)`, so `finish_by = until`, with the same drain margins (aims
-  97 weekly, 96 five-hour) and capacities. It ends by itself at `until`, or once its weekly
-  level reaches `W − M` (the account is then as configured again). `--explain`, the table,
+  `H = min(H, until − now + guard)`, so `finish_by = until`, with the same drain aims
+  (*Drain aim* below) and capacities. It ends by itself at `until`, or once its weekly level
+  reaches the drain aim as it will be at `until`, less the pin reserve (the account is then as
+  configured again).
+- *Drain aim* (owner 2026-11-25: "drain slowly till 95-96%, and as time comes reach 98-100%").
+  A draining account (automatic or the owner's) aims its week at
+
+      aim7 = 96 + 4 × (1 − h/6)    for h < 6 hours to its weekly reset, else 96
+
+  less the pin reserve, never over 100 less the reserve and the 1-point drain margin (so at
+  most 99): far from the reset a point kept costs nothing (it can still be used later) and a
+  burst to the limit stops lanes for days; in the last 6 hours every point not used is lost at
+  the reset and a stop lasts only until it. Its weekly hard limit for new lanes is
+  max(98, the aim plus the margin) less the reserve. In a draining 5-hour window the ceiling is
+  98, rising to 100 over the window's last 2 hours, and the 5-hour drain aim (and the backstop)
+  that less `DrainMargin5h` 2 (96 rising to 98); one more lane must still fit under the
+  ceiling, and the landing guard (`LandMax` 99) still refuses a lane whose expected cost alone
+  would land over 99, so a lane is not stopped by a limit before the reset. A lane estimated to
+  outlast the week goes to other accounts first (runway), so the last stretch takes short
+  lanes. Smart Account Switch's caps for a draining account ramp the same way (5h: the 5-hour
+  aim; 7d: the weekly aim, at most 99). An owner's own lower weekly limit and the switch's
+  protected caps are not raised. `--explain` ends the drain line with "aim 96.4% now, 98% at
+  Thu 03:30" (`--json` `drain.aim_pct`, `aim_at_reset_pct`, `weekly_resets_at`). `--explain`, the table,
   `--plan` and the board show "draining (owner, until 23:59)" ("Thu 07:00" when not today).
   The board shows a drain set only on one machine for that machine's accounts, over the hub's.
 - *Lane statistics.* From the leases read (this machine's ledger, 8 days; other machines' leases
@@ -2036,7 +2057,17 @@ Pin the long-running sessions that burn little but must not stop: a Slack watche
 orchestrator, a CI watcher. Each *live* pinned session (running, and not idle for 6 hours) keeps a
 reserve free on its account: `account.pin_reserve_5h` (default 10) points of the 5-hour window
 and `account.pin_reserve_7d` (default 5) points of the week; an account with n live pins keeps
-n × these. The reserve is a setting, not measured from the pin's burn. With it:
+n × these, scaled to the time left in each window (owner 2026-11-25: "it will never increase
+more than 88%. That's a huge waste of almost one 5h session"): a flat reserve throws the
+reserved room away at every reset, so each window keeps only
+
+    min(n × reserve, max(1, the pins' burn × hours to that window's reset × 2))
+
+the pins' burn being their measured 5-hour points per hour (at least 1 point per hour per pin,
+a coordinator's awake base; for the week divided by the account's ratio). Far from a reset that
+is the full reserve; in the last hours it shrinks to the pins' real need, so a drain can use
+the rest of the week (claude-3 at 88% with 2 pins at 5.7 points per hour, ratio 9.1, 5 hours
+from its reset: 6.3 of the week instead of 10, 2.5 two hours out, 1 at the end). With it:
 
 - the picker (8.5) hands out new lanes as if every limit of the account were that much lower
   (`--explain` prints a `Pins` line, `--json` the fields `pins`, `pin_reserve_5h_pct`,
@@ -2047,7 +2078,10 @@ n × these. The reserve is a setting, not measured from the pin's burn. With it:
 - a destination keeps its own reserve free (its caps less its reserve);
 - a protected account counts the reserve inside its 80/80 caps;
 - `wy move --plan` shows it per account (`PIN RESERVE`, "1 pinned: 10/5"; the `CAPS` column is
-  after it).
+  after it), and a scaled one in the state ("pin reserve 7d 2.5% until Thu 03:30, scaled to time
+  left (full 20/10)"); `--explain`'s `Pins` line says the same ("... and 2.5% of the week free
+  until Thu 03:30, scaled to time left (full 10)"); `--json` adds `pin_reserve_full_5h_pct`,
+  `pin_reserve_full_7d_pct`.
 
 A pinned session that alone (its own burn, nothing else) takes its account's 5-hour or weekly
 level to 100% within 2 hours, before that window resets, is not moved: the pass records one alert

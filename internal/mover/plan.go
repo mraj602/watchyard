@@ -125,6 +125,16 @@ type Params struct {
 	PullQuiet  time.Duration
 }
 
+// ScaledPinReserve is a's pin reserve scaled to what its a.Pins pinned sessions, burning rate
+// 5-hour points per hour together (at least projection.PinBaseRate each), can burn before each
+// window resets, twice over (projection.PinReserve; setup.md 8.6, Pinned sessions). A 5-hour
+// window not started is a whole window away; an unknown weekly reset keeps the full reserve.
+func (p Params) ScaledPinReserve(a Account, rate float64, now time.Time) (r5, r7 float64) {
+	f5, f7 := p.PinReserve(a.Pins)
+	rate = math.Max(rate, float64(a.Pins)*projection.PinBaseRate)
+	return projection.PinReserve(f5, rate, hoursTo(a.W5, now, 5)), projection.PinReserve(f7, rate/ratio(a), hoursTo(a.W7, now, -1))
+}
+
 // PinReserve is the reserve of an account with pins live pinned sessions: pins x
 // PinReserve5 points of the 5-hour window and pins x PinReserve7 of the week.
 func (p Params) PinReserve(pins int) (float64, float64) {
@@ -1174,7 +1184,19 @@ func (p Params) caps(a Account, now time.Time) (c5, c7 float64) {
 		}
 		return p.Cap5Protected, p.Cap7Protected
 	}
+	if !a.Off && (a.Drain || a.DrainUntil.After(now)) {
+		// A draining account's caps ramp toward its resets (setup.md 8.5, Drain aim).
+		return projection.DrainCaps(p.Cap5, p.Cap7, hoursTo(a.W5, now, 5), hoursTo(a.W7, now, -1))
+	}
 	return p.Cap5, p.Cap7
+}
+
+// hoursTo is the hours to w's reset; none when it is not known or past.
+func hoursTo(w Window, now time.Time, none float64) float64 {
+	if w.Reset.After(now) {
+		return w.Reset.Sub(now).Hours()
+	}
+	return none
 }
 
 // expiring: a is protected and its weekly reset is within ExpiringRoom.

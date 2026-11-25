@@ -34,7 +34,9 @@ func TestMovePinReserve(t *testing.T) {
 	f.hookEvents("5e55a0a0-0000-4000-8000-000000000001", "UserPromptSubmit")
 	f.fiveReset(3 * time.Hour)
 	f.set("account.smart_switch_scope", "sessions:5e55a0a0,5e55a0b0")
-	moveTestVars[moveTestEnv] = `{"rates":{"5e55a0a0":8,"5e55a0b0":1}}` // 60 + 3 h × 9 = 87
+	// The pin burns 4 points an hour: 4 × 3 h × 2 = 24 is over the full 10, so its reserve is
+	// not scaled down (setup.md 8.6).
+	moveTestVars[moveTestEnv] = `{"rates":{"5e55a0a0":5,"5e55a0b0":4}}` // 60 + 3 h × 9 = 87
 	t.Cleanup(func() { delete(moveTestVars, moveTestEnv) })
 
 	// Not pinned: under the cap of 95, nothing moves.
@@ -101,7 +103,7 @@ func TestLivePins(t *testing.T) {
 	}
 	p := mover.DefaultParams
 	p.PinReserve5, p.PinReserve7 = 10, 3
-	r := pinReserves(p, got)
+	r := pinReserves(p, got, nil, time.Now())
 	if r["acct:2/o"].Pins != 2 || r["acct:2/o"].R5 != 20 || r["acct:2/o"].R7 != 6 || r["acct:3/o"].R5 != 10 {
 		t.Fatalf("reserves %+v", r)
 	}
@@ -130,7 +132,7 @@ func TestMoveNativePin(t *testing.T) {
 	f.hookEvents("5e55a0a0-0000-4000-8000-000000000001", "UserPromptSubmit")
 	f.fiveReset(3 * time.Hour)
 	f.set("account.smart_switch_scope", "sessions:5e55a0a0,5e55a0b0")
-	moveTestVars[moveTestEnv] = `{"rates":{"5e55a0a0":8,"5e55a0b0":1}}`
+	moveTestVars[moveTestEnv] = `{"rates":{"5e55a0a0":5,"5e55a0b0":4}}`
 	t.Cleanup(func() { delete(moveTestVars, moveTestEnv) })
 
 	// wy's old pins file: ignored, with a note.

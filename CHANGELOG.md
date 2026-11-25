@@ -178,6 +178,15 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **Pin reserve scaled to the time left; drain aim ramps to the reset** (setup.md 8.5 Drain
+  aim, 8.6 Pinned sessions). A flat pin reserve kept claude-3 at 88% of its week (2 pins, 10%
+  kept free) until its reset, wasting the room, and ended the owner's drain at once. Each window
+  now keeps only twice what the pins can burn before it resets (at most the full reserve, at
+  least 1 point), and a draining account aims its week at 96%, rising to 99% over the last 6
+  hours before the reset (5-hour: 96, rising to 98 in the window's last 2 hours), less the
+  scaled reserve, with the lane fit and landing guard unchanged. The switch's caps, the hub's
+  and the board's drain end follow. `--explain`, `--plan` and `--json` show the scaled reserve
+  and the aim.
 - **Board drain field** (pwa.md 3.0a). The Until field was a time-only input that the radio
   buttons' style shrank to an 18 px box, and Change sent the next time the clock showed it, so a
   drain the CLI set for Sunday 07:20 became Thursday 07:20. It is now a date-and-time field,
