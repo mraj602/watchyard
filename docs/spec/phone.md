@@ -309,12 +309,21 @@ the permission prompt only once a channel exists):
 
 | Channel id | Name | Importance | Used for |
 | --- | --- | --- | --- |
-| `wy_needs_you` | Needs you | HIGH | `needs_permission`, `asked`, `failed`, summaries |
-| `wy_limits` | Limits | DEFAULT | `limit_80`, `limit_95`, `reset` |
-| `wy_machines` | Machines | LOW | `machine_silent` |
-| `wy_usage` | Usage changes | LOW | `limit_change`, `usage_reset`, `seat_change`, `weekly_drop`, and the switch notices `session_moved`, `switch_digest` (push.md 3.9) |
+| `wy_needs_you` | Sessions | HIGH | `needs_permission`, `asked`, `failed`, summaries (category `sessions`) |
+| `wy_limits` | Limits | DEFAULT | `limit_80`, `limit_95`, `reset` (`limits`) |
+| `wy_switch` | Account switch | LOW | `session_moved`, `switch_digest` (`switch`; these used to go to `wy_usage`) |
+| `wy_drain` | Drain | DEFAULT | `drain_started`, `drain_ended`, `drain_pulled` (`drain`) |
+| `wy_usage` | Usage notices | LOW | `limit_change`, `usage_reset`, `seat_change`, `weekly_drop` (`usage`, push.md 3.9) |
+| `wy_machines` | Machines | LOW | `machine_silent` (`machines`) |
 | `wy_test` | Test | DEFAULT | test pushes |
 | `wy_connection` | Connection (always on) | MIN | The link service's persistent notification (push.md 14.4) |
+
+The hub's payload names the channel (`channel`) and its category (`category`). `wy-link` uses
+`channel` when it is one of the ids above (never `wy_connection`) and otherwise maps type and
+trigger itself (`Payloads.channelFor`), so a hub without categories still lands in the right
+channel. `src/contract/constants.ts` `ANDROID_CHANNELS` and `Channels.kt` list the same channels
+(a jest test compares them). The old names "Needs you" and "Usage changes" were renamed to
+"Sessions" and "Usage notices" (the module re-creates a channel under its id to update the name).
 
 The `wy-link` module creates the same channels natively (it posts link notifications itself),
 with the same ids, so either side may create them first. A channel that already exists keeps
@@ -425,6 +434,7 @@ button in Settings' Notifications card):
 | Notifications permission | "Allowed" or "Blocked in system settings". | **Open settings** |
 | Encryption | push.md 14.7: "Verified by QR", or "Not verified: compare check code k7q2-m4xa with the board", or "Hub key changed". | — |
 | Ping interval | "Every 3 min" (180 s). Choices 3, 5, 10 min; 5 and 10 only advised on the tailnet. | `setPingInterval` |
+| **Categories** | One row per category (Sessions, Limits, Account switch, Drain, Usage notices, Machines) with a one-line description, a switch and a **Sound…** button. Under them: "Off: your hub does not send them to this phone. Sound and importance: your phone's settings for each channel." | Switch: `PATCH /v1/devices/self` with the merged prefs and `mute_categories` (the muted ones; missing = none; optimistic, an error toast puts it back); the hub does not send a muted category at all. **Sound…**: `openChannelSettingsAsync(channel id)` (wy-notify; creates the channel first, then Android's `ACTION_CHANNEL_NOTIFICATION_SETTINGS` for it), where the owner picks sound, importance or turns the channel off |
 | **Send test notification** | — | `POST /v1/push/targets/{link id}/test`; the result arrives over the link. Long press: `sendLocalTest()` (no hub) |
 | Backup: Web Push | "Also get alerts in the installed web app (uses Google's push service, encrypted, no account)." | Opens the hub's web app pairing page |
 
@@ -1099,10 +1109,16 @@ Calm and compact: seven accounts fit on one screen.
   pure logic
   is in `lib/format/relation.ts` (jest), the same functions and strings as the board's
   `relation-fmt.js`. Above the details, **How should the picker use this account?** (pwa.md
-  3.0a; setup.md 8.5 *Kind*): for the owner three options (Protected, Aggressive, Not chosen)
+  3.0a; setup.md 8.5 *Kind*): for the owner Aggressive, Protected, Drain, Off and Not chosen
   with their one-line definitions under each, saved at once with `PATCH /v1/accounts/{seat}`
-  `{"mode": …}` (a refusal puts the old choice back and says why); for anyone else the
-  current choice with its definition. "Not chosen yet; treated as aggressive." is highlighted
+  (a refusal puts the old choice back and says why): Aggressive and Protected send
+  `{"mode": …, "drain_until": null}`, Off sends `{"mode": "off"}` (stricter than Protected: never
+  picked, nothing moved in; sessions already there stay and their usage is still shown), Drain
+  asks for an end (End of today 23:59 local, In 2 h, In 4 h, In 8 h) and sends
+  `{"drain_until": <RFC 3339>}`, plus `"mode": null` when the account is Off (a drain with Off is a
+  400). A draining account (`Seat.drain_until` in the future) shows "Draining until 23:59" (with
+  the day name when not today) and the Drain row selected; picking a mode stops the drain, and the
+  hub reverts it by itself at the end. For anyone else the current choice with its definition. "Not chosen yet; treated as aggressive." is highlighted
   when no mode is set, and a local override on the verdict's machine is named as on the board.
   The wording comes from one place, `lib/format/pickMode.ts` (`MODE_WORDS`), also used by the
   verdict; and **Count down on Lock Screen** where the Live

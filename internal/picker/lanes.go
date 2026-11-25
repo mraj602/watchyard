@@ -272,7 +272,13 @@ type LaneAccount struct {
 	DrainUntil time.Time
 	// OwnerProtected: its mode is protected; the owner drain makes it aggressive meanwhile.
 	OwnerProtected bool
+	// Off: the owner keeps it out (mode off; setup.md 8.5, Kind): never picked, not even with
+	// --urgent or when nothing else fits.
+	Off bool
 }
+
+// OffText is the --explain reason of an account that is off.
+const OffText = "off (owner): never picked and nothing is moved into it; sessions already there stay"
 
 // LaneLease is one lease, local or another machine's.
 type LaneLease struct {
@@ -1053,6 +1059,10 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 					dk.group = max(dk.group, 4)
 				}
 			}
+			if acc.Off {
+				skip, why, level, capped, soft, last, fwdFree, expiring = true, OffText, 9, false, false, true, nil, false
+				d = DrainInfo{}
+			}
 			row := LaneRow{Key: acc.Key, Protected: prot, Score: sc, Skip: skip, Reason: why, Weekly: v.w, WeeklyM: v.wM, FiveHour: v.h,
 				Reserve: v.wRes, HoursToReset: v.hrs, Leases: v.leaseN, Burst: v.capN, BurstCap: cp, Capped: capped,
 				Added5: v.add5, Meter5: v.m5, Meter7: v.m7, Margin5: v.g5, Margin7: v.g7, WeeklyCap: cap7, FiveHourCap: cap5, SampleAgeMin: v.ageMin, FiveReset: v.fiveRst,
@@ -1065,7 +1075,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 			if v.hasLease {
 				row.LastLease = v.lastLease
 			}
-			if skip {
+			if skip && !acc.Off {
 				if d.On {
 					row.ETA = d.FreeAt
 				} else {

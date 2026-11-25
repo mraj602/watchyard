@@ -152,15 +152,40 @@ func runMoveNotices(ctx context.Context, d paths.Dirs, cfg config.Config, now ti
 	name := func(dir, key string) string { return slotName(cfg, dir, key) }
 	var send func(string, []mover.Notice) error
 	if o.ready() {
-		send = func(text string, ns []mover.Notice) error {
-			title := "Watchyard moved a session"
-			if len(ns) > 1 {
-				title = "Watchyard moved sessions"
+		send = func(_ string, all []mover.Notice) error {
+			// Pulls into an owner-drained account go on the Drain channel (drain_pulled), the
+			// other moves as session_moved; each its own batch.
+			var moved, pulled []mover.Notice
+			for _, n := range all {
+				if mover.IsPull(n.Reason) {
+					pulled = append(pulled, n)
+				} else {
+					moved = append(moved, n)
+				}
 			}
-			first := ns[0].At
-			p := record.SwitchNoticePayload{Trigger: record.SwitchNoticeMoved, Episode: "m:" + strconv.FormatInt(first.UnixMilli(), 10),
-				SinceAt: first.UTC().Format(time.RFC3339), Moves: len(ns), Text: cutText(text)}
-			return o.deliver(ctx, p, title, fmt.Sprintf("%d session(s) moved to another account", len(ns)))
+			if len(moved) > 0 {
+				title := "Watchyard moved a session"
+				if len(moved) > 1 {
+					title = "Watchyard moved sessions"
+				}
+				first := moved[0].At
+				p := record.SwitchNoticePayload{Trigger: record.SwitchNoticeMoved, Episode: "m:" + strconv.FormatInt(first.UnixMilli(), 10),
+					SinceAt: first.UTC().Format(time.RFC3339), Moves: len(moved), Text: cutText(mover.NoticeText(moved))}
+				if err := o.deliver(ctx, p, title, fmt.Sprintf("%d session(s) moved to another account", len(moved))); err != nil {
+					return err
+				}
+			}
+			if len(pulled) > 0 {
+				title := "Watchyard pulled a session into a draining account"
+				if len(pulled) > 1 {
+					title = "Watchyard pulled sessions into a draining account"
+				}
+				first := pulled[0].At
+				p := record.SwitchNoticePayload{Trigger: record.SwitchNoticePulled, Episode: "p:" + strconv.FormatInt(first.UnixMilli(), 10),
+					SinceAt: first.UTC().Format(time.RFC3339), Moves: len(pulled), Text: cutText(mover.NoticeText(pulled))}
+				return o.deliver(ctx, p, title, fmt.Sprintf("%d session(s) moved to a draining account", len(pulled)))
+			}
+			return nil
 		}
 	}
 	_, err := st.Notify(now, cfg.Account.MoveNotify, name, send)

@@ -4,7 +4,9 @@ import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import expo.modules.interfaces.permissions.Permissions
@@ -43,6 +45,20 @@ class WyNotifyModule : Module() {
      */
     AsyncFunction("setChannel") { id: String, name: String, importance: Int ->
       ctx.getSystemService(NotificationManager::class.java)?.createNotificationChannel(NotificationChannel(id, name, importance))
+      Unit
+    }
+
+    /**
+     * Opens Android's own settings page for one channel (sound, importance, vibration). The
+     * channel must exist (the caller creates it with setChannel first); Android 8+ only.
+     */
+    AsyncFunction("openChannelSettings") { channelId: String ->
+      if (Build.VERSION.SDK_INT < 26) throw CodedException("ERR_WY_CHANNELS", "wy-notify: channels need Android 8", null)
+      val intent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+        .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+        .putExtra(Settings.EXTRA_CHANNEL_ID, channelId)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      ctx.startActivity(intent)
       Unit
     }
 

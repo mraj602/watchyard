@@ -134,3 +134,6 @@ func (s State) Notify(now time.Time, enabled bool, name func(dir, key string) st
 	}
 	return sent, err
 }
+
+// IsPull reports whether a move's reason is a pull into an owner-drained account (pullIn).
+func IsPull(reason string) bool { return strings.HasPrefix(reason, "pulled in: ") }

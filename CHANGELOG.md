@@ -8,6 +8,34 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Added
 
+- **Hub schema change: v23 → v24** (migration `0024_seat_off_drain.sql`). Back up the hub
+  database before deploying. It adds two columns to `seat`, `pick_off` (0/1, the Off mode) and
+  `drain_until` (ms, the hub-shared owner drain), and the base rules `rule_drain_started`,
+  `rule_drain_ended` and `rule_drain_pulled` (on). Nothing existing is rewritten; an older `wy`
+  ignores the new fields.
+- **Off mode** (setup.md 8.5 Kind, 8.6 Off). Next to Aggressive and Protected, an account can
+  be **Off**: stricter than protected, `wy account next` never picks it (not with `--urgent`,
+  not when it is the only one with room), the switch never moves a session into it, the
+  sessions already there stay (not moved off, even over its caps), a drain on it is ignored,
+  and its usage is still shown. `--explain`, `--plan` and the board say "off (owner)". Set on
+  the board and in the phone app (hub-wide, `mode: "off"`), or on one machine with
+  `wy account mode <label> aggressive|protected|off|none`.
+- **Hub-shared drain** (setup.md 8.5 Owner drain). The owner drain is now also a seat setting
+  on the hub (`drain_until`, the same on every machine): `wy account drain` writes it when a hub
+  is connected (`PUT /v1/accounts/{seat}/drain`, machine token; `--local` for this machine
+  only), the board and the phone set it with the Drain choice (until a time, default the end of
+  today). This machine's key still overrides the hub's on this machine. The hub ends a drain at
+  its time or when the week reaches 97%.
+- **Drain notices** (push.md 3.9). `drain_started`, `drain_ended` (by time or by aim) and
+  `drain_pulled` (the switch pulled sessions into a draining account; batched like
+  `session_moved`, and no longer mixed into it) are pushes of their own.
+- **Notification categories** (push.md 5.4, phone.md P6.1, pwa.md). Sessions, Limits, Account
+  switch, Drain, Usage notices and Machines: each push carries its `category` and Android
+  `channel`; a device turns whole categories off (`prefs.mute_categories`, off = not sent at
+  all) in the Android app's Notifications screen or the web app's Settings. The Android app has
+  a channel per category (new: `wy_switch`, `wy_drain`; switch notices used to share
+  `wy_usage`), and a **Sound…** button opens the channel's system settings for its sound. The
+  desktop app is unchanged (one on/off switch).
 - **Owner drain** (setup.md 8.5 Owner drain, 8.6 Owner drain). `wy account drain <label>
   [--until <time>|off]` drains an account now, until `until` (default 23:59 today), not only in
   the day before its weekly reset: new lanes go to it first up to its drain aims (97 weekly, 96

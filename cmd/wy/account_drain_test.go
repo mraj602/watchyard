@@ -78,3 +78,43 @@ func TestParseDrainUntil(t *testing.T) {
 		t.Error("tonight parsed")
 	}
 }
+
+// setup.md 8.5, Kind: `wy account mode claude-2 off` keeps the switch from moving anything
+// into it, --plan says so, and `none` gives the account back.
+func TestAccountMode(t *testing.T) {
+	f, _, run := moveFixture(t, 100, "idle")
+	f.hookEvents("5e55a0a0-0000-4000-8000-000000000001", "UserPromptSubmit", "StopFailure:rate_limit")
+	mode := func(args ...string) (string, error) {
+		var out, errOut bytes.Buffer
+		err := accountMode(nextEnv{home: f.home, dirs: f.dirs, getenv: func(string) string { return "" }, now: func() time.Time { return nextNow },
+			stdout: &out, stderr: &errOut}, args)
+		return out.String() + errOut.String(), err
+	}
+	if out, _, _ := run("--plan"); !strings.Contains(out, "lane-a") || !strings.Contains(out, "claude-2") {
+		t.Fatalf("plan before:\n%s", out)
+	}
+	if out, err := mode("claude-2", "off"); err != nil || !strings.Contains(out, "claude-2: off on this machine") {
+		t.Fatalf("mode off: %v %q", err, out)
+	}
+	cf, _ := config.Load(f.dirs.Config.Path)
+	if v, _ := cf.Get("next.accounts.claude-2.mode"); v != "off" {
+		t.Fatalf("stored %v", v)
+	}
+	out, _, _ := run("--plan")
+	if !strings.Contains(out, "off (owner): never picked, nothing moves in or out") || strings.Contains(out, "to claude-2") {
+		t.Fatalf("plan with claude-2 off:\n%s", out)
+	}
+	f.set("account.smart_switch", "on")
+	if out, errOut, _ := run("--auto"); strings.Contains(out, "moved 5e55a0a0") {
+		t.Fatalf("moved into an account that is off: %q %q", out, errOut)
+	}
+	if _, err := mode("claude-2", "sometimes"); err == nil {
+		t.Error("a bad mode was taken")
+	}
+	if out, err := mode("claude-2", "none"); err != nil || !strings.Contains(out, "the hub's applies") {
+		t.Fatalf("none: %v %q", err, out)
+	}
+	if out, errOut, code := run("--auto"); code != 0 || !strings.Contains(out, "moved 5e55a0a0 lane-a from claude to claude-2") {
+		t.Fatalf("auto after none: %d %q %q", code, out, errOut)
+	}
+}

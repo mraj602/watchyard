@@ -19,8 +19,9 @@ type BuildInput struct {
 	IncludeEnded bool
 	// WarpColour maps a seat colour to Warp's colour name (board.Options.WarpColour).
 	WarpColour func(hex string) string
-	// Drains: board.Options.Drains.
+	// Drains and Offs: board.Options.Drains and Offs.
 	Drains func() map[string]time.Time
+	Offs   func() map[string]bool
 	// Seats are /v1/accounts in the hub's order; Sessions are /v1/sessions in the hub's
 	// order; MachineCount is len(/v1/overview machines).
 	Seats        []wireSeat
@@ -40,7 +41,7 @@ func DefaultBuild(in BuildInput) board.View {
 	}
 	for _, s := range in.Seats {
 		d.Seats = append(d.Seats, board.HubSeat{ID: s.ID, Email: s.Email, Label: s.Label, Colour: s.Colour,
-			Order: s.Order, Hidden: s.Hidden, Windows: hubWindows(s.Windows)})
+			Order: s.Order, Hidden: s.Hidden, Windows: hubWindows(s.Windows), Mode: s.Mode, DrainUntil: s.DrainUntil})
 	}
 	for _, s := range in.Sessions {
 		since := s.StateSince
@@ -57,7 +58,7 @@ func DefaultBuild(in BuildInput) board.View {
 	// follow the live stream; the overview's list is only as fresh as the last fetch.
 	v := board.BuildHub(d, board.Options{
 		Now: in.Now, Loc: in.Loc, Machine: in.Machine, SessionID: in.ThisSession,
-		IncludeEnded: in.IncludeEnded, Hub: in.Hub, WarpColour: in.WarpColour, Drains: in.Drains,
+		IncludeEnded: in.IncludeEnded, Hub: in.Hub, WarpColour: in.WarpColour, Drains: in.Drains, Offs: in.Offs,
 	})
 	if in.Source != "" {
 		v.Source = in.Source

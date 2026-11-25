@@ -42,6 +42,9 @@ const (
 	// NextModeProtected: kept for its owner (lanes); like conservative for the projection
 	// strategies.
 	NextModeProtected = "protected"
+	// NextModeOff: the owner keeps the account out (stricter than protected): never picked,
+	// nothing moved into it; sessions already there stay (setup.md 8.5, Kind).
+	NextModeOff = "off"
 )
 
 // nextAccountsPrefix starts the free-form per-account keys: next.accounts.<key>.<field>,
@@ -94,10 +97,10 @@ func parseNextAccountField(key, field, v string) (any, error) {
 	switch field {
 	case "mode":
 		switch v {
-		case NextModeConservative, NextModeNormal, NextModeAggressive, NextModeProtected:
+		case NextModeConservative, NextModeNormal, NextModeAggressive, NextModeProtected, NextModeOff:
 			return v, nil
 		}
-		return nil, fmt.Errorf("%s: want protected, conservative, normal or aggressive, got %q", key, v)
+		return nil, fmt.Errorf("%s: want protected, conservative, normal, aggressive or off, got %q", key, v)
 	case "hours":
 		if _, _, err := ParseNextHours(v); err != nil {
 			return nil, fmt.Errorf("%s: %w", key, err)

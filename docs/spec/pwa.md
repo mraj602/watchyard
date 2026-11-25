@@ -92,7 +92,7 @@ Hash routes:
 | `#/machines?machine=<id>` | Machines | Under More on phones; stays in the desktop sidebar |
 | `#/more` | More (new) | Links: Alerts, Machines, Peers, Settings; owner only: Devices, Add phone; Analytics (`#/more/analytics`) |
 | `#/more/alerts` | Alerts and rules (`PhoneAlerts`) | Rule list (5 below), quiet hours, recent pushes from `GET /v1/alerts` with outcome (open, seen, snoozed, cancelled + the "cancelled means you answered first" note) |
-| `#/more/settings` | Settings | Hub address, version, live status; notifications (6); private pushes, tap behaviour, own quiet hours (device prefs); ntfy topic (push.md 7); install status; app version + "Check for update"; **Unpair this phone** |
+| `#/more/settings` | Settings | Hub address, version, live status; notifications (6); private pushes, tap behaviour, own quiet hours, and an on/off switch per notification category (Sessions, Limits, Account switch, Drain, Usage notices, Machines: `prefs.mute_categories`, `components/notif-cats.js`) (device prefs); ntfy topic (push.md 7); install status; app version + "Check for update"; **Unpair this phone** |
 | `#/more/peers` | Settings → Peers | The account matrix, **Pause all peers**, the audit list (3.1); under More on phones and a Peers entry in the desktop sidebar; linked from Settings |
 | `#/more/keys` | Settings → Keys (3.2) | The next step to take, the hub key, the owner key (pending ones confirmed by an owner session), each device's certificate state, the revocation version; a Keys entry in the desktop sidebar and a pill in the More tabs |
 | `#/more/analytics` | Analytics | `GET /v1/analytics/{report}` (analytics.md): range chips (7, 30, 90 days), a seat filter, totals, a daily cost bar chart, by model, by project, a weekday by hour heatmap, limit hits; read scope, so also for a read-only phone |
@@ -117,7 +117,8 @@ screen; controls that need `push` or `owner` are hidden or show "Sign in as owne
 Rules on the phone (`PhoneAlerts`): one row per base trigger group (the two limit triggers share
 one row, the four usage notices, push.md 3.9, share one: "Usage and limit changes", and the two switch
 notices one: "Smart Account Switch moves and digest") with its global delay as text
-("· 30 s") and a switch. For a push-scoped device the switch edits `prefs.mute`
+("· 30 s") and a switch; the drain notices (`drain_started`, `drain_ended`, `drain_pulled`) share
+one row, "Drain started, ended or pulled early". For a push-scoped device the switch edits `prefs.mute`
 (`PATCH /v1/devices/self`); for an owner session it edits the global rule (`PUT
 /v1/rules/{id}`), and the delay is editable. Overrides are listed (owner: add/remove with a
 seat/project picker and on/off + delay). The owner changes an override in place: "Change"
@@ -188,10 +189,20 @@ The desktop app's Hub tab shows this same page.
   - **Not chosen**: "Not chosen yet; treated as aggressive."
 
   The setting is the seat's hub setting (`Seat.mode`, api.yaml), the same on every machine.
-  The owner sees the question "How should the picker use this account?" with three radio
-  options (Protected, Aggressive, Not chosen), each with its definition right under its name;
-  a change saves at once with `PATCH /v1/accounts/{seat}` `{"mode": …}` (null for Not chosen)
-  and a refusal puts the old choice back with the reason. Anyone else sees the current choice
+  The owner sees the question "How should the picker use this account?" with five radio
+  options (Aggressive, Protected, Drain, Off, Not chosen), each with its definition right under
+  its name; a change saves at once with `PATCH /v1/accounts/{seat}`: Aggressive, Protected, Off
+  and Not chosen send `{"mode": …, "drain_until": null}` (`"off"`, null for Not chosen), which
+  also stops any drain. **Drain** is not a mode: choosing it opens a time field (default 23:59,
+  local) with **Start draining**, which sends `{"drain_until": <RFC 3339>}` (the next time the
+  clock shows that time, so a time already past means tomorrow); while draining the field
+  reads "Change" and a **Stop draining** button sends `{"drain_until": null}`. A draining
+  account shows "Draining until 23:59" (with the weekday, "Draining until Fri 09:05", when the
+  end is not today), computed from `Seat.drain_until` while it is in the future. **Off** is
+  stricter than Protected and shows "Off: never picked, nothing moved in; sessions already
+  there stay"; its usage is still shown. The pure helpers (`seatModeKey`, `drainText`,
+  `drainUntilISO`, `modeBody`) are in `pick-mode.js`. A refusal puts the old choice back with
+  the reason. Anyone else sees the current choice
   and its definition as text. An account with no mode shows "Not chosen yet; treated as
   aggressive." as a highlighted line at the top of the section (the options are right under
   it). When the newest verdict came from a machine whose own `next.accounts.<key>.mode`

@@ -82,3 +82,28 @@ func TestSwitchNoticeRuleOff(t *testing.T) {
 	h.expectSends(0)
 	h.expectStatus(h.byTrigger(model.TriggerSessionMoved)[0], model.StatusSkipped, model.ReasonRuleOff)
 }
+
+// Each push carries its category and the phone channel (push.md 5.5): moves on the Account
+// switch channel, pulls into a draining account on the Drain channel, and a device that turned
+// the Drain category off gets the moves but not the pulls.
+func TestSwitchNoticeCategories(t *testing.T) {
+	h := newHarness(t)
+	noDrain := h.addTarget(h.addDevice("Phone", `{"mute_categories": ["drain"]}`), model.KindWebPush, "")
+	h.switchNotice(0, movedPayload(0, 1))
+	h.switchNotice(time.Minute, record.SwitchNoticePayload{Trigger: record.SwitchNoticePulled, Episode: "p:1",
+		SinceAt: at(time.Minute).UTC().Format(time.RFC3339), Moves: 2, Text: "api b → a (pulled in)\nweb c → a (pulled in)"})
+	all := h.wp.to(h.target)
+	if len(all) != 2 {
+		t.Fatalf("%+v", h.wp.sends())
+	}
+	if p := all[0].Msg.Payload; p.Trigger != model.TriggerSessionMoved || p.Category != model.CategorySwitch || p.Channel != "wy_switch" {
+		t.Errorf("moved %+v", p)
+	}
+	if p := all[1].Msg.Payload; p.Trigger != model.TriggerDrainPulled || p.Category != model.CategoryDrain || p.Channel != "wy_drain" ||
+		p.Title != "gpu-box · Pulled 2 sessions into a draining account" {
+		t.Errorf("pulled %+v", p)
+	}
+	if got := h.wp.to(noDrain); len(got) != 1 || got[0].Msg.Payload.Trigger != model.TriggerSessionMoved {
+		t.Fatalf("drain off: %+v", got)
+	}
+}

@@ -974,7 +974,7 @@ can take it under the hard limits, *No stalling*). It
 decides from the current state only (the newest readings, the token meter since them and the
 live leases), never from a forecast of past use.
 
-*Kind.* Each account is protected or aggressive by its **mode**, a setting, never derived
+*Kind.* Each account is protected, aggressive or off by its **mode**, a setting, never derived
 from a label. In plain words (the one wording every surface uses: `internal/picker`
 `ModeWords`, the board's `components/pick-mode.js`, the phone's `lib/format/pickMode.ts`):
 
@@ -982,13 +982,23 @@ from a label. In plain words (the one wording every surface uses: `internal/pick
   interactively in a terminal).
 - **Aggressive**: "Use it up. Sessions go here until 98% of the week or 5 hours." For
   accounts that only run agents.
+- **Off**: "Never picked and nothing is moved into it; sessions already there stay." Stricter
+  than protected: `wy account next` never places a lane there (not with `--urgent`, not when it
+  is the only account with room: then no account is picked), the switch never moves a session
+  into it, a drain is ignored, and the sessions already on it stay where they are (the switch
+  does not move them off either, even over its caps). Its usage is still read and shown.
+  `--explain` says "off (owner): never picked and nothing is moved into it; sessions already
+  there stay", `--plan` "off (owner): never picked, nothing moves in or out", the board "off
+  (owner)". On the hub it is `seat.pick_off` (schema v24), `mode: "off"` in the API; locally
+  `next.accounts.<key>.mode = "off"` (`wy account mode <label> off`).
 - **Not chosen**: "Not chosen yet; treated as aggressive." (the behaviour before modes were
   shared, so nothing changes for an account nobody chose for).
 
 Where the mode comes from, the first that is set wins, per machine:
 
 1. **This machine's `next.accounts.<key>.mode`** (config.toml, below; `mode_from` `local`):
-   `protected` and `conservative` are protected, `aggressive` and `normal` aggressive. It
+   `protected` and `conservative` are protected, `aggressive` and `normal` aggressive, `off`
+   off (`wy account mode <label> aggressive|protected|off|none` sets or deletes it). It
    keeps working as before and overrides the hub on this machine; `--explain` says "set on
    this machine" and, when the hub's setting differs, names it.
 2. **The seat's hub setting** (`seat.pick_mode`, `Seat.mode` and `UsageSeat.mode` in
@@ -1289,12 +1299,21 @@ account out of the drain; they only limit how many more it takes).
 - *Owner drain* (owner 2026-11-25). `wy account drain <label> [--until <time>]` sets
   `next.accounts.<label>.drain_until` (RFC 3339; `--until` takes `15:04` today, `2006-01-02 15:04`
   or RFC 3339; none is 23:59 today) in this machine's config; `wy account drain <label> off`
-  deletes it. Not shared through the hub. While `until` is in the future the account drains as
+  deletes it. With a hub it also writes the seat's hub drain (`PUT /v1/accounts/{seat}/drain`,
+  machine token, scope `write`; `seat.drain_until`, schema v24), which every machine reads from
+  `GET /v1/usage` (`drain_until`), so the drain is the same everywhere; the board and the phone set
+  it too (`PATCH /v1/accounts/{seat}` `drain_until`, at most 8 days ahead). `--local` sets only
+  this machine's key; when the hub cannot be reached the command says "on this machine only".
+  This machine's key overrides the hub's on this machine. An account that is off cannot drain
+  (the hub answers 400; locally the drain is ignored). The hub ends its drain at `drain_until` or
+  when the seat's weekly peak reaches 97 %, and pushes `drain_started` / `drain_ended` on the
+  Drain channel (push.md 3.9). While `until` is in the future the account drains as
   an **aggressive** drain account (a protected one too) whatever its hours to the weekly reset:
   `H = min(H, until − now + guard)`, so `finish_by = until`, with the same drain margins (aims
   97 weekly, 96 five-hour) and capacities. It ends by itself at `until`, or once its weekly
   level reaches `W − M` (the account is then as configured again). `--explain`, the table,
   `--plan` and the board show "draining (owner, until 23:59)" ("Thu 07:00" when not today).
+  The board shows a drain set only on one machine for that machine's accounts, over the hub's.
 - *Lane statistics.* From the leases read (this machine's ledger, 8 days; other machines' leases
   with a hub burn): `E` the p75, `Ē` the mean and `E95` the p95 of the 5-hour points (`f ×` units) of lanes that
   ended or are 5 hours old, and `L` the median length of this machine's ended lanes (launched to
@@ -1962,6 +1981,7 @@ weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
 | Near hit | the source reaches 100% before its 5-hour (or weekly) reset within 60 min by its first projection in the pass, or is hard now: (1) the account rate limit does not hold the move back (it applies to soft triggers only); (2) the greedy takes the highest burner first after the sessions whose move alone fixes the source; (3) when no destination stays under its caps − 5 until its own reset, the switch takes the aggressive account (not one this session may not return to) that stays under its caps the longest, if that is at least as long as the source has left and at least 30 min: `--plan` says "best available: claude-6 fits for 2h15m". Protected accounts never take a best-available move. A soft trigger (no hit within 60 min) whose sessions in their cooldown (or with a move under way) burn more than all the movable ones together, and those cannot bring it under its caps, waits ("waiting: moving the others (1.7 points/h) would not bring claude-6 under its caps while 21.9 points/h held back for now burns more"); the owner grace does not count (it moves another burner on purpose) | live pre9: home-18 (2.3 points/h) moved off claude-2 at 10:12 while ai-lane-E (27.1) cooled down, and home-00 (1.7) off claude-6 at 10:37 while 54c4e1e8 (21.9) did; live 2026-11-25 10:31: claude-4 at 78%, 43.8 points/h, P5 99%: the switch moved only a 2.7 points/h session; 25.9 points/h stayed ("account rate limit") and 16.9 points/h ("no logged-in account has room") while claude-6 was at 16% and claude-2 at 34%. Two hours on claude-6 beat a hit in 20 minutes |
 | Once per window | none: a long session may move many times | owner: long sessions may need several moves |
 | Between steps | a mid-turn session is stopped once no step runs, waiting up to `move_step_wait_min` 3 min in all, never past one minute before the hit; a pass's waits run side by side, at most `move_pass_wait_s` 90 s, the rest wait on in the next pass | a step stopped half-way is often run again after the resume |
+| Off | an account that is off (8.5, Kind): its sessions are no trigger ("off (owner): its sessions stay, and nothing is moved into it", even over its caps), it is never a destination, and a drain pulls nothing from it | owner 2026-11-25: stricter than protected; its usage is still shown |
 | Owner drain | an account the owner drains (8.5, Owner drain): (1) nothing moves off it unless its 5-hour window is at its cap or reaches 100% within 60 min ("draining (owner, until 23:59): nothing moves off it before ..."); (2) while its 5-hour (and weekly) projection to its reset is under its cap − `move_pull_margin` 10, and nothing moved off it this pass or in the last `move_pull_quiet_min` 15 min (a near hit's move off it: a pull then ping-pongs), the pass pulls in the biggest movable burners of other accounts (busy, not pinned, not interactive, not young, out of cooldown, burning at least `move_pull_min_burn` 3 points/h: a mid-turn restart re-reads the context, not worth it for a 1.1 points/h lane), each counted at max(its burn, the lane rate the destination check counts a young lane at): a lane in a low phase burns more later; the biggest that fits first, each only when it stays `move_pull_margin` 10 under the caps until the resets after the ones before (one too big is passed over for the next biggest), the account rate limit applying ("pulled in: claude-4 is draining (owner, until 18:00) at 20.0 points/h of burn") | owner 2026-11-25: claude-4 should finish its weekly room today, before a free full reset; live pre12: ed2c70e0 moved off claude-4 on a near hit at 15:08:22, 08911aa8 (29 min old, 3.3 points/h in a low phase) was pulled in at 15:09:57 and burned 14.8 by 15:28, claude-4 at P5 101% again. The digest's weekly room marks a drained account "(draining)" |
 | Re-check | a mid-turn move carried out 5 s or more after its pass began to read its state is re-chosen on the state read again just before it is carried out: the pass is planned again (its own move lock left out); no move for it now (its source no longer needs it, or another session's move is enough) drops it ("not moved to claude-7: re-checked after its step wait: ..."); another destination takes it (aggressive before protected, as always), the move record's `recheck` saying so ("re-checked after its step wait: claude-4, not claude-7 as planned"). Each change is kept in `move/rechecks.jsonl` and `--plan` lists those of the last hour ("re-check 11:58: 441d209b ... was planned claude-2 -> claude-7, moved to claude-4 instead"); `--list` shows the note. A failed read keeps the move as planned | a step wait is up to 3 minutes; live pre10: 441d209b was planned onto protected claude-7 at 11:57:35 (claude-4 projected 90.2 of its 90) and moved at 11:58:41, when claude-4 had room (its burn fell from 11.3 to 9.6 points/h) |
 | Owner grace | `move_owner_grace_min`, default 0 (off): an interactive session the owner typed into within it stays | the simulator shows no clear gain (below); off |
@@ -2354,7 +2374,10 @@ again. With neither a hub nor direct push, moves wait (see below). A machine pus
 per 5 minutes; moves inside that window wait in
 `<state>/move/notify.json` and go out as one push ("3 moves: a x->y; b ..."). A move that could
 not be pushed for an hour is dropped. `wy tick` does this, so a move is pushed within a minute of
-its pass. `account.move_notify` (default `on`) turns it off; moves made while it is off are never
+its pass. Pulls into a draining account (reason `pulled in: …`, Owner drain) go out as their own
+batch, trigger `drain_pulled` ("Pulled 2 sessions into a draining account", the Drain channel),
+apart from the other moves of the same window (`session_moved`, the Account switch channel).
+`account.move_notify` (default `on`) turns it off; moves made while it is off are never
 pushed later. `wy move --digest [--since 24h] [--json]` prints a digest of the period: the moves,
 the limit hits (sessions stopped by a `StopFailure` `rate_limit` hook event), each account's
 projected weekly room at its reset, the minutes each protected account was projected over its

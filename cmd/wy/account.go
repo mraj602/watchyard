@@ -42,7 +42,8 @@ func accountUsage(w io.Writer) {
        wy account label <folder|email|label> <new label> [--colour <c>] [--yes] [--dry-run] [--json]
        wy account share [<folder|label>] [--share ...] [--conflicts ...] [--yes] [--dry-run] [--json]
        wy account remove <folder|label> [--unshare] [--yes] [--dry-run] [--json]
-       wy account drain <label> [--until <time> | off]
+       wy account mode <label> aggressive|protected|off|none
+       wy account drain <label> [--until <time> | off] [--local]
        wy account next [--strategy <s>] [--model <m>] [--env | --json | --explain | --exec [-- <cmd>...]] [--no-reserve]
 `)
 }
@@ -57,6 +58,9 @@ func runAccount(args []string, stdout, stderr io.Writer) error {
 	}
 	if args[0] == "drain" { // one setting: no setup environment
 		return runAccountDrain(args[1:], stdout, stderr)
+	}
+	if args[0] == "mode" {
+		return runAccountMode(args[1:], stdout, stderr)
 	}
 	e, err := newSetupEnv(stdout, stderr)
 	if err != nil {

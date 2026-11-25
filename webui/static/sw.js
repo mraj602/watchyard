@@ -29,6 +29,7 @@ const ASSETS = [
   'components/machines-fmt.js',
   'components/nav.js',
   'components/pair-error.js',
+  'components/notif-cats.js',
   'components/notif-note.js',
   'components/order.js',
   'components/peers-fmt.js',

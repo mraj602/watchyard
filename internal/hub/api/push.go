@@ -454,6 +454,22 @@ func (s *Server) deviceAlive(ctx context.Context, id string) bool {
 
 // ---- PATCH /v1/push/targets/{id} ------------------------------------------------------
 
+// checkMuteCategories validates prefs.mute_categories (push.md 5.5): known categories, none
+// twice. "" when valid.
+func checkMuteCategories(cs []string) string {
+	seen := map[string]bool{}
+	for _, c := range cs {
+		if !model.ValidCategory(c) {
+			return "mute_categories has an unknown category " + c + " (sessions, limits, switch, drain, usage, machines)"
+		}
+		if seen[c] {
+			return "mute_categories lists " + c + " twice"
+		}
+		seen[c] = true
+	}
+	return ""
+}
+
 var hhmm = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
 
 func validPrefs(p *model.Prefs) string {
@@ -461,6 +477,9 @@ func validPrefs(p *model.Prefs) string {
 		if !m.Valid() {
 			return "mute has an unknown trigger"
 		}
+	}
+	if msg := checkMuteCategories(p.MuteCategories); msg != "" {
+		return msg
 	}
 	switch p.Tap {
 	case "", model.TapAuto, model.TapSession, model.TapClaude:
@@ -587,7 +606,8 @@ func (s *Server) testTarget(w http.ResponseWriter, r *http.Request, lim *testLim
 	}
 	msg := model.Message{
 		Payload: model.Payload{V: model.PayloadVersion, Type: model.TypeTest, Title: "Watchyard",
-			Body: "Test push from your hub", Tag: "wy-test", URL: "/#/", Tap: model.TapAuto, TS: model.TimeOf(now)},
+			Body: "Test push from your hub", Tag: "wy-test", URL: "/#/", Tap: model.TapAuto, TS: model.TimeOf(now),
+			Category: model.CategoryTest, Channel: model.Channel(model.CategoryTest)},
 		TTL: time.Minute, Urgency: "high", Priority: 3, HubURL: s.hubURL(r),
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)

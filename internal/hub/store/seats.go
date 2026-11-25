@@ -36,21 +36,31 @@ type SeatPatch struct {
 	Order     *int64
 	Hidden    *bool
 	ModeSet   bool    // the mode key was present (setup.md 8.5, Kind)
-	Mode      *string // protected, aggressive; nil with ModeSet clears it (not chosen)
+	Mode      *string // protected, aggressive, off; nil with ModeSet clears it (not chosen)
+	// DrainSet: the drain_until key was present; DrainUntil the owner's drain end (ms), nil
+	// to stop it (setup.md 8.5, Owner drain). NowMS: the hub's clock, for "in the future".
+	DrainSet   bool
+	DrainUntil *int64
+	NowMS      int64
 }
 
 // Seat pick modes (seat.pick_mode, schema v20; setup.md 8.5, Kind).
 const (
 	PickProtected  = "protected"
 	PickAggressive = "aggressive"
+	// PickOff (schema v24, seat.pick_off): never picked, nothing moved into it.
+	PickOff = "off"
 )
 
-// ValidPickMode reports whether s is a seat pick mode.
+// ValidPickMode reports whether s is a seat pick mode a slot_info may carry.
 func ValidPickMode(s string) bool { return s == PickProtected || s == PickAggressive }
+
+// MaxDrainAhead is how far ahead a drain may end.
+const MaxDrainAhead = 8 * 24 * 60 * 60 * 1000
 
 // Validate applies the label and colour rules. It needs at least one key.
 func (p SeatPatch) Validate() error {
-	if !p.LabelSet && !p.ColourSet && p.Order == nil && p.Hidden == nil && !p.ModeSet {
+	if !p.LabelSet && !p.ColourSet && p.Order == nil && p.Hidden == nil && !p.ModeSet && !p.DrainSet {
 		return fmt.Errorf("%w: no field to change", ErrBadSeatPatch)
 	}
 	if p.Label != nil && !ValidSeatLabel(*p.Label) {
@@ -62,8 +72,16 @@ func (p SeatPatch) Validate() error {
 	if p.Order != nil && (*p.Order < 0 || *p.Order > 1_000_000) {
 		return fmt.Errorf("%w: order out of range", ErrBadSeatPatch)
 	}
-	if p.Mode != nil && !ValidPickMode(*p.Mode) {
-		return fmt.Errorf("%w: mode must be protected, aggressive or null", ErrBadSeatPatch)
+	if p.Mode != nil && !ValidPickMode(*p.Mode) && *p.Mode != PickOff {
+		return fmt.Errorf("%w: mode must be protected, aggressive, off or null", ErrBadSeatPatch)
+	}
+	if p.DrainUntil != nil {
+		if *p.DrainUntil <= p.NowMS || *p.DrainUntil > p.NowMS+MaxDrainAhead {
+			return fmt.Errorf("%w: drain_until must be in the next 8 days", ErrBadSeatPatch)
+		}
+		if p.Mode != nil && *p.Mode == PickOff {
+			return fmt.Errorf("%w: an account that is off cannot drain", ErrBadSeatPatch)
+		}
 	}
 	return nil
 }
@@ -90,8 +108,28 @@ func (tx *Tx) PatchSeat(id string, p SeatPatch) error {
 			return err
 		}
 	}
-	if p.ModeSet {
-		if _, err := tx.exec(`UPDATE seat SET pick_mode = ?, pick_mode_src = 'ui' WHERE id = ?`, p.Mode, id); err != nil {
+	switch {
+	case p.ModeSet && p.Mode != nil && *p.Mode == PickOff:
+		// Off keeps pick_mode for when it is turned on again, and ends a drain.
+		if _, err := tx.exec(`UPDATE seat SET pick_off = 1, drain_until = NULL WHERE id = ?`, id); err != nil {
+			return err
+		}
+	case p.ModeSet:
+		if _, err := tx.exec(`UPDATE seat SET pick_mode = ?, pick_mode_src = 'ui', pick_off = 0 WHERE id = ?`, p.Mode, id); err != nil {
+			return err
+		}
+	}
+	if p.DrainSet {
+		if p.DrainUntil != nil && !p.ModeSet {
+			var off int
+			if err := tx.queryRow(`SELECT pick_off FROM seat WHERE id = ?`, id).Scan(&off); err != nil {
+				return err
+			}
+			if off == 1 {
+				return fmt.Errorf("%w: the account is off; turn it on before draining it", ErrBadSeatPatch)
+			}
+		}
+		if _, err := tx.exec(`UPDATE seat SET drain_until = ? WHERE id = ?`, p.DrainUntil, id); err != nil {
 			return err
 		}
 	}
@@ -168,4 +206,39 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// DrainRow is a seat the owner drains (seat.drain_until set; schema v24).
+type DrainRow struct {
+	ID    string
+	Until int64 // ms
+}
+
+// DrainingSeats lists the seats with a drain_until, ended ones too (the engine ends them).
+func (tx *Tx) DrainingSeats() ([]DrainRow, error) {
+	rows, err := tx.QueryContext(tx.ctx, `SELECT id, drain_until FROM seat WHERE drain_until IS NOT NULL ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DrainRow
+	for rows.Next() {
+		var r DrainRow
+		if err := rows.Scan(&r.ID, &r.Until); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// EndDrain clears a seat's drain_until when it is still until (the owner may have set
+// another meanwhile). It reports whether it did.
+func (tx *Tx) EndDrain(id string, until int64) (bool, error) {
+	res, err := tx.exec(`UPDATE seat SET drain_until = NULL WHERE id = ? AND drain_until = ?`, id, until)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }

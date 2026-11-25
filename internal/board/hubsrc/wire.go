@@ -13,13 +13,15 @@ type wireWindow struct {
 }
 
 type wireSeat struct {
-	ID      string       `json:"id"`
-	Email   *string      `json:"email"`
-	Label   *string      `json:"label"`
-	Colour  *string      `json:"colour"`
-	Order   int          `json:"order"`
-	Hidden  bool         `json:"hidden"`
-	Windows []wireWindow `json:"windows"`
+	ID         string       `json:"id"`
+	Email      *string      `json:"email"`
+	Label      *string      `json:"label"`
+	Colour     *string      `json:"colour"`
+	Order      int          `json:"order"`
+	Hidden     bool         `json:"hidden"`
+	Windows    []wireWindow `json:"windows"`
+	Mode       *string      `json:"mode"`
+	DrainUntil *time.Time   `json:"drain_until"`
 }
 
 type wireMachine struct {

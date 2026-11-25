@@ -207,7 +207,8 @@ func (s *Store) Samples(ctx context.Context, seat string, keys []string, since t
 type SeatRow struct {
 	ID, Account, Org                    string
 	Email, OrgName, Plan, Label, Colour *string
-	Mode                                *string // seat.pick_mode (setup.md 8.5, Kind)
+	Mode                                *string // seat.pick_mode, or "off" (seat.pick_off; setup.md 8.5, Kind)
+	DrainUntil                          *int64  // seat.drain_until (ms) while in the future
 	Order                               int64
 	Hidden                              bool
 	ExtraUsage, Spend                   json.RawMessage // raw from the newest web_usage, nil if none
@@ -240,7 +241,7 @@ type Place struct {
 
 // Seats lists seats in display order.
 func (s *Store) Seats(ctx context.Context, includeHidden bool, now time.Time) ([]SeatRow, error) {
-	q := `SELECT se.id, se.account_uuid, se.org_uuid, a.email, o.name, o.plan, se.label, se.colour, se.pick_mode, se.sort_order, ` + seatHiddenSQL + `
+	q := `SELECT se.id, se.account_uuid, se.org_uuid, a.email, o.name, o.plan, se.label, se.colour, se.pick_mode, se.sort_order, ` + seatHiddenSQL + `, se.pick_off, se.drain_until
 		FROM seat se LEFT JOIN account a ON a.uuid = se.account_uuid LEFT JOIN org o ON o.uuid = se.org_uuid`
 	if !includeHidden {
 		q += ` WHERE NOT ` + seatHiddenSQL
@@ -253,13 +254,22 @@ func (s *Store) Seats(ctx context.Context, includeHidden bool, now time.Time) ([
 	for rows.Next() {
 		var r SeatRow
 		var email, orgName, plan, label, colour, mode sql.NullString
-		var hidden int
-		if err := rows.Scan(&r.ID, &r.Account, &r.Org, &email, &orgName, &plan, &label, &colour, &mode, &r.Order, &hidden); err != nil {
+		var hidden, off int
+		var drain sql.NullInt64
+		if err := rows.Scan(&r.ID, &r.Account, &r.Org, &email, &orgName, &plan, &label, &colour, &mode, &r.Order, &hidden, &off, &drain); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		r.Email, r.OrgName, r.Plan, r.Label, r.Colour, r.Hidden = ns(email), ns(orgName), ns(plan), ns(label), ns(colour), hidden == 1
 		r.Mode = ns(mode)
+		if off == 1 {
+			o := PickOff
+			r.Mode = &o
+		}
+		if drain.Valid && drain.Int64 > now.UnixMilli() {
+			d := drain.Int64
+			r.DrainUntil = &d
+		}
 		out = append(out, r)
 	}
 	rows.Close()

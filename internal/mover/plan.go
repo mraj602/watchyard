@@ -196,6 +196,9 @@ type Account struct {
 	ReadAt time.Time
 	// Excluded: never a destination (excluded by settings).
 	Excluded bool
+	// Off: the owner keeps it out (setup.md 8.5, Kind): never a destination, and its sessions
+	// stay (nothing moves off it, nothing is pulled from it).
+	Off bool
 	// Drain: the picker spends its room first (it expires unused otherwise).
 	Drain bool
 	// DrainUntil: the owner drains it until then (`wy account drain`; zero: off; setup.md
@@ -622,6 +625,13 @@ func Plan(in Input) Result {
 			}
 			cands = append(cands, s)
 		}
+		// Off: its sessions stay, whatever its projection (setup.md 8.6, Off).
+		if a.Off && len(cands) > 0 {
+			for _, s := range cands {
+				skip(s, OffText)
+			}
+			cands = nil
+		}
 		// The owner drains it: nothing moves off it before its 5-hour window is at its cap or
 		// hits 100% within UrgentWithin (its weekly room is what the owner wants used).
 		if a.ownerDrain(now) && len(cands) > 0 {
@@ -789,12 +799,12 @@ func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]fl
 	for _, m := range res.Moves {
 		moving[m.Session] = true
 	}
-	draining := map[string]bool{}
+	draining, off := map[string]bool{}, map[string]bool{}
 	for _, d := range in.Accounts {
-		draining[d.Key] = d.ownerDrain(now)
+		draining[d.Key], off[d.Key] = d.ownerDrain(now), d.Off
 	}
 	for _, d := range in.Accounts {
-		if !d.ownerDrain(now) || !d.LoggedIn || d.Stale || d.Excluded || p.staleFor(d, now) > 0 {
+		if !d.ownerDrain(now) || !d.LoggedIn || d.Stale || d.Excluded || d.Off || p.staleFor(d, now) > 0 {
 			continue
 		}
 		pp := p
@@ -808,7 +818,7 @@ func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]fl
 		var cands []Session
 		measured := map[string]float64{}
 		for _, s := range in.Sessions {
-			if s.Account == d.Key || draining[s.Account] || moving[s.ID] || !s.Busy || s.Pinned || s.Interactive || s.Stopped || !s.Movable ||
+			if s.Account == d.Key || draining[s.Account] || off[s.Account] || moving[s.ID] || !s.Busy || s.Pinned || s.Interactive || s.Stopped || !s.Movable ||
 				p.young(s, now) || s.Rate < math.Max(math.Max(p.MinBurn, p.PullMinBurn), 1e-9) || p.excluded(s, st, now) != "" {
 				continue
 			}
@@ -870,6 +880,9 @@ func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]fl
 
 // movedOff: a session moved off key this pass or within PullQuiet (a near hit's move off a
 // draining account; a pull then would ping-pong).
+// OffText is why nothing moves off an account that is off.
+const OffText = "off (owner): its sessions stay, and nothing is moved into it"
+
 func (p Params) movedOff(key string, in Input, res *Result, now time.Time) bool {
 	for _, m := range res.Moves {
 		if m.From == key {
@@ -1186,7 +1199,7 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 	var accs []Account
 	why := "no logged-in account on this machine has room for its burn"
 	for _, a := range in.Accounts {
-		if a.Key == s.Account || !a.LoggedIn || a.Stale || a.Excluded || p.staleFor(a, in.Now) > 0 {
+		if a.Key == s.Account || !a.LoggedIn || a.Stale || a.Excluded || a.Off || p.staleFor(a, in.Now) > 0 {
 			continue
 		}
 		if p.Orgs == OrgsSame && a.Org() != from {

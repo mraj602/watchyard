@@ -163,6 +163,9 @@ func Decide(in Input) (Result, error) {
 }
 
 func laneKind(p Policy) string {
+	if p.Off() {
+		return config.NextModeOff
+	}
 	if p.Protected() {
 		return leases.KindProtected
 	}
@@ -681,7 +684,8 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 				break
 			}
 		}
-		if u := rs[g.rep].policy.DrainUntil; u.After(now) {
+		acc.Off = rs[g.rep].policy.Off()
+		if u := rs[g.rep].policy.DrainUntil; u.After(now) && !acc.Off {
 			// The owner drains it: an aggressive drain account until then (setup.md 8.5, Owner drain).
 			acc.DrainUntil = u
 			if acc.Protected {

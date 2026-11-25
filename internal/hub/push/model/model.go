@@ -76,17 +76,99 @@ const (
 	// and its daily digest. Their subject is the machine.
 	TriggerSessionMoved Trigger = "session_moved"
 	TriggerSwitchDigest Trigger = "switch_digest"
+	// Owner drain notices (push.md 3.9, setup.md 8.5 Owner drain): the hub saw a seat's drain
+	// start and end (its subject is the seat), and a machine pulled sessions into a drained
+	// account (its subject is the machine, batched as session_moved).
+	TriggerDrainStarted Trigger = "drain_started"
+	TriggerDrainEnded   Trigger = "drain_ended"
+	TriggerDrainPulled  Trigger = "drain_pulled"
 )
 
 // Triggers lists every trigger in display order.
 var Triggers = []Trigger{TriggerNeedsPermission, TriggerAsked, TriggerFailed, TriggerLimit80, TriggerLimit95, TriggerReset,
 	TriggerMachineSilent, TriggerLimitChange, TriggerUsageReset, TriggerSeatChange, TriggerWeeklyDrop,
-	TriggerSessionMoved, TriggerSwitchDigest}
+	TriggerSessionMoved, TriggerSwitchDigest, TriggerDrainStarted, TriggerDrainEnded, TriggerDrainPulled}
 
-// IsNotice reports whether t is a notice (push.md 3.9): a usage notice or a switch notice.
+// IsNotice reports whether t is a notice (push.md 3.9): a usage notice, a switch notice or a
+// drain notice.
 func (t Trigger) IsNotice() bool {
 	return t == TriggerLimitChange || t == TriggerUsageReset || t == TriggerSeatChange || t == TriggerWeeklyDrop ||
-		t.IsSwitch()
+		t.IsSwitch() || t.IsDrain()
+}
+
+// IsDrain reports whether t is an owner drain notice.
+func (t Trigger) IsDrain() bool {
+	return t == TriggerDrainStarted || t == TriggerDrainEnded || t == TriggerDrainPulled
+}
+
+// FromMachine reports whether t's subject is the machine that sent it (switch notices and
+// drain pulls).
+func (t Trigger) FromMachine() bool { return t.IsSwitch() || t == TriggerDrainPulled }
+
+// Notification categories (push.md 5.5): each trigger is in one, each has its own Android
+// channel on the phone, and a device or topic may turn a whole category off
+// (Prefs.MuteCategories).
+const (
+	CategorySessions = "sessions"
+	CategoryLimits   = "limits"
+	CategorySwitch   = "switch"
+	CategoryDrain    = "drain"
+	CategoryUsage    = "usage"
+	CategoryMachines = "machines"
+	CategoryTest     = "test"
+)
+
+// Categories lists the categories a device may turn off, in display order.
+var Categories = []string{CategorySessions, CategoryLimits, CategorySwitch, CategoryDrain, CategoryUsage, CategoryMachines}
+
+// ValidCategory reports whether c is one of Categories.
+func ValidCategory(c string) bool {
+	for _, k := range Categories {
+		if k == c {
+			return true
+		}
+	}
+	return false
+}
+
+// Category is t's notification category ("" for an unknown trigger).
+func (t Trigger) Category() string {
+	switch {
+	case t == TriggerNeedsPermission || t == TriggerAsked || t == TriggerFailed:
+		return CategorySessions
+	case t == TriggerLimit80 || t == TriggerLimit95 || t == TriggerReset:
+		return CategoryLimits
+	case t.IsSwitch():
+		return CategorySwitch
+	case t.IsDrain():
+		return CategoryDrain
+	case t == TriggerLimitChange || t == TriggerUsageReset || t == TriggerSeatChange || t == TriggerWeeklyDrop:
+		return CategoryUsage
+	case t == TriggerMachineSilent:
+		return CategoryMachines
+	}
+	return ""
+}
+
+// Channel is the phone's Android notification channel of a category (phone.md P6.1).
+func Channel(category string) string {
+	switch category {
+	case CategorySessions:
+		return "wy_needs_you"
+	case CategoryLimits:
+		return "wy_limits"
+	case CategorySwitch:
+		return "wy_switch"
+	case CategoryDrain:
+		return "wy_drain"
+	case CategoryUsage:
+		return "wy_usage"
+	case CategoryMachines:
+		return "wy_machines"
+	case CategoryTest:
+		return "wy_test"
+	}
+	return ""
 }
 
 // IsSwitch reports whether t is a Smart Account Switch notice (push.md 3.9), sent by a machine.
@@ -294,15 +376,24 @@ type Prefs struct {
 	// Widgets asks for widget refresh frames to this device's link target (push.md 13.5);
 	// nil means false. Omitted when nil, so prefs without it encode unchanged.
 	Widgets *bool `json:"widgets,omitempty"`
+	// MuteCategories turns whole categories off for this target (push.md 5.5): their pushes
+	// are not sent to it at all. Omitted when empty.
+	MuteCategories []string `json:"mute_categories,omitempty"`
 }
 
 // WidgetsOn reports whether the device wants widget refresh pushes.
 func (p Prefs) WidgetsOn() bool { return p.Widgets != nil && *p.Widgets }
 
-// Muted reports whether the device mutes t.
+// Muted reports whether the device mutes t, by itself or by its category.
 func (p Prefs) Muted(t Trigger) bool {
 	for _, m := range p.Mute {
 		if m == t {
+			return true
+		}
+	}
+	c := t.Category()
+	for _, m := range p.MuteCategories {
+		if c != "" && m == c {
 			return true
 		}
 	}
@@ -399,6 +490,10 @@ type Payload struct {
 	// Origin is the hub's public URL, link pushes only (push.md 13.2), so the app drops an
 	// action meant for another hub.
 	Origin string `json:"origin,omitempty"`
+	// Category and Channel (push.md 5.5): the push's notification category and the phone's
+	// Android channel for it; a summary is a sessions push.
+	Category string `json:"category,omitempty"`
+	Channel  string `json:"channel,omitempty"`
 }
 
 // PayloadVersion is Payload.V.
