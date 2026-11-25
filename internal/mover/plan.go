@@ -126,6 +126,15 @@ type Params struct {
 	// P5 101%). PullQuiet: no pull within this long after a move off it.
 	PullMargin float64
 	PullQuiet  time.Duration
+	// DrainDestMargin: a move INTO a draining account leaves its projections this many points
+	// under its caps (hyst gives it none otherwise), so a filled drain is not over its cap on
+	// the next pass's small drift (live 2026-11-26 01:00-01:04: two moves filled claude-4 to its
+	// cap, a third left it at "5h projected 98% (cap 97%)"). The source side keeps none.
+	DrainDestMargin float64
+	// ResetSkip: a 5-hour trigger (soft or near hit) is not acted on when the projected 100% hit
+	// is within this long of that window's reset: a stall costs at most this, a mid-turn move a
+	// kill and an uncached re-read (live: a move at 01:04 for a hit at 01:55, reset 01:59).
+	ResetSkip time.Duration
 }
 
 // ScaledPinReserve is a's pin reserve scaled to what its a.Pins pinned sessions, burning rate
@@ -162,6 +171,7 @@ var DefaultParams = Params{
 	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, PassWait: 90 * time.Second, Orgs: OrgsAny,
 	PinReserve5: 10, PinReserve7: 5, PinAlertWithin: 2 * time.Hour,
 	CheapMoves: true, YoungGate: 15 * time.Minute, MinBurn: 1, PullMinBurn: 3, PullMargin: 10, PullQuiet: 15 * time.Minute,
+	DrainDestMargin: 2, ResetSkip: 10 * time.Minute,
 }
 
 // PinIdle: a pinned session idle this long holds no reserve (the caller counts the live pins).
@@ -326,7 +336,10 @@ type Projection struct {
 	Reserve5, Reserve7 float64 `json:",omitempty"`
 	// Window is the window over its cap ("5h", "7d", "" none); Hard: a cap is reached now.
 	Window string
-	Hard   bool
+	// NearReset: the trigger was dropped, the projected 100% hit being within ResetSkip of the
+	// 5-hour reset.
+	NearReset bool
+	Hard      bool
 	// Streak counts the consecutive passes it triggered, this one included; Triggered is
 	// whether this pass acts on it (Held: over the cap, waiting for the spike filter).
 	Streak    int
@@ -580,6 +593,11 @@ func Plan(in Input) Result {
 		}
 		pr.Triggered = over && (passes <= 1 || pr.Streak >= passes || pr.Hard || near)
 		pr.Held = over && !pr.Triggered
+		if pr.Triggered && p.nearReset(pr) {
+			// The stall would last at most ResetSkip; a mid-turn move costs more.
+			pr.Triggered, pr.NearReset = false, true
+			delete(res.Streak, a.Key+" "+pr.Window)
+		}
 		if age := p.staleFor(a, now); age > 0 {
 			// Its level rests on an old reading (live: the hub away, "5h 100%" from a reading
 			// 3 h 37 min old while the account was at ~68%): nothing moves off it on that.
@@ -642,6 +660,14 @@ func Plan(in Input) Result {
 			p.place(in, &res, st, s, a, mv, delta, skip, urgency{near: true, hit: 0})
 		}
 		if !pr.Triggered {
+			if pr.NearReset {
+				for _, s := range ss {
+					if s.burned() && !s.Stopped {
+						skip(s, fmt.Sprintf("5h hit %s before its reset: a stall costs less than a move (account.move_reset_skip_min %d)",
+							(pr.Reset5-pr.Hit).Round(time.Minute), int(p.ResetSkip.Minutes())))
+					}
+				}
+			}
 			if pr.Held {
 				for _, s := range ss {
 					if s.burned() && !s.Stopped && s.Pinned {
@@ -1134,6 +1160,24 @@ func (p Params) hyst(pr Projection) (h5, h7 float64) {
 	return p.Hysteresis, p.Hysteresis
 }
 
+// destHyst is the margin a destination keeps under its caps: hyst, and for a draining account
+// at least DrainDestMargin (the source side keeps none).
+func (p Params) destHyst(pr Projection) (h5, h7 float64) {
+	h5, h7 = p.hyst(pr)
+	if pr.Draining && p.DrainDestMargin > 0 {
+		h5 = math.Max(h5, p.DrainDestMargin)
+		h7 = math.Max(h7, p.DrainDestMargin)
+	}
+	return h5, h7
+}
+
+// nearReset reports whether a 5-hour trigger that is not a limit reached now has its projected
+// 100% hit within ResetSkip of the window's reset. A projection that reaches 100 only at the
+// reset itself is a soft overshoot with no stall to save, and is not skipped.
+func (p Params) nearReset(pr Projection) bool {
+	return p.ResetSkip > 0 && pr.Window == Win5h && !pr.Hard && pr.Hit >= 0 && pr.Reset5-pr.Hit > time.Second && pr.Reset5-pr.Hit <= p.ResetSkip
+}
+
 // overTarget reports whether a projection is still over what the moves aim for (margins).
 func (p Params) overTarget(pr Projection) bool {
 	m5, m7 := p.margins(pr)
@@ -1387,7 +1431,7 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 			pr.P5 -= r * math.Max(0, pr.Reset5.Hours()-e)
 			pr.P7 -= r / pr.ratio * math.Max(0, math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())-e)
 		}
-		h5, h7 := p.hyst(pr)
+		h5, h7 := p.destHyst(pr)
 		return pr, pr.P5 <= pr.Cap5-h5 && pr.P7 <= pr.Cap7-h7 && pr.Level5 < pr.Cap5-h5 && pr.Level7 < pr.Cap7-h7
 	}
 	if p.DestHorizon > 0 && p.oldDest {
