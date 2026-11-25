@@ -47,8 +47,11 @@ jobs:
       - name: go build
         run: CGO_ENABLED=0 go build ./...
 
+      # -timeout 20m: the picker and mover simulators run under -race in parallel; on a busy
+      # macOS runner the picker package took 600 s (Go's default per-package limit) where it
+      # usually takes 6 min.
       - name: go test
-        run: go test -race ./...
+        run: go test -race -timeout 20m ./...
 
       - name: spec check (schema load, OpenAPI validation)
         run: make spec-check PYTHON=python
