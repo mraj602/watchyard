@@ -1,4 +1,4 @@
--- Version 24: account Off and the owner's drain, the same on every machine (setup.md 8.5,
+-- Version 25: account Off and the owner's drain, the same on every machine (setup.md 8.5,
 -- Kind and Owner drain). seat.pick_off 1: the picker never picks the seat and the switch
 -- never moves a session into it (stricter than protected; pick_mode is kept for when it is
 -- turned on again). seat.drain_until: until when (ms) the owner drains it, NULL when not;

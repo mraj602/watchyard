@@ -989,7 +989,7 @@ from a label. In plain words (the one wording every surface uses: `internal/pick
   does not move them off either, even over its caps). Its usage is still read and shown.
   `--explain` says "off (owner): never picked and nothing is moved into it; sessions already
   there stay", `--plan` "off (owner): never picked, nothing moves in or out", the board "off
-  (owner)". On the hub it is `seat.pick_off` (schema v24), `mode: "off"` in the API; locally
+  (owner)". On the hub it is `seat.pick_off` (schema v25), `mode: "off"` in the API; locally
   `next.accounts.<key>.mode = "off"` (`wy account mode <label> off`).
 - **Not chosen**: "Not chosen yet; treated as aggressive." (the behaviour before modes were
   shared, so nothing changes for an account nobody chose for).
@@ -1300,7 +1300,7 @@ account out of the drain; they only limit how many more it takes).
   `next.accounts.<label>.drain_until` (RFC 3339; `--until` takes `15:04` today, `2006-01-02 15:04`
   or RFC 3339; none is 23:59 today) in this machine's config; `wy account drain <label> off`
   deletes it. With a hub it also writes the seat's hub drain (`PUT /v1/accounts/{seat}/drain`,
-  machine token, scope `write`; `seat.drain_until`, schema v24), which every machine reads from
+  machine token, scope `write`; `seat.drain_until`, schema v25), which every machine reads from
   `GET /v1/usage` (`drain_until`), so the drain is the same everywhere; the board and the phone set
   it too (`PATCH /v1/accounts/{seat}` `drain_until`, at most 8 days ahead). `--local` sets only
   this machine's key; when the hub cannot be reached the command says "on this machine only".

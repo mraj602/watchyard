@@ -344,7 +344,7 @@ paths:
         desktop.md C10. `null` clears `label` or `colour`; a missing key leaves it.
         Sets `seat.look_src = 'ui'`, so a later `slot_info` label or colour no longer applies
         (record.md 4.7). `mode` (setup.md 8.5, Kind) is `protected`, `aggressive` or `null`
-        (not chosen) and sets `seat.pick_mode_src = 'ui'`; `off` (schema v24, `seat.pick_off`)
+        (not chosen) and sets `seat.pick_mode_src = 'ui'`; `off` (schema v25, `seat.pick_off`)
         keeps the account out: never picked, nothing moved into it, sessions already there stay
         (it keeps `pick_mode` for when it is turned on again, and ends a drain). `drain_until`
         (setup.md 8.5, Owner drain) is RFC 3339 in the next 8 days, or null to stop; 400 for an

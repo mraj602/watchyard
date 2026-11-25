@@ -8,8 +8,10 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Added
 
-- **Hub schema change: v23 → v24** (migration `0024_seat_off_drain.sql`). Back up the hub
-  database before deploying. It adds two columns to `seat`, `pick_off` (0/1, the Off mode) and
+- **Hub schema change: v23 → v25** (migrations `0024_switch_move.sql`, the same file as the
+  board's Switches log, and `0025_seat_off_drain.sql`). Back up the hub database before
+  deploying. A hub already at v24 (`switch_move`) applies only 0025. 0024 adds the
+  `switch_move` table (unused until the Switches log ships); 0025 adds two columns to `seat`, `pick_off` (0/1, the Off mode) and
   `drain_until` (ms, the hub-shared owner drain), and the base rules `rule_drain_started`,
   `rule_drain_ended` and `rule_drain_pulled` (on). Nothing existing is rewritten; an older `wy`
   ignores the new fields.

@@ -400,7 +400,7 @@ was already pushed by the machine's direct push because it could not reach the h
 5): its alert is kept for the board and the phone's list but created `skipped` with reason
 `direct`, and nothing is sent. A hub older than this ignores the kind (stored untyped).
 
-**Drain notices** (`drain_started`, `drain_ended`, `drain_pulled`; schema v24). A drain set on the
+**Drain notices** (`drain_started`, `drain_ended`, `drain_pulled`; schema v25). A drain set on the
 hub (`seat.drain_until`, written by `PATCH /v1/accounts/{seat}`, `PUT /v1/accounts/{seat}/drain`
 or `wy account drain`) is shared by every machine (setup.md 8.5, Owner drain). The scheduler's
 sweep (3.6, every 60 s) reads the seats with a drain: while `drain_until` is in the future and
@@ -805,7 +805,7 @@ holds the Go type.
 
 | Field | Meaning |
 | --- | --- |
-| `category` / `channel` | The trigger's category and Android channel id (5.4); absent from a hub before v24. |
+| `category` / `channel` | The trigger's category and Android channel id (5.4); absent from a hub before v25. |
 | `type` | `alert`, `summary` or `test`; `refresh` only in a link `refresh` frame (13.5: never shown, not this object's other fields). |
 | `alert` / `alerts` | The alert (for `summary`: the first) and the alerts in the push, at most 20 ids: a larger summary lists the first ones (and fewer if the payload would not fit 3 000 bytes); the app refetches the list. |
 | `tag` | Notification tag: `wy-s-<session>`, `wy-l-<seat>-<window>`, `wy-r-<seat>-<window>`, `wy-m-<machine>`, `wy-u-<trigger>-<seat or model>`, `wy-summary`, `wy-test`. The same tag replaces the earlier notification. |

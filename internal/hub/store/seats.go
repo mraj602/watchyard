@@ -48,7 +48,7 @@ type SeatPatch struct {
 const (
 	PickProtected  = "protected"
 	PickAggressive = "aggressive"
-	// PickOff (schema v24, seat.pick_off): never picked, nothing moved into it.
+	// PickOff (schema v25, seat.pick_off): never picked, nothing moved into it.
 	PickOff = "off"
 )
 
@@ -208,7 +208,7 @@ func boolInt(b bool) int {
 	return 0
 }
 
-// DrainRow is a seat the owner drains (seat.drain_until set; schema v24).
+// DrainRow is a seat the owner drains (seat.drain_until set; schema v25).
 type DrainRow struct {
 	ID    string
 	Until int64 // ms
