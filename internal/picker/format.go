@@ -308,6 +308,9 @@ func explainLanes(w io.Writer, res Result) error {
 			fmt.Fprintln(w, leaseLine(r.Label, lc))
 		}
 	}
+	if res.LaneBurn != "" {
+		fmt.Fprintln(w, res.LaneBurn)
+	}
 	for _, p := range res.Picks {
 		fmt.Fprintln(w, "Pick: "+Line(p.Ranked))
 	}

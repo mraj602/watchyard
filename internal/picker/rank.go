@@ -171,6 +171,8 @@ type Result struct {
 	// NextFree is the earliest time an account that is not eligible now can be used.
 	NextFree *time.Time `json:"next_free"`
 	Warnings []string   `json:"warnings,omitempty"`
+	// LaneBurn: the --explain line of the new lane's burn in the switch-projection check.
+	LaneBurn string `json:"lane_burn,omitempty"`
 }
 
 // Rank projects every candidate and orders them by the strategy.

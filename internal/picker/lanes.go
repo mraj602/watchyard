@@ -924,10 +924,11 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 				tl = p.laneTail(in.Stats)
 				lr := r                // the new lane's burn, points per hour
 				var ldur time.Duration // its expected time (0: unknown)
+				lclass := ""           // its size class when --expect gave one
 				if p.UseEstimate {
 					est := p.estimate(in.cur, acc, in.Stats)
 					if est.given {
-						ldur = hoursDur(est.dur)
+						ldur, lclass = hoursDur(est.dur), est.class
 					}
 					if est.given && (!p.EstFloor || est.cost > tl) {
 						tl = est.cost
@@ -994,7 +995,8 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 					if in.Stats.Rate > lr {
 						lr = in.Stats.Rate
 					}
-					if why5 := moverOver(in.Mover, acc, v, lr, ldur, p, now); why5 != "" {
+					sl := p.switchLane(lr, lclass, ldur, in.Stats)
+					if why5 := moverOver(in.Mover, acc, v, sl, p, now); why5 != "" {
 						skip, why, level, capped, soft = true, why5, 3, false, false
 					}
 				}
@@ -1257,6 +1259,7 @@ func lessRounded(a, b LaneRow) bool {
 
 // f0 formats like Python's "{:.0f}" (round half to even on the exact value).
 func f0(x float64) string { return strconv.FormatFloat(x, 'f', 0, 64) }
+func f1(x float64) string { return strconv.FormatFloat(x, 'f', 1, 64) }
 
 // pyRound rounds like Python's round(x, n): correctly, half to even.
 func pyRound(x float64, n int) float64 {
@@ -1315,7 +1318,8 @@ func (m *MoverView) expiring(protected bool, hrs float64) bool {
 // lr 5-hour points per hour runs there ("" when it would not): its projection at its measured
 // burn plus the lane (projection.Levels, the switch's own maths) over the switch's caps less
 // the pin reserve.
-func moverOver(m *MoverView, acc LaneAccount, v laneState, lr float64, expect time.Duration, p LaneParams, now time.Time) string {
+func moverOver(m *MoverView, acc LaneAccount, v laneState, sl switchLaneEst, p LaneParams, now time.Time) string {
+	lr, expect := sl.rate, sl.dur
 	pa := p.account(acc)
 	c5, c7 := m.caps(acc.Protected, v.hrs)
 	if c5 <= 0 && c7 <= 0 {
@@ -1339,6 +1343,10 @@ func moverOver(m *MoverView, acc LaneAccount, v laneState, lr float64, expect ti
 		hl = math.Max(expect.Hours(), m.ExpectFloorH)
 	}
 	l5, l7 := projection.Levels(0, 0, math.Max(0, lr), pa.ratio(), math.Min(hl, h5), math.Min(hl, v.hrs), math.Min(hl, m.WeekSpanH))
+	if sl.maxPts > 0 && l5 > sl.maxPts { // no --expect: at most the medium class's cost
+		l7 *= sl.maxPts / l5
+		l5 = sl.maxPts
+	}
 	p5, p7 = p5+l5, p7+l7
 	// Under the caps less the destination's margin, as a moved session must be (a placement
 	// is a destination too).
@@ -1365,4 +1373,69 @@ func expiringCap(m *MoverView, acc LaneAccount, prot bool, hrs float64) float64 
 	}
 	_, c7 := m.caps(prot, hrs)
 	return pinLess(c7, acc.PinReserve7)
+}
+
+// laneRateClamp: the switch-projection check takes a new lane at most this many times its size
+// class's burn (cost over wall time; medium without --expect). A measured lane burn far above
+// it is a measuring fault, not a lane (live pre8: 57 points/h from move leases against ~9).
+const laneRateClamp = 2.0
+
+// switchLaneEst is a new lane as the switch-projection check counts it: its burn (points per
+// hour), its expected time and, without --expect, the most points it may add (the medium
+// class's cost); Clamped: the burn was cut to laneRateClamp × its class's (From: before).
+type switchLaneEst struct {
+	rate, from float64
+	dur        time.Duration
+	maxPts     float64
+	class      string
+	clamped    bool
+}
+
+// switchLane is the new lane for the switch-projection check: burning lr (the larger of its
+// estimate's and the measured lane burn), at most laneRateClamp × its class's burn; a lane
+// without --expect (class "") is a medium lane: the medium class's time, at most its cost.
+func (p LaneParams) switchLane(lr float64, class string, dur time.Duration, st LaneStats) switchLaneEst {
+	sl := switchLaneEst{rate: lr, from: lr, dur: dur, class: class}
+	switch class {
+	case ExpectShort, ExpectMedium, ExpectLong:
+	default:
+		sl.class = ExpectMedium
+	}
+	b := p.classBench(sl.class, st)
+	if class == "" || dur <= 0 {
+		sl.class, sl.dur, sl.maxPts = ExpectMedium, b.Dur, b.Cost
+		b = p.classBench(ExpectMedium, st)
+	}
+	if b.Dur > 0 && b.Cost > 0 {
+		if c := laneRateClamp * b.Cost / b.Dur.Hours(); sl.rate > c {
+			sl.rate, sl.clamped = c, true
+		}
+	}
+	return sl
+}
+
+// SwitchLaneNote is the --explain line of the new lane's burn in the switch-projection check,
+// for a lane of the given class ("" no --expect): "" when the switch is off.
+func SwitchLaneNote(in LaneInput, class string, dur time.Duration) string {
+	if in.Mover == nil {
+		return ""
+	}
+	p := in.Params
+	_, _, _, r := p.laneStats(in.Stats)
+	lr := r
+	if in.Stats.Rate > lr {
+		lr = in.Stats.Rate
+	}
+	sl := p.switchLane(lr, class, dur, in.Stats)
+	s := fmt.Sprintf("Lane burn (switch check): a new %s lane at %s points/h", sl.class, f1(sl.rate))
+	if in.Stats.NRate > 0 {
+		s += fmt.Sprintf(" (measured %s points/h, p75 of %d lanes)", f1(in.Stats.Rate), in.Stats.NRate)
+	}
+	if sl.clamped {
+		s += fmt.Sprintf("; clamped from %s to %s× the %s class's burn", f1(sl.from), f0(laneRateClamp), sl.class)
+	}
+	if sl.maxPts > 0 {
+		s += fmt.Sprintf("; no --expect: counted as a medium lane, at most %s points", f1(sl.maxPts))
+	}
+	return s
 }

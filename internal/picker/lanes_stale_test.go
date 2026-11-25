@@ -60,53 +60,44 @@ func TestLanesStaleData(t *testing.T) {
 // Live (pre7): the picker leased 2de58a08 (ai-lane-C3; the ledger line has no --expect, drain
 // true) on claude-3 at 07:36, 7d 85%, cap 88 (98 less its 2 pins' 10), its 5 hours resetting in
 // 45 minutes; the switch moved it off at 07:53, "7d projected 95% (cap 88%) at 16.4 points/h".
-// The picker counted the lane of unknown length for 90 minutes, at most to the 5-hour reset;
-// the switch to min(the weekly reset, 5 h). Now both count it to the trigger's horizon.
+// A lane of unknown length counts as a medium lane (at most its cost, live pre8), and a
+// placement must stay the switch's 5-point margin under the caps, as a moved session must.
 func TestLanesNoPlacementTheSwitchUndoes(t *testing.T) {
 	s := world(40, 20)
 	s["claude-3"] = LaneSample{TS: hrs(-5.0 / 60), Weekly: fp(85), FiveHour: fp(22), FiveHourReset: hrs(0.75), WeeklyReset: hrs(49.5)}
-	in := laneIn(s, 1)
-	in.Params = DefaultLaneParams
-	in.Stats = LaneStats{Rate: 16.4, NRate: 20}
-	mv := &MoverView{Cap5: 95, Cap7: 98, Cap5Protected: 80, Cap7Protected: 80, WeekSpanH: 5, Units: map[string]float64{}, ExpectFloorH: 0.5}
-	in.Mover = mv
-	for i := range in.Accounts {
-		if in.Accounts[i].Key == "claude-3" {
-			in.Accounts[i].PinReserve5, in.Accounts[i].PinReserve7, in.Accounts[i].Pins = 20, 10, 2
-			in.Accounts[i].MoveUnits = 1.8 / DefaultLaneParams.F5
-			mv.Units["claude-3"] = in.Accounts[i].MoveUnits
+	mv := &MoverView{Cap5: 95, Cap7: 98, Cap5Protected: 80, Cap7Protected: 80, WeekSpanH: 5, Units: map[string]float64{},
+		ExpectFloorH: 0.5, Hysteresis: 5}
+	mk := func(weekly float64, ex []LaneExpect) LaneInput {
+		s["claude-3"] = LaneSample{TS: hrs(-5.0 / 60), Weekly: fp(weekly), FiveHour: fp(22), FiveHourReset: hrs(0.75), WeeklyReset: hrs(49.5)}
+		in := laneIn(s, 1)
+		in.Params, in.Stats, in.Mover, in.Expects = DefaultLaneParams, LaneStats{Rate: 16.4, NRate: 20}, mv, ex
+		for i := range in.Accounts {
+			if in.Accounts[i].Key == "claude-3" {
+				in.Accounts[i].PinReserve5, in.Accounts[i].PinReserve7, in.Accounts[i].Pins = 20, 10, 2
+				in.Accounts[i].MoveUnits = 1.8 / DefaultLaneParams.F5
+				mv.Units["claude-3"] = in.Accounts[i].MoveUnits
+			}
 		}
+		return in
 	}
-	row := rowOf(rank(t, in), "claude-3")
 	if isProt("claude-3") {
 		t.Skip("claude-3 is protected in this fixture")
 	}
-	if !row.Skip || !strings.Contains(row.Reason, "7d 85%") || !strings.Contains(row.Reason, "over its cap 88%") {
-		t.Fatalf("claude-3 %+v", row)
+	// At 85 (no --expect): 85 + 1.8 × 5 h / ρ + the medium lane's ≤ 3.2 / ρ ≈ 86.7, over 88 − 5.
+	row := rowOf(rank(t, mk(85, nil)), "claude-3")
+	if !row.Skip || !strings.Contains(row.Reason, "7d 85%") || !strings.Contains(row.Reason, "over its cap 88% less the switch's 5-point margin") {
+		t.Fatalf("claude-3 at 85: %+v", row)
 	}
-	// Expected to run 20 minutes (--expect short): counted for 30 minutes; at 83% it fits
-	// (to the trigger's horizon it would not: 83 + 18.2 / ρ × 5 h).
-	s["claude-3"] = LaneSample{TS: hrs(-5.0 / 60), Weekly: fp(83), FiveHour: fp(22), FiveHourReset: hrs(0.75), WeeklyReset: hrs(49.5)}
-	acc := in.Accounts
-	in = laneIn(s, 1)
-	in.Accounts, in.Params, in.Stats, in.Mover = acc, DefaultLaneParams, LaneStats{Rate: 16.4, NRate: 20}, mv
-	for i := range in.Accounts {
-		if in.Accounts[i].Key == "claude-3" {
-			in.Accounts[i].Sample = s["claude-3"]
+	// At 79: 79 + 1.25 + 0.44 ≈ 80.7 with no --expect, and 79 + 1.25 + 18.2 × 0.5 h / ρ ≈ 82.5
+	// for a short lane (counted for 30 minutes): both under 83, placed.
+	for _, ex := range [][]LaneExpect{nil, {{Class: ExpectShort}}} {
+		if row := rowOf(rank(t, mk(79, ex)), "claude-3"); strings.Contains(row.Reason, "switch's projection") {
+			t.Fatalf("claude-3 at 79 (%v): %+v", ex, row)
 		}
 	}
-	if row := rowOf(rank(t, in), "claude-3"); !row.Skip {
-		t.Fatalf("unknown length at 83%%: %+v", row)
-	}
-	in.Expects = []LaneExpect{{Class: ExpectShort}}
-	in.Params.UseEstimate = true
-	if row := rowOf(rank(t, in), "claude-3"); row.Skip && strings.Contains(row.Reason, "switch's projection") {
-		t.Fatalf("short lane refused: %+v", row)
-	}
-	// With the switch's 5-point margin (a placement is a destination): the short lane's 30
-	// minutes take claude-3 over 88 − 5, so it is not placed there.
-	mv.Hysteresis = 5
-	if row := rowOf(rank(t, in), "claude-3"); !row.Skip || !strings.Contains(row.Reason, "less the switch's 5-point margin") {
-		t.Fatalf("short lane at 83%% with the margin: %+v", row)
+	// Without the margin, at 86: 86 + 1.25 + 0.44 ≈ 87.7, under 88.
+	mv.Hysteresis = 0
+	if row := rowOf(rank(t, mk(86, nil)), "claude-3"); strings.Contains(row.Reason, "switch's projection") {
+		t.Fatalf("claude-3 at 86 without the margin: %+v", row)
 	}
 }

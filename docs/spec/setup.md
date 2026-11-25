@@ -1292,10 +1292,17 @@ account out of the drain; they only limit how many more it takes).
   ended); with `--model`, that model's own lanes when there are at least 10. Fewer than 10:
   the fallbacks 8 points (all three) and 15 minutes. A new lane burns `r = Ē / L` points per hour.
   The **lane burn** `R` is the p75 of the lanes' 5-hour points per hour of wall time: lanes that
-  ended (this machine's, launched to ended, 5 minutes or more) and lanes running for 30 minutes
-  or more (their burn so far over their age; a younger lane's first minutes burn far above its
-  steady rate), with `--model` that model's own when there are at least 10; fewer than 10: not
-  measured.
+  ended (this machine's, 20 minutes or more) and lanes running for 30 minutes or more (their
+  burn so far over their age; a younger lane's first minutes burn far above its steady rate),
+  with `--model` that model's own when there are at least 10; fewer than 10: not measured.
+  A lane is a picker lease's session over its whole life, across moves: from its launch to the
+  end of its session's last lease (or now), the burn its session used since. Leases written by
+  moves (strategy `move` or `handoff`, or `moved_from`) are not lanes, for `E`, `L` or `R`, and
+  other machines' leases count for `E` only (the hub does not say which are moves). Live pre8:
+  a moved session keeps its id, its lease ends at the move and a new lease starts, each lease's
+  burn being its session's since; the move leases (minutes of wall time, the resume's cache
+  write) and the picker leases ended at their first move made `R` 57 points/h against ~9-14,
+  and every account was refused.
 - *Forward burn* of the running lanes before a time `T`: `F(T) = Σ rate × min(rem, T)` over the
   account's leases that are not ended and younger than 5 hours (settled and not yet launched ones
   included), where `rate` = the units the session used in the last 15 minutes `× f` per hour when
@@ -2019,15 +2026,20 @@ burn now (this machine's sessions and other machines' sessions the hub measured,
 the new lane's burn, against the switch's caps less the pin reserve. The new lane's burn is the
 larger of its estimate's (cost over wall time, or `r`) and the measured lane burn `R` (8.5 Lane
 statistics): a size class sets how long a lane runs, not how fast it burns (live: a "medium"
-lane counted as 4 points per hour while Opus lanes here burn 12-26). The account's own burn is
+lane counted as 4 points per hour while Opus lanes here burn 12-26), at most 2× its class's
+burn (cost over time; medium without `--expect`), and `--explain` prints the line "Lane burn
+(switch check)" with the measured `R` and whether it was clamped. A lane without `--expect`
+counts as a medium lane: the medium class's time, at most its cost. The account's own burn is
 projected to the resets. One rule counts a session's burn on all three sides (the picker's
 acceptance, the switch's trigger, the switch's destination check): inside its lease's expected
 duration (`--expect`) it burns for max(expected remaining, 30 minutes), at most to each
 window's horizon; unknown or overrun, to the horizons (the 5-hour reset, and min(weekly reset,
 5 hours)). A short lane cannot burn 5 hours (live: an idle account refused a 25-minute lane at
-23 points/h, "projection 115%"), and a lane without `--expect` is counted to the horizons by the
-picker as the trigger will count it (live, pre7: 2de58a08, no `--expect`, was placed on claude-3
-at 7d 85% and moved off 17 minutes later, "7d projected 95% (cap 88%) at 16.4 points/h").
+23 points/h, "projection 115%"). The lease's `--expect` is not kept in the ledger, so a running
+lane is of unknown length to the switch; the picker's new lane without `--expect` is a medium
+lane (above), so the two still differ for such lanes (live, pre7: 2de58a08, no `--expect`,
+placed on claude-3 at 7d 85% and moved off 17 minutes later, "7d projected 95% (cap 88%) at
+16.4 points/h"); the 5-point margin below keeps most of those off.
 A placement is a destination too: the picker lets a lane in only while the projection stays
 `move_hysteresis` (5) points under the caps less the pin reserve, as a moved session must.
 Simulator (`internal/mover/sim_churn_test.go`, 30 runs × 10 patterns, per run-day): moves the

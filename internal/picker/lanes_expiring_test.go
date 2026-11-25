@@ -53,12 +53,13 @@ func TestLanesMoverShortLane(t *testing.T) {
 	if strings.Contains(row.Reason, "switch's projection") {
 		t.Fatalf("short lane refused: %+v", row)
 	}
-	// No expected duration: to the 5-hour reset, as the switch's trigger counts a lane of
-	// unknown length: 23 × 5 = 115, refused.
+	// No expected duration: counted as a medium lane, at most the medium class's cost (live
+	// pre8: lanes of unknown length projected to the reset at a measured 57 points/h refused
+	// every account), not 23 × 5 = 115.
 	in.Expects = nil
 	row = rowOf(rank(t, in), "claude-2")
-	if !strings.Contains(row.Reason, "the switch's projection is 115%") {
-		t.Fatalf("to the reset: %+v", row)
+	if strings.Contains(row.Reason, "switch's projection") {
+		t.Fatalf("unknown length refused: %+v", row)
 	}
 	// A short lane (under 30 minutes: counted for 30) on an account at 85: 85 + 23 × 0.5 =
 	// 96.5, over 95.
