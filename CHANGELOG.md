@@ -178,6 +178,16 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **Board drain field** (pwa.md 3.0a). The Until field was a time-only input that the radio
+  buttons' style shrank to an 18 px box, and Change sent the next time the clock showed it, so a
+  drain the CLI set for Sunday 07:20 became Thursday 07:20. It is now a date-and-time field,
+  prefilled with the current end in local time, sized to read, and Start / Change send exactly
+  what it shows.
+- **Hub: analytics no longer stall everything else** (analytics.md 2). The board asks for four
+  reports at once; after the hourly backup each took about a minute and together they held the
+  whole read pool, so auth, `/v1/sessions`, ingest and a settings PATCH waited (503s, a 47 s
+  PATCH). One report runs at a time now, waiting ones hold no connection, and a report gives up
+  after 45 s.
 - **Stale-data alerts only when they matter** (setup.md 8.6, Stale data). The switch told the
   owner "moves nothing off or onto … (is the hub reachable?)" whenever an account's reading was
   old, every hour for idle accounts. It now alerts only when stale data held back a move (a

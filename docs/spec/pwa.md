@@ -193,15 +193,16 @@ The desktop app's Hub tab shows this same page.
   options (Aggressive, Protected, Drain, Off, Not chosen), each with its definition right under
   its name; a change saves at once with `PATCH /v1/accounts/{seat}`: Aggressive, Protected, Off
   and Not chosen send `{"mode": …, "drain_until": null}` (`"off"`, null for Not chosen), which
-  also stops any drain. **Drain** is not a mode: choosing it opens a time field (default 23:59,
-  local) with **Start draining**, which sends `{"drain_until": <RFC 3339>}` (the next time the
-  clock shows that time, so a time already past means tomorrow); while draining the field
-  reads "Change" and a **Stop draining** button sends `{"drain_until": null}`. A draining
+  also stops any drain. **Drain** is not a mode: choosing it opens a date-and-time field
+  (`datetime-local`, local time, prefilled with the current end while draining, else today 23:59)
+  with **Start draining**, which sends `{"drain_until": <RFC 3339>}` for exactly the date and time
+  shown (a time already past is refused on the board, never moved to another day); while
+  draining the button reads "Change" and a **Stop draining** button sends `{"drain_until": null}`. A draining
   account shows "Draining until 23:59" (with the weekday, "Draining until Fri 09:05", when the
   end is not today), computed from `Seat.drain_until` while it is in the future. **Off** is
   stricter than Protected and shows "Off: never picked, nothing moved in; sessions already
   there stay"; its usage is still shown. The pure helpers (`seatModeKey`, `drainText`,
-  `drainUntilISO`, `modeBody`) are in `pick-mode.js`. A refusal puts the old choice back with
+  `drainInputValue`, `drainUntilISO`, `modeBody`) are in `pick-mode.js`. A refusal puts the old choice back with
   the reason. Anyone else sees the current choice
   and its definition as text. An account with no mode shows "Not chosen yet; treated as
   aggressive." as a highlighted line at the top of the section (the options are right under

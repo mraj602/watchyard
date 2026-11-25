@@ -73,16 +73,31 @@ export function drainText(seat, now = Date.now()) {
 // The time input's default (and the hub's): the end of today, local.
 export const DRAIN_DEFAULT_TIME = '23:59';
 
-// The seat's current drain end as "HH:MM" for the time input, else the default.
-export function drainInputTime(seat, now = Date.now()) {
+// A Date as the value of a datetime-local input: "YYYY-MM-DDTHH:MM", local time.
+export const localInputValue = (d) =>
+  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+
+// The Until field's value: the seat's current drain end (date and time, local) while draining,
+// else the default, the end of today (tomorrow's once today's has passed).
+export function drainInputValue(seat, now = Date.now()) {
   const d = drainEnd(seat, now);
-  return d ? `${pad2(d.getHours())}:${pad2(d.getMinutes())}` : DRAIN_DEFAULT_TIME;
+  if (d) return localInputValue(d);
+  return localInputValue(new Date(drainUntilISO(DRAIN_DEFAULT_TIME, now)));
 }
 
-// "HH:MM" (local) -> the RFC 3339 instant for the next time the clock shows it: today, or
-// tomorrow when it has passed (the hub refuses a past time). null for a malformed time.
-export function drainUntilISO(hhmm, now = Date.now()) {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || ''));
+// The field's value -> the RFC 3339 instant to send; null when it is malformed or not in the
+// future. "YYYY-MM-DDTHH:MM" (the field) is taken exactly as shown, in local time: never moved
+// to another day. A bare "HH:MM" (the default) is the next time the clock shows it.
+export function drainUntilISO(value, now = Date.now()) {
+  const v = String(value || '');
+  const full = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2})?$/.exec(v);
+  if (full) {
+    const [y, mo, da, hh, mi] = full.slice(1).map(Number);
+    const d = new Date(y, mo - 1, da, hh, mi, 0, 0);
+    if (d.getFullYear() !== y || d.getMonth() !== mo - 1 || d.getDate() !== da || hh > 23 || mi > 59) return null;
+    return d.getTime() > now ? d.toISOString() : null;
+  }
+  const m = /^(\d{1,2}):(\d{2})$/.exec(v);
   if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return null;
   const d = new Date(now);
   d.setHours(Number(m[1]), Number(m[2]), 0, 0);
@@ -90,11 +105,11 @@ export function drainUntilISO(hhmm, now = Date.now()) {
   return d.toISOString();
 }
 
-// The PATCH /v1/accounts/{seat} body for an option: drain sends only drain_until, every other
-// choice sends its mode and stops any drain.
-export function modeBody(option, hhmm, now = Date.now()) {
+// The PATCH /v1/accounts/{seat} body for an option: drain sends only drain_until (value: the
+// Until field, see drainUntilISO), every other choice sends its mode and stops any drain.
+export function modeBody(option, value, now = Date.now()) {
   if (option === 'drain') {
-    const until = drainUntilISO(hhmm || DRAIN_DEFAULT_TIME, now);
+    const until = drainUntilISO(value || DRAIN_DEFAULT_TIME, now);
     return until ? { drain_until: until } : null;
   }
   const o = MODE_OPTIONS.find((x) => x.key === option);

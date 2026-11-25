@@ -344,7 +344,10 @@ mark { background: var(--warn-bg); color: inherit; border-radius: 2px; box-shado
 .mode-pick legend { padding: 0; margin-bottom: 6px; font-size: 14px; font-weight: 600; }
 .mode-opt { display: grid; grid-template-columns: 22px 1fr; column-gap: 8px; align-items: center; padding: 8px 10px; border: 1px solid var(--hair); border-radius: var(--radius); background: var(--panel); }
 .mode-opt.is-on { border-color: var(--link); background: var(--selected); }
-.mode-opt input { width: 18px; height: 18px; margin: 0; accent-color: var(--link); }
+.mode-opt input[type="radio"] { width: 18px; height: 18px; margin: 0; accent-color: var(--link); }
+.mode-opt .drain-form { grid-column: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }
+.drain-form .drain-label { display: inline-flex; align-items: center; gap: 8px; }
+.drain-form input.drain-until { width: auto; min-width: 15.5em; height: auto; min-height: 36px; padding: 6px 8px; border: 1px solid var(--btn-border); border-radius: 8px; background: var(--panel); color: var(--ink); font-variant-numeric: tabular-nums; }
 .mode-opt label { cursor: pointer; font-size: 14px; }
 .mode-def { grid-column: 2; margin: 2px 0 0; }
 .ana-list { list-style: none; padding: 0; margin: 0; }

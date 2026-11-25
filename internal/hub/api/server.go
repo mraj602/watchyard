@@ -80,8 +80,9 @@ type Server struct {
 	doneOnce sync.Once
 	uiBuild  string // build hash of cfg.WebUI, "" without one
 
-	actionLim ipLimiter // POST /v1/actions/{token}, per client IP
-	streams   streamSet // open GET /v1/stream responses, so a revoke ends them at once
+	actionLim ipLimiter     // POST /v1/actions/{token}, per client IP
+	streams   streamSet     // open GET /v1/stream responses, so a revoke ends them at once
+	anaSlots  chan struct{} // analytics reports that may run at once (analyticsSlots)
 }
 
 // HTTPServer is the http.Server `wy hub serve` runs s.Handler() on. It sets no ReadTimeout
@@ -106,7 +107,7 @@ func New(cfg Config) *Server {
 	if cfg.PingEvery <= 0 {
 		cfg.PingEvery = 25 * time.Second
 	}
-	s := &Server{cfg: cfg, store: cfg.Store, done: make(chan struct{})}
+	s := &Server{cfg: cfg, store: cfg.Store, done: make(chan struct{}), anaSlots: make(chan struct{}, analyticsSlots)}
 	if cfg.WebUI != nil {
 		s.uiBuild = webui.BuildHash(cfg.WebUI) // the same hash webui.Handler puts in sw.js
 	}
