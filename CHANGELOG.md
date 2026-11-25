@@ -8,6 +8,11 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Added
 
+- **Re-check after the step wait** (setup.md 8.6, Re-check). A mid-turn move is re-chosen on
+  the state read again just before it is carried out: dropped when its source no longer needs
+  it, sent to a better destination that fits now (aggressive before protected). The move
+  record (`recheck`), `--list` and `--plan` (the last hour, from `move/rechecks.jsonl`) say so.
+  Live: 441d209b went to protected claude-7 on a plan 66 s old, when claude-4 had room.
 - **Near-hit moves** (setup.md 8.6, Near hit). When a source will reach 100% within 60 min
   (or is hard now), the account rate limit no longer holds its moves back, the highest burner
   goes first, and when no destination fits until its reset the aggressive account that stays

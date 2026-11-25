@@ -344,6 +344,8 @@ type Move struct {
 	// BestFit long, may take it when none has room to its reset).
 	Urgent  bool
 	BestFit time.Duration `json:",omitempty"`
+	// Recheck: what the re-check after its step wait changed ("" none; Recheck).
+	Recheck string `json:",omitempty"`
 }
 
 // Skip is a session on a triggered account the pass leaves where it is, and why.
@@ -1371,6 +1373,60 @@ func Destination(in Input, id string) (string, string) {
 		}
 	}
 	return "", "the session is not known"
+}
+
+// Recheck re-chooses a planned move just before it is carried out, on state in read again
+// after the session's step wait (setup.md 8.6, Re-check): the plan was made on readings and
+// burns up to a step wait old (live pre10: 441d209b, planned onto protected claude-7 at
+// 11:57:35 when claude-4 projected 90.2 of 90, moved at 11:58:41 when claude-4 had room).
+// It plans again (the session's own move lock left out): no move for it now (the source no
+// longer needs it, or another session's move is enough) drops it (ok false, why); another
+// destination takes it, with the change in Move.Recheck; the same one keeps the move as
+// planned (the new reason and burn).
+func Recheck(in Input, mv Move) (Move, string, bool) {
+	ss := append([]Session(nil), in.Sessions...)
+	for i := range ss {
+		if ss[i].ID == mv.Session {
+			ss[i].Moving = false // its own move holds its lock
+		}
+	}
+	in.Sessions = ss
+	label := func(key string) string {
+		for _, a := range in.Accounts {
+			if a.Key == key {
+				return a.Label
+			}
+		}
+		return key
+	}
+	r := Plan(in)
+	for _, x := range r.Moves {
+		if x.Session != mv.Session {
+			continue
+		}
+		if x.To == "" {
+			return mv, "re-checked after its step wait: " + reasonTail(x.Reason), false
+		}
+		x.MidTurn, x.StepEnded, x.StepTool, x.StepCmd = mv.MidTurn, mv.StepEnded, mv.StepTool, mv.StepCmd
+		if x.To != mv.To {
+			x.Recheck = fmt.Sprintf("re-checked after its step wait: %s, not %s as planned", label(x.To), label(mv.To))
+		}
+		return x, x.Recheck, true
+	}
+	for _, k := range r.Skips {
+		if k.Session == mv.Session {
+			return mv, "re-checked after its step wait: " + k.Why, false
+		}
+	}
+	return mv, "re-checked after its step wait: " + label(mv.From) + " no longer needs it", false
+}
+
+// reasonTail is the part of a move reason after "not moved: ".
+func reasonTail(r string) string {
+	if i := strings.Index(r, "not moved: "); i >= 0 {
+		return r[i+len("not moved: "):]
+	}
+	return r
 }
 
 // DestFloor is the shortest horizon a destination was judged on (Params.DestHorizon, the

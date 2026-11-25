@@ -761,3 +761,83 @@ func TestPlanMovedSessionIsNotNew(t *testing.T) {
 		})
 	}
 }
+
+// The re-check after a step wait (setup.md 8.6, Re-check), from the live pre10 passes:
+// at 11:57:35 claude-2 (85% cap, P5 86.3) planned 441d209b (7.6 points/h) onto protected
+// claude-7: claude-4 projected 59.44 + 7.6 × 4.04 h = 90.2 of its 90, claude-6 was held by a
+// 4-minute-old lane counted at the new-lane burn. The move ran at 11:58:41 after its step
+// wait, when claude-4 burned 9.6 points/h, not 11.3: re-chosen, claude-4 takes it.
+func TestRecheckAfterStepWait(t *testing.T) {
+	t1 := time.Date(2026, 11, 25, 6, 27, 35, 0, time.UTC)
+	old := t1.Add(-3 * time.Hour)
+	c2k, c4k, c6k, c7k := "acct:c2/oA", "acct:c4/oA", "acct:c6/oB", "acct:c7/oB"
+	world := func(now time.Time, c4rate, c2rate54 float64) Input {
+		c2 := Account{Key: c2k, Label: "claude-2", LoggedIn: true, Ratio: 8, ReadAt: now, Pins: 1, Reserve5: 10, Reserve7: 5,
+			W5: Window{Level: 69, Reset: t1.Add(32*time.Minute + 25*time.Second)}, W7: Window{Level: 31, Reset: t1.Add(140 * time.Hour)}}
+		c2.Rate = c2rate54 + 7.6 + 1.07
+		c2.Meter = c2.Rate
+		c4 := Account{Key: c4k, Label: "claude-4", LoggedIn: true, Ratio: 8.57, ReadAt: now, Rate: c4rate, Meter: c4rate,
+			W5: Window{Level: 13.67, Reset: t1.Add(4*time.Hour + 2*time.Minute + 35*time.Second)}, W7: Window{Level: 53.2, Reset: t1.Add(91 * time.Hour)}}
+		c6 := Account{Key: c6k, Label: "claude-6", LoggedIn: true, Ratio: 8, ReadAt: now, Rate: 10.66, Meter: 10.66, Pins: 1, Reserve5: 10, Reserve7: 5,
+			W5: Window{Level: 48.4, Reset: t1.Add(112*time.Minute + 30*time.Second)}, W7: Window{Level: 47, Reset: t1.Add(102 * time.Hour)}}
+		c7 := Account{Key: c7k, Label: "claude-7", Protected: true, LoggedIn: true, Ratio: 8, ReadAt: now, Pins: 2, Reserve5: 20, Reserve7: 10,
+			W5: Window{Level: 12, Reset: t1.Add(132 * time.Minute)}, W7: Window{Level: 32, Reset: t1.Add(50 * time.Hour)}}
+		ss := []Session{
+			{ID: "54c4e1e8", Account: c2k, Rate: c2rate54, Busy: true, Movable: true, Context: 150_000, Started: old},
+			{ID: "441d209b", Account: c2k, Rate: 7.6, Busy: true, Movable: true, Context: 80_000, Started: old},
+			{ID: "40f6a21a", Account: c2k, Rate: 1.07, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old},
+			{ID: "0d2d67fd", Account: c6k, Rate: 3.1, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old},
+			{ID: "ea99cb89", Account: c6k, Rate: 3.25, Busy: true, Movable: true, Started: old},
+			{ID: "1ef81ac8", Account: c6k, Rate: 4.1, Busy: true, Movable: true, Started: t1.Add(-163 * time.Second)},
+			{ID: "3b2611ed", Account: c4k, Rate: c4rate, Busy: true, Movable: true, Started: old},
+		}
+		return Input{Now: now, Params: DefaultParams, Accounts: []Account{c6, c4, c2, c7}, Sessions: ss, LaneRate: 12,
+			Streak: map[string]int{c2k + " " + Win5h: 2},
+			Recent: []Record{{Session: "54c4e1e8", From: c6k, To: c2k, At: t1.Add(-25*time.Minute - 34*time.Second), Rate: 19.2, RateKnown: true}}}
+	}
+	r := Plan(world(t1, 11.32, 23.3))
+	var planned Move
+	for _, m := range r.Moves {
+		t.Logf("11:57:35 %s -> %s: %s", m.Session, m.To, m.Reason)
+		if m.Session == "441d209b" {
+			planned = m
+		}
+	}
+	if planned.To != c7k {
+		t.Fatalf("the 11:57:35 plan: 441d209b to %q, want claude-7 (the case as it happened)", planned.To)
+	}
+	planned.MidTurn = true
+	t2 := t1.Add(66 * time.Second)
+	for _, c := range []struct {
+		name          string
+		at            time.Time
+		c4rate, rate5 float64
+		want          string // "" dropped
+		changed       bool
+	}{
+		{"claude-4 has room now", t2, 9.6, 23.3, c4k, true},
+		// (66 s on, at 11.3 points/h, claude-4's projection is 89.8: under its 90 too.)
+		{"nothing changed", t1, 11.32, 23.3, c7k, false},
+		{"the source no longer needs it", t2, 11.32, 12, "", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, why, ok := Recheck(world(c.at, c.c4rate, c.rate5), planned)
+			t.Logf("%v %s: %q", ok, got.To, why)
+			if c.want == "" {
+				if ok || !strings.Contains(why, "re-checked after its step wait") {
+					t.Fatalf("kept: %+v %q", got, why)
+				}
+				return
+			}
+			if !ok || got.To != c.want {
+				t.Fatalf("to %q (ok %v, %q), want %q", got.To, ok, why, c.want)
+			}
+			if (got.Recheck != "") != c.changed || (c.changed && !strings.Contains(got.Recheck, "claude-4, not claude-7 as planned")) {
+				t.Errorf("recheck note %q", got.Recheck)
+			}
+			if !got.MidTurn {
+				t.Error("lost its mid-turn mark")
+			}
+		})
+	}
+}

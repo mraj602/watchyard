@@ -142,7 +142,11 @@ func moveCmd(e moveEnv, args []string) error {
 			return "~/" + filepath.Base(dir)
 		}
 		for _, x := range es {
-			fmt.Fprintf(e.stdout, "%s  %s  %s -> %s  %s  %s\n", x.At.Local().Format("01-02 15:04"), short(x.SessionID), name(x.FromDir, x.From), name(x.ToDir, x.To), x.Kind, x.Reason)
+			reason := x.Reason
+			if x.Recheck != "" {
+				reason += " (" + x.Recheck + ")"
+			}
+			fmt.Fprintf(e.stdout, "%s  %s  %s -> %s  %s  %s\n", x.At.Local().Format("01-02 15:04"), short(x.SessionID), name(x.FromDir, x.From), name(x.ToDir, x.To), x.Kind, reason)
 		}
 		printPinRows(e.stdout, pins)
 		for _, x := range warns {
@@ -163,15 +167,22 @@ func moveCmd(e moveEnv, args []string) error {
 	case *plan:
 		r := mover.Plan(w.input)
 		r.Skips = w.inScope(r.Skips)
+		rcs := st.Rechecks(e.now().Add(-time.Hour))
 		if *asJSON {
 			doc := w.planDoc(r)
 			doc["skipped"] = r.Skips
+			if len(rcs) > 0 {
+				doc["rechecks"] = rcs
+			}
 			return writeJSONOut(e.stdout, doc)
 		}
 		w.printPlan(e.stdout, r, cfg)
 		for _, k := range r.Skips {
 			l, _ := w.launch(k.Session)
 			fmt.Fprintf(e.stdout, "%s %s stays on %s: %s\n", short(k.Session), l.Name, w.accLabel(k.Account), k.Why)
+		}
+		for _, x := range rcs {
+			fmt.Fprintln(e.stdout, recheckLine(x))
 		}
 		return nil
 	case *auto:
@@ -324,6 +335,7 @@ func writeJSONOut(w io.Writer, v any) error {
 type moveWorld struct {
 	launches   []mover.Launch
 	builtAt    time.Time // wall clock when its state began to be read
+	noHub      bool      // read with --no-hub (a re-check reads the same way)
 	laneRate   float64   // the picker's new-lane burn: young lanes count at it in the destination check
 	input      mover.Input
 	targets    map[string]mover.Target // by account key
@@ -359,7 +371,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	built := time.Now()
 	cfg := e.config()
 	now := e.now()
-	w := &moveWorld{builtAt: built, targets: map[string]mover.Target{}, keyOfDir: map[string]string{}, labelOfDir: map[string]string{},
+	w := &moveWorld{builtAt: built, noHub: noHub, targets: map[string]mover.Target{}, keyOfDir: map[string]string{}, labelOfDir: map[string]string{},
 		proj: map[string]mover.Projection{}, byID: map[string]mover.Session{}, outScope: map[string]bool{},
 		scope: parseScope(cfg.Account.SmartSwitchScope)}
 	inject, err := loadMoveTest(e.getenv, w.scope)
@@ -1075,8 +1087,15 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State, relea
 			mu.Lock()
 			defer mu.Unlock()
 			st.ClearWait(m.Session)
-			note := mover.Note(w.accLabel(m.From), w.targets[m.To].Label, e.now(), m, w.chainLabels(st, m.Session, e.now())...)
-			n, err := w.carryOut(e, cfg, st, l, w.targets[m.To], note, m.Reason, true, m)
+			t := w.targets[m.To]
+			if m.MidTurn && time.Since(w.builtAt) >= recheckAfter {
+				var ok bool
+				if m, t, ok = w.recheck(e, st, l, m); !ok {
+					return
+				}
+			}
+			note := mover.Note(w.accLabel(m.From), t.Label, e.now(), m, w.chainLabels(st, m.Session, e.now())...)
+			n, err := w.carryOut(e, cfg, st, l, t, note, m.Reason, true, m)
 			if err != nil {
 				if first == nil {
 					first = err
@@ -1089,6 +1108,54 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State, relea
 	wg.Wait()
 	w.tell(e, told) // one notice per parent for the whole pass
 	return first
+}
+
+// recheckLine is a re-check of the last hour for --plan.
+func recheckLine(x mover.RecheckEntry) string {
+	at := x.At.Local().Format("15:04")
+	if x.To == "" {
+		return fmt.Sprintf("re-check %s: %s %s was planned %s -> %s, not moved: %s", at, short(x.SessionID), x.Name, x.From, x.Planned, strings.TrimPrefix(x.Why, "re-checked after its step wait: "))
+	}
+	return fmt.Sprintf("re-check %s: %s %s was planned %s -> %s, moved to %s instead (the state read again after its step wait)", at, short(x.SessionID), x.Name, x.From, x.Planned, x.To)
+}
+
+// recheckAfter: a move carried out this long after its pass began to read its state is
+// re-chosen on state read again (setup.md 8.6, Re-check). A variable for the tests.
+var recheckAfter = 5 * time.Second
+
+// beforeRecheck runs just before a re-check reads the state again (tests: the state changes
+// during the step wait).
+var beforeRecheck func()
+
+// recheck reads the state again after m's step wait and re-chooses (mover.Recheck): false
+// drops the move; a changed destination is recorded (rechecks.jsonl, the move's recheck field)
+// and printed. A failed read keeps the move as planned.
+func (w *moveWorld) recheck(e moveEnv, st mover.State, l mover.Launch, m mover.Move) (mover.Move, mover.Target, bool) {
+	t := w.targets[m.To]
+	if beforeRecheck != nil {
+		beforeRecheck()
+	}
+	w2, err := e.world(w.noHub)
+	if err != nil {
+		fmt.Fprintf(e.stdout, "%s %s: the re-check after its step wait could not read the state (%v): moved as planned\n", short(m.Session), l.Name, err)
+		return m, t, true
+	}
+	nm, why, ok := mover.Recheck(w2.input, m)
+	rec := mover.RecheckEntry{At: e.now(), SessionID: m.Session, Name: l.Name, From: w.accLabel(m.From), Planned: t.Label, Why: why}
+	if !ok {
+		fmt.Fprintf(e.stdout, "%s %s: not moved to %s: %s\n", short(m.Session), l.Name, t.Label, why)
+		_ = st.AppendRecheck(rec)
+		return m, t, false
+	}
+	if nt, ok := w2.targets[nm.To]; ok {
+		t = nt
+	}
+	if nm.Recheck != "" {
+		rec.To = t.Label
+		fmt.Fprintf(e.stdout, "%s %s: %s\n", short(m.Session), l.Name, nm.Recheck)
+		_ = st.AppendRecheck(rec)
+	}
+	return nm, t, true
 }
 
 // waitStep waits, within this pass's share (Params.PassWait), for mid-turn session l to be
@@ -1203,7 +1270,7 @@ func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mov
 	argv, err := mover.Execute(host, l, t, cfg.Account.MoveLaunch, note, log)
 	from := w.labelOfDir[l.Slot]
 	entry := mover.LogEntry{At: e.now(), SessionID: l.SessionID, Name: l.Name, From: w.keyOfDir[l.Slot], To: t.Key, FromDir: l.Slot, ToDir: t.Dir,
-		Kind: l.Kind, Auto: auto, Reason: reason, Argv: argv, Rate: mv.Rate, RateKnown: true}
+		Kind: l.Kind, Auto: auto, Reason: reason, Argv: argv, Rate: mv.Rate, RateKnown: true, Recheck: mv.Recheck}
 	if err != nil {
 		entry.Error = err.Error()
 		_ = st.Append(entry)

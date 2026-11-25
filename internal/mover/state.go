@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mraj602/watchyard/internal/atomicfile"
@@ -178,6 +179,8 @@ type LogEntry struct {
 	RateKnown bool     `json:"rate_known,omitempty"`
 	Argv      []string `json:"argv,omitempty"`
 	Error     string   `json:"error,omitempty"`
+	// Recheck: the re-check after its step wait changed its destination (Move.Recheck).
+	Recheck string `json:"recheck,omitempty"`
 }
 
 // Append adds a move to the log.
@@ -345,4 +348,56 @@ func (s State) AddAlert(a PinAlert, now time.Time) (bool, error) {
 		}
 	}
 	return true, s.write(s.path("alerts.json"), append(xs, a))
+}
+
+// RecheckEntry is one re-check after a step wait that changed a planned move (setup.md 8.6,
+// Re-check): To "" dropped it.
+type RecheckEntry struct {
+	At        time.Time `json:"at"`
+	SessionID string    `json:"session_id"`
+	Name      string    `json:"name,omitempty"`
+	From      string    `json:"from"`
+	Planned   string    `json:"planned"`
+	To        string    `json:"to,omitempty"`
+	Why       string    `json:"why"`
+}
+
+const rechecksFile = "rechecks.jsonl"
+
+// AppendRecheck records a re-check that changed a move; the file keeps its last 200 lines.
+func (s State) AppendRecheck(e RecheckEntry) error {
+	b, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		return err
+	}
+	p := s.path(rechecksFile)
+	old, _ := os.ReadFile(p)
+	lines := strings.Split(strings.TrimSpace(string(old)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		lines = nil
+	}
+	lines = append(lines, string(b))
+	if len(lines) > 200 {
+		lines = lines[len(lines)-200:]
+	}
+	return os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+}
+
+// Rechecks are the re-checks since since, oldest first.
+func (s State) Rechecks(since time.Time) []RecheckEntry {
+	b, err := os.ReadFile(s.path(rechecksFile))
+	if err != nil {
+		return nil
+	}
+	var out []RecheckEntry
+	for _, l := range strings.Split(string(b), "\n") {
+		var e RecheckEntry
+		if json.Unmarshal([]byte(l), &e) == nil && !e.At.Before(since) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
