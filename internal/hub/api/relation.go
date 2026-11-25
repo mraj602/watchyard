@@ -48,6 +48,13 @@ type VerdictDoc struct {
 	ModeFrom    *string    `json:"mode_from"`
 	WeeklyCap   *float64   `json:"weekly_cap"`
 	FiveHourCap *float64   `json:"five_hour_cap"`
+	// The pin reserve (record.md 4.11; setup.md 8.6, Pinned sessions): absent without pins.
+	Pins           *int     `json:"pins,omitempty"`
+	PinReserve5h   *float64 `json:"pin_reserve_5h_pct,omitempty"`
+	PinReserve7d   *float64 `json:"pin_reserve_7d_pct,omitempty"`
+	PinFull5h      *float64 `json:"pin_reserve_full_5h_pct,omitempty"`
+	PinFull7d      *float64 `json:"pin_reserve_full_7d_pct,omitempty"`
+	WeeklyResetsAt *string  `json:"weekly_resets_at,omitempty"`
 }
 
 func (s *Server) seatRelation(w http.ResponseWriter, r *http.Request) {

@@ -2079,8 +2079,8 @@ from its reset: 6.3 of the week instead of 10, 2.5 two hours out, 1 at the end).
 - a protected account counts the reserve inside its 80/80 caps;
 - `wy move --plan` shows it per account (`PIN RESERVE`, "1 pinned: 10/5"; the `CAPS` column is
   after it), and a scaled one in the state ("pin reserve 7d 2.5% until Thu 03:30, scaled to time
-  left (full 20/10)"); `--explain`'s `Pins` line says the same ("... and 2.5% of the week free
-  until Thu 03:30, scaled to time left (full 10)"); `--json` adds `pin_reserve_full_5h_pct`,
+  left (full 20/10)"); `--explain`'s `Pins` line says the same ("... and 2.5% of the week free; the
+  weekly part until Thu 03:30, scaled to time left (full 10)"); the board's verdict says it too; `--json` adds `pin_reserve_full_5h_pct`,
   `pin_reserve_full_7d_pct`.
 
 A pinned session that alone (its own burn, nothing else) takes its account's 5-hour or weekly

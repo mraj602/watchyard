@@ -342,13 +342,6 @@ func pinLine(label string, v LaneView, now time.Time) string {
 		}
 		return strconv.FormatFloat(x, 'f', 1, 64)
 	}
-	part := func(r, full float64, what string, until *time.Time) string {
-		s := pct(r) + "% of " + what
-		if full > r+0.05 && until != nil {
-			s += " until " + when(*until, now) + ", scaled to time left (full " + pct(full) + ")"
-		}
-		return s
-	}
 	var r5, r7 *time.Time
 	if v.FiveHourResetsAt != nil {
 		r5 = v.FiveHourResetsAt
@@ -357,8 +350,15 @@ func pinLine(label string, v LaneView, now time.Time) string {
 		t := now.Add(hoursDur(v.HoursToReset))
 		r7 = &t
 	}
-	return fmt.Sprintf("Pins %s: %s %s and %s free (caps now 5h %s, 7d %s)", label, n,
-		part(v.PinReserve5hPct, v.PinFull5hPct, "the 5-hour window", r5), part(v.PinReserve7dPct, v.PinFull7dPct, "the week", r7),
+	scaled := func(r, full float64, what string, until *time.Time) string {
+		if full > r+0.05 && until != nil {
+			return "; the " + what + " part until " + when(*until, now) + ", scaled to time left (full " + pct(full) + ")"
+		}
+		return ""
+	}
+	return fmt.Sprintf("Pins %s: %s %s%% of the 5-hour window and %s%% of the week free%s%s (caps now 5h %s, 7d %s)", label, n,
+		pct(v.PinReserve5hPct), pct(v.PinReserve7dPct),
+		scaled(v.PinReserve5hPct, v.PinFull5hPct, "5-hour", r5), scaled(v.PinReserve7dPct, v.PinFull7dPct, "weekly", r7),
 		f0(v.FiveHourCap), f0(v.WeeklyCap))
 }
 

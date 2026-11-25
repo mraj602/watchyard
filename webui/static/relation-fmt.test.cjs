@@ -191,3 +191,17 @@ test('wording shared with the phone: same, no-data-this-week, chart title, days 
   assert.equal(j(R.capacityModel([{ ...m, this_week: null }], HEAVY)).items[0].sentence, 'Opus 4.6: not enough data this week yet.');
   assert.equal(R.tilesModel({ ...OWNER_CAL, ratio: fac(7, 5, 1, 10, 0) }).label, 'measured over 7 days');
 });
+
+test('verdict: the pin reserve, scaled to the time left (setup.md 8.6)', () => {
+  const v = { ...OWNER_VERDICT, kind: 'aggressive', weekly_pct: 88, weekly_cap: 95.7, pins: 2,
+    pin_reserve_5h_pct: 20, pin_reserve_7d_pct: 2.1, pin_reserve_full_5h_pct: 20, pin_reserve_full_7d_pct: 10,
+    weekly_resets_at: '2026-11-20T14:00:00Z' };
+  assert.equal(R.pinRule(v, NOW, 'UTC'), '2 pinned sessions keep 20% of the 5-hour window and 2.1% of the week free until 14:00, scaled to time left (full 10%)');
+  const m = R.verdictModel(v, NOW, 'UTC');
+  assert.ok(m.rules.some((r) => r.key === 'pins' && /2\.1% of the week free until 14:00, scaled to time left/.test(r.text)));
+  // The full reserve: no "scaled".
+  assert.equal(R.pinRule({ ...v, pins: 1, pin_reserve_5h_pct: 10, pin_reserve_7d_pct: 5, pin_reserve_full_5h_pct: 10, pin_reserve_full_7d_pct: 5 }, NOW, 'UTC'),
+    '1 pinned session keeps 10% of the 5-hour window and 5% of the week free');
+  assert.equal(R.pinRule({ ...v, pins: 0 }, NOW, 'UTC'), '');
+  assert.equal(R.pinRule(OWNER_VERDICT, NOW, 'UTC'), '');
+});

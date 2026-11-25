@@ -602,7 +602,8 @@ the hub is skipped. A payload the hub cannot type is stored with `typed = 0` and
 | `accounts[].stale` | boolean | no | `lanes`: its newest reading is stale. |
 | `accounts[].mode_from` | string | no | Where its kind came from (setup.md 8.5 *Kind*): `local` (this machine's `next.accounts.<key>.mode`), `hub` (the seat's hub setting), `proposed` (this machine's `slots.modes`, not on the hub yet) or `none` (not chosen: aggressive). |
 | `accounts[].weekly_cap`, `accounts[].five_hour_cap` | number | no | `lanes`: the weekly and 5-hour levels at which it takes no new session now (protected: the pace line `min(T, T × (1 − hours_to_reset / 168) + 10)` and the 5-hour floor; aggressive: the aggressive limits), after `reserve_pct` and the pin reserve. |
-| `accounts[].pins`, `accounts[].pin_reserve_5h_pct`, `accounts[].pin_reserve_7d_pct` | integer, number | no | `lanes`: its live pinned sessions on this machine and the 5-hour and weekly points they keep free (setup.md 8.6 *Pinned sessions*); absent when none. |
+| `accounts[].pins`, `accounts[].pin_reserve_5h_pct`, `accounts[].pin_reserve_7d_pct` | integer, number | no | `lanes`: its live pinned sessions on this machine and the 5-hour and weekly points they keep free now, scaled to the time left (setup.md 8.6 *Pinned sessions*); absent when none. |
+| `accounts[].pin_reserve_full_5h_pct`, `accounts[].pin_reserve_full_7d_pct`, `accounts[].weekly_resets_at` | number, string | no | `lanes`, with pins: the reserve before scaling, and when its week resets (RFC 3339 UTC). |
 
 ### 4.12 `switch_notice`
 
