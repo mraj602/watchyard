@@ -113,6 +113,10 @@ type Params struct {
 	// 2026-11-25: a mid-turn session at 0.0 points/h was moved). 0: any burn above 0;
 	// negative: none, a busy session with no burn too (the simulator's tables before it).
 	MinBurn float64
+	// PullMinBurn: an owner-drained account pulls in only sessions burning at least this many
+	// points per hour (a mid-turn restart re-reads the context: live 2026-11-25, a 1.1
+	// points/h lane was proposed); 0: MinBurn alone.
+	PullMinBurn float64
 }
 
 // PinReserve is the reserve of an account with pins live pinned sessions: pins x
@@ -138,7 +142,7 @@ var DefaultParams = Params{
 	Cooldown: 20 * time.Minute, NoReturn: time.Hour, AccountMoves: 5, AccountBurn: 40, AccountWindow: 15 * time.Minute,
 	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, PassWait: 90 * time.Second, Orgs: OrgsAny,
 	PinReserve5: 10, PinReserve7: 5, PinAlertWithin: 2 * time.Hour,
-	CheapMoves: true, YoungGate: 15 * time.Minute, MinBurn: 1,
+	CheapMoves: true, YoungGate: 15 * time.Minute, MinBurn: 1, PullMinBurn: 3,
 }
 
 // PinIdle: a pinned session idle this long holds no reserve (the caller counts the live pins).
@@ -791,11 +795,14 @@ func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]fl
 		var cands []Session
 		for _, s := range in.Sessions {
 			if s.Account == d.Key || draining[s.Account] || moving[s.ID] || !s.Busy || s.Pinned || s.Interactive || s.Stopped || !s.Movable ||
-				p.young(s, now) || s.Rate < math.Max(p.MinBurn, 1e-9) || p.excluded(s, st, now) != "" {
+				p.young(s, now) || s.Rate < math.Max(math.Max(p.MinBurn, p.PullMinBurn), 1e-9) || p.excluded(s, st, now) != "" {
 				continue
 			}
 			cands = append(cands, s)
 		}
+		// The biggest burner that fits first: each is checked against the room the pulls
+		// before it left (destination), so one too big for the room is passed over for the
+		// next biggest, never for the first that clears the floor.
 		sort.SliceStable(cands, func(i, j int) bool {
 			if cands[i].Rate != cands[j].Rate {
 				return cands[i].Rate > cands[j].Rate

@@ -12,7 +12,8 @@ All notable changes to Watchyard are recorded here. The format follows
   [--until <time>|off]` drains an account now, until `until` (default 23:59 today), not only in
   the day before its weekly reset: new lanes go to it first up to its drain aims (97 weekly, 96
   five-hour), the switch moves nothing off it before a 5-hour near hit and pulls the biggest
-  movable burners in while its 5-hour projection has room. `--explain`, `--plan` and the board
+  movable burners in (the biggest that fits first, at least `move_pull_min_burn` 3
+  points/h) while its 5-hour projection has room. `--explain`, `--plan` and the board
   show "draining (owner, until 23:59)". It ends at `until` or at the weekly drain aim. Stored
   as `next.accounts.<label>.drain_until` on this machine.
 - **Re-check after the step wait** (setup.md 8.6, Re-check). A mid-turn move is re-chosen on

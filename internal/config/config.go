@@ -150,12 +150,15 @@ type Config struct {
 		MoveDestHorizonMin float64 `toml:"move_dest_horizon_min"`
 		MoveYoungMin       float64 `toml:"move_young_min"`
 		MoveMinBurn        float64 `toml:"move_min_burn"`
-		MoveSpikePasses    float64 `toml:"move_spike_passes"`
-		MoveSpikeNearMin   float64 `toml:"move_spike_near_min"`
-		MoveCooldownMin    float64 `toml:"move_cooldown_min"`
-		MoveNoReturnMin    float64 `toml:"move_no_return_min"`
-		MoveAccountMoves   float64 `toml:"move_account_moves"`
-		MoveAccountBurn    float64 `toml:"move_account_burn"`
+		// MovePullMinBurn: an owner-drained account pulls in only sessions burning at least
+		// this many points per hour.
+		MovePullMinBurn  float64 `toml:"move_pull_min_burn"`
+		MoveSpikePasses  float64 `toml:"move_spike_passes"`
+		MoveSpikeNearMin float64 `toml:"move_spike_near_min"`
+		MoveCooldownMin  float64 `toml:"move_cooldown_min"`
+		MoveNoReturnMin  float64 `toml:"move_no_return_min"`
+		MoveAccountMoves float64 `toml:"move_account_moves"`
+		MoveAccountBurn  float64 `toml:"move_account_burn"`
 		// MoveExpiringH: within this many hours of a protected account's weekly reset its weekly
 		// cap is the aggressive one (its room would expire unused); 0: never.
 		MoveExpiringH float64 `toml:"move_expiring_h"`
@@ -334,7 +337,7 @@ var moveDefaults = map[string]float64{
 	"move_cooldown_min": 20, "move_no_return_min": 60, "move_account_moves": 5, "move_account_burn": 40, "move_expiring_h": 3, "move_stale_min": 10, "move_account_window_min": 15,
 	"move_stopped_wait_min": 20, "move_owner_grace_min": 0, "move_step_wait_min": 3, "move_pass_wait_s": 90,
 	"pin_reserve_5h": 10, "pin_reserve_7d": 5, "move_dest_horizon_min": 0,
-	"move_young_min": 15, "move_min_burn": 1,
+	"move_young_min": 15, "move_min_burn": 1, "move_pull_min_burn": 3,
 }
 
 func init() {
@@ -367,6 +370,8 @@ func (c *Config) moveField(k string) *float64 {
 		return &a.MoveYoungMin
 	case "move_min_burn":
 		return &a.MoveMinBurn
+	case "move_pull_min_burn":
+		return &a.MovePullMinBurn
 	case "move_spike_passes":
 		return &a.MoveSpikePasses
 	case "move_spike_near_min":

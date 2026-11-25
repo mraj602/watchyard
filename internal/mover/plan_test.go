@@ -891,6 +891,50 @@ func TestPlanOwnerDrain(t *testing.T) {
 			t.Errorf("note %q", n)
 		}
 	})
+	t.Run("pull floor and the biggest that fits", func(t *testing.T) {
+		// claude-4 at 14% with 9.6 points/h, its 5h reset in 90 min: 60 points/h more projects
+		// 14 + 1.5 × 69.6 = 118, over its cap; 12 more projects 14 + 1.5 × 21.6 = 46.
+		for _, c := range []struct {
+			name  string
+			rates map[string]float64
+			want  []string // pulled, in order
+			not   []string
+		}{
+			{"under the 3 points/h floor", map[string]float64{"tiny": 1.1}, nil, []string{"tiny"}},
+			{"at the floor", map[string]float64{"three": 3}, []string{"three"}, nil},
+			{"too big passed over for the next biggest", map[string]float64{"huge": 60, "mid": 12, "tiny": 1.1},
+				[]string{"mid"}, []string{"huge", "tiny"}},
+			{"biggest first, then what still fits", map[string]float64{"a": 20, "b": 8, "c": 4},
+				[]string{"a", "b", "c"}, nil},
+		} {
+			in := world(14, 9.6, 90*time.Minute, until)
+			var ss []Session
+			for _, s := range in.Sessions {
+				if s.Account == c4k || s.Account == c6k {
+					ss = append(ss, s)
+				}
+			}
+			for id, r := range c.rates {
+				ss = append(ss, Session{ID: id, Account: c2k, Rate: r, Busy: true, Movable: true, Context: 50_000, Started: old})
+			}
+			in.Sessions = ss
+			r := Plan(in)
+			var order []string
+			for _, m := range r.Moves {
+				if m.Pull != "" {
+					order = append(order, m.Session)
+				}
+			}
+			if strings.Join(order, ",") != strings.Join(c.want, ",") {
+				t.Errorf("%s: pulled %v, want %v", c.name, order, c.want)
+			}
+			for _, id := range c.not {
+				if moved(r)[id] != "" {
+					t.Errorf("%s: %s pulled", c.name, id)
+				}
+			}
+		}
+	})
 	t.Run("no room left in its 5h window: nothing pulled", func(t *testing.T) {
 		if got := moved(Plan(world(60, 9.6, 3*time.Hour, until))); got["big"] != "" || got["small"] != "" {
 			t.Fatalf("pulled %v", got)
