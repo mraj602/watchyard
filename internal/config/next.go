@@ -52,6 +52,7 @@ const nextAccountsPrefix = "next.accounts."
 var nextAccountFields = map[string]kind{
 	"mode": kString, "cap_5h": kFloat, "cap_7d": kFloat, "cap_model": kFloat, "reserve_pct": kFloat,
 	"priority": kFloat, "weight": kFloat, "exclude": kBool, "hours": kString, "days": kString,
+	"drain_until": kString,
 }
 
 func nextAccountFieldNames() []string {
@@ -109,6 +110,11 @@ func parseNextAccountField(key, field, v string) (any, error) {
 		return v, nil
 	case "exclude":
 		return parse(key, kBool, []string{v})
+	case "drain_until":
+		if _, err := time.Parse(time.RFC3339, v); err != nil {
+			return nil, fmt.Errorf("%s: want a time as 2006-01-02T15:04:05+05:30 (wy account drain sets it), got %q", key, v)
+		}
+		return v, nil
 	}
 	n, err := parseFloat(key, v)
 	if err != nil {

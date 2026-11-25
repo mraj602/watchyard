@@ -74,8 +74,11 @@ type DrainInfo struct {
 	Why         string  // the reason when Capacity <= 0
 	WM, HM      float64 // the measured weekly and 5-hour levels it was judged on
 	Target      float64 // the weekly level it is drained to (its limit, the switch's cap less the pin reserve)
-	waitShort   bool    // blocked by its 5-hour window (counts for the short wait)
-	over        bool    // no capacity, but one more lane stays under the hard limits (NoStall)
+	// Owner: the owner drains it (`wy account drain`) until FinishBy, whatever its weekly
+	// reset (setup.md 8.5, Owner drain).
+	Owner     bool
+	waitShort bool // blocked by its 5-hour window (counts for the short wait)
+	over      bool // no capacity, but one more lane stays under the hard limits (NoStall)
 }
 
 // drainKey orders the accounts in the drain order: lower first.
@@ -298,6 +301,12 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	d.Target = lim7
 	H := v.hrs
 	guard := p.Guard.Hours()
+	// The owner's drain: its room is to be used by the owner's until (FinishBy), not by the
+	// weekly reset, and it is on now whatever the entry horizon.
+	owner := OwnerDrainOn(acc.DrainUntil, now)
+	if owner {
+		H = math.Min(H, acc.DrainUntil.Sub(now).Hours()+guard)
+	}
 	known := len(v.unknown) == 0 && c.weekly != nil && !c.weeklyRst.IsZero()
 	if !known || H <= guard || (acc.Protected && v.stale) {
 		return d
@@ -334,13 +343,16 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	}
 	horizon := math.Max(floor, slack*need)
 	d.RoomPct, d.RoomPts, d.NeedH, d.HorizonH = math.Max(0, lim7-m-v.wM), R5, need, horizon
-	if H > horizon {
+	if H > horizon && !owner {
 		return d
 	}
-	d.On = true
+	d.On, d.Owner = true, owner
 	d.WM, d.HM = v.wM, v.hM
 	d.Reset = now.Add(hoursDur(H))
 	d.FinishBy = d.Reset.Add(-p.Guard)
+	if owner && acc.DrainUntil.Before(d.FinishBy.Add(time.Second)) {
+		d.FinishBy, d.Reset = acc.DrainUntil, acc.DrainUntil.Add(p.Guard) // exact, not through the hours
+	}
 	hRem := H - guard
 
 	// Room usable before the reset at full speed (shown only).
@@ -523,6 +535,52 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 		}
 	}
 	return d
+}
+
+// OwnerDrainOn reports whether the owner's drain of acc is on at now (LaneAccount.DrainUntil).
+func OwnerDrainOn(until, now time.Time) bool { return !until.IsZero() && until.After(now) }
+
+// OwnerDrainText is how --plan, --explain and the board name an owner's drain:
+// "draining (owner, until 23:59)", a day name when it is not today.
+func OwnerDrainText(until, now time.Time) string {
+	u := until.In(now.Location())
+	f := "15:04"
+	if y, m, d := u.Date(); y != now.Year() || m != now.Month() || d != now.Day() {
+		f = "Mon 15:04"
+	}
+	return "draining (owner, until " + u.Format(f) + ")"
+}
+
+// ownerDrainEnds ends the owner drains that are over: past their until, or whose weekly
+// level reached the drain aim (the hard weekly limit less DrainMargin): the account is again
+// what its mode makes it (setup.md 8.5, Owner drain).
+func (p LaneParams) ownerDrainEnds(accs []LaneAccount, m *MoverView, now time.Time) []LaneAccount {
+	var out []LaneAccount
+	for i, a := range accs {
+		if a.DrainUntil.IsZero() {
+			continue
+		}
+		w, _, _ := cleanLaneSample(a.Sample, now).effective(now)
+		full7, _ := p.hard(a)
+		if OwnerDrainOn(a.DrainUntil, now) && w < full7-p.DrainMargin {
+			continue
+		}
+		if out == nil {
+			out = append([]LaneAccount(nil), accs...)
+		}
+		out[i].DrainUntil = time.Time{}
+		if a.OwnerProtected {
+			out[i].Protected, out[i].OwnerProtected = true, false
+			if m != nil {
+				_, _, hrs := cleanLaneSample(a.Sample, now).effective(now)
+				out[i].SwitchCap5, out[i].SwitchCap7 = m.caps(true, hrs)
+			}
+		}
+	}
+	if out == nil {
+		return accs
+	}
+	return out
 }
 
 // DrainHint is the one-line instruction for an agent on a drain pick (`--json` hint, stderr

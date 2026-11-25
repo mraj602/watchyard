@@ -490,7 +490,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		t, loggedIn := w.targets[a.Key]
 		ma := mover.Account{Key: a.Key, Label: t.Label, Protected: a.Protected, Ratio: a.Ratio, Stale: a.Stale, LoggedIn: loggedIn,
 			Drain: drain[a.Key], W5: mover.Window{Level: a.FiveHour, Reset: a.FiveReset}, W7: mover.Window{Level: a.Weekly, Reset: a.WeeklyReset},
-			ReadAt: a.ReadingAt}
+			ReadAt: a.ReadingAt, DrainUntil: a.DrainUntil}
 		if ma.Label == "" {
 			ma.Label = a.Key
 		}
@@ -894,8 +894,12 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "ACCOUNT\t5H\t7D\tBURN/H\tP5\tP7\tCAPS\tPIN RESERVE\tSTATE")
 	loggedIn := map[string]bool{}
+	drainUntil := map[string]time.Time{}
 	for _, a := range w.input.Accounts {
 		loggedIn[a.Key] = a.LoggedIn
+		if a.DrainUntil.After(w.input.Now) {
+			drainUntil[a.Key] = a.DrainUntil
+		}
 	}
 	for _, pr := range r.Accounts {
 		state := "under its caps"
@@ -918,6 +922,9 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		}
 		if pr.Expiring {
 			state += fmt.Sprintf("; expiring room: weekly cap %.0f%% until its weekly reset in %s", pr.Cap7+pr.Reserve7, pr.Reset7.Round(time.Minute))
+		}
+		if u, ok := drainUntil[pr.Key]; ok {
+			state = mover.OwnerDrainText(u, w.input.Now) + "; " + state
 		}
 		if !loggedIn[pr.Key] {
 			state += "; not logged in here (never a destination)"

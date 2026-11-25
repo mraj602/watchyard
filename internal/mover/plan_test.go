@@ -841,3 +841,79 @@ func TestRecheckAfterStepWait(t *testing.T) {
 		})
 	}
 }
+
+// setup.md 8.6, Owner drain (`wy account drain claude-4`, live 2026-11-25): while its 5h
+// projection has room claude-4 pulls the biggest busy burners in (not pinned, not interactive,
+// out of cooldown); nothing moves off it before a 5h hit within 60 min or its cap.
+func TestPlanOwnerDrain(t *testing.T) {
+	now := time.Date(2026, 11, 25, 7, 0, 0, 0, time.UTC)
+	old := now.Add(-2 * time.Hour)
+	until := now.Add(11 * time.Hour)
+	c4k, c2k, c6k := "acct:c4/oA", "acct:c2/oA", "acct:c6/oB"
+	world := func(c4level, c4rate float64, reset5 time.Duration, until time.Time) Input {
+		c4 := Account{Key: c4k, Label: "claude-4", LoggedIn: true, Ratio: 8, ReadAt: now, Rate: c4rate, Meter: c4rate, DrainUntil: until,
+			W5: Window{Level: c4level, Reset: now.Add(reset5)}, W7: Window{Level: 53, Reset: now.Add(91 * time.Hour)}}
+		c2 := Account{Key: c2k, Label: "claude-2", LoggedIn: true, Ratio: 8, ReadAt: now, Rate: 66, Meter: 66,
+			W5: Window{Level: 20, Reset: now.Add(4 * time.Hour)}, W7: Window{Level: 30, Reset: now.Add(140 * time.Hour)}}
+		c6 := Account{Key: c6k, Label: "claude-6", LoggedIn: true, Ratio: 8, ReadAt: now, Rate: 0, Meter: 0,
+			W5: Window{Level: 10, Reset: now.Add(4 * time.Hour)}, W7: Window{Level: 40, Reset: now.Add(100 * time.Hour)}}
+		ss := []Session{
+			{ID: "c4-own", Account: c4k, Rate: c4rate, Busy: true, Movable: true, Context: 60_000, Started: old},
+			{ID: "big", Account: c2k, Rate: 20, Busy: true, Movable: true, Context: 100_000, Started: old},
+			{ID: "small", Account: c2k, Rate: 3, Busy: true, Movable: true, Context: 50_000, Started: old},
+			{ID: "pinned", Account: c2k, Rate: 10, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old},
+			{ID: "human", Account: c2k, Rate: 15, Busy: true, Movable: true, Interactive: true, Started: old},
+			{ID: "cooling", Account: c2k, Rate: 18, Busy: true, Movable: true, Started: old},
+			{ID: "idle", Account: c6k, Rate: 0, Movable: true, Started: old},
+		}
+		return Input{Now: now, Params: DefaultParams, Accounts: []Account{c4, c2, c6}, Sessions: ss,
+			Streak: map[string]int{c4k + " " + Win5h: 5},
+			Recent: []Record{{Session: "cooling", From: c6k, To: c2k, At: now.Add(-5 * time.Minute), Rate: 18, RateKnown: true}}}
+	}
+	t.Run("room: the biggest movable burners come in", func(t *testing.T) {
+		r := Plan(world(14, 9.6, 90*time.Minute, until))
+		got := moved(r)
+		for _, m := range r.Moves {
+			t.Logf("%s %s -> %s: %s", m.Session, m.From, m.To, m.Reason)
+		}
+		if got["big"] != c4k || got["small"] != c4k {
+			t.Fatalf("pulls %v: want big and small onto claude-4", got)
+		}
+		for _, id := range []string{"pinned", "human", "cooling", "idle", "c4-own"} {
+			if got[id] != "" {
+				t.Errorf("%s moved: %v", id, got)
+			}
+		}
+		if r.Moves[0].Session != "big" || r.Moves[0].Pull == "" || !strings.Contains(r.Moves[0].Reason, "claude-4 is draining (owner, until 18:00)") {
+			t.Errorf("first pull %+v", r.Moves[0])
+		}
+		if n := Note("claude-2", "claude-4", now, r.Moves[0]); !strings.Contains(n, "claude-4 is draining (owner, until 18:00) and has room") {
+			t.Errorf("note %q", n)
+		}
+	})
+	t.Run("no room left in its 5h window: nothing pulled", func(t *testing.T) {
+		if got := moved(Plan(world(60, 9.6, 3*time.Hour, until))); got["big"] != "" || got["small"] != "" {
+			t.Fatalf("pulled %v", got)
+		}
+	})
+	t.Run("over its cap, no hit within 60 min: nothing moves off it", func(t *testing.T) {
+		r := Plan(world(60, 15, 3*time.Hour, until)) // 60 + 3 × 15 = 105; 100% in 2h40m
+		if got := moved(r); got["c4-own"] != "" {
+			t.Fatalf("moved off: %v", got)
+		}
+		if w := skipWhy(r, "c4-own"); !strings.Contains(w, "draining (owner, until 18:00): nothing moves off it") {
+			t.Errorf("skip %q", w)
+		}
+	})
+	t.Run("a 5h hit within 60 min: its burners move", func(t *testing.T) {
+		r := Plan(world(85, 30, 3*time.Hour, until)) // 100% in 30 min
+		if got := moved(r); got["c4-own"] == "" {
+			t.Fatalf("stayed: %s", skipWhy(r, "c4-own"))
+		}
+	})
+	t.Run("past until: no pulls", func(t *testing.T) {
+		if got := moved(Plan(world(14, 9.6, 90*time.Minute, now.Add(-time.Minute)))); len(got) != 0 {
+			t.Fatalf("moves %v", got)
+		}
+	})
+}

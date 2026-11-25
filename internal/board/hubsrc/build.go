@@ -19,6 +19,8 @@ type BuildInput struct {
 	IncludeEnded bool
 	// WarpColour maps a seat colour to Warp's colour name (board.Options.WarpColour).
 	WarpColour func(hex string) string
+	// Drains: board.Options.Drains.
+	Drains func() map[string]time.Time
 	// Seats are /v1/accounts in the hub's order; Sessions are /v1/sessions in the hub's
 	// order; MachineCount is len(/v1/overview machines).
 	Seats        []wireSeat
@@ -55,7 +57,7 @@ func DefaultBuild(in BuildInput) board.View {
 	// follow the live stream; the overview's list is only as fresh as the last fetch.
 	v := board.BuildHub(d, board.Options{
 		Now: in.Now, Loc: in.Loc, Machine: in.Machine, SessionID: in.ThisSession,
-		IncludeEnded: in.IncludeEnded, Hub: in.Hub, WarpColour: in.WarpColour,
+		IncludeEnded: in.IncludeEnded, Hub: in.Hub, WarpColour: in.WarpColour, Drains: in.Drains,
 	})
 	if in.Source != "" {
 		v.Source = in.Source

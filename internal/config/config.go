@@ -203,6 +203,9 @@ type NextAccount struct {
 	Exclude    bool    `toml:"exclude"`
 	Hours      string  `toml:"hours"`
 	Days       string  `toml:"days"`
+	// DrainUntil: an owner-set drain until this time (RFC 3339; `wy account drain`; setup.md
+	// 8.5, Owner drain).
+	DrainUntil string `toml:"drain_until"`
 }
 
 // MCPMode returns share.mcp as "true", "false" or "external" ("" when unset).
@@ -898,6 +901,12 @@ func (f *File) SetJSON(key string, raw json.RawMessage) error {
 // Delete removes a key from the file (a free-form slot key, or a share.* key). A missing
 // key is not an error.
 func (f *File) Delete(key string) error {
+	if acct, field, ok := nextAccountKey(key); ok {
+		if m, ok := lookupPath(f.doc, []string{"next", "accounts", acct}).(map[string]any); ok {
+			delete(m, field)
+		}
+		return nil
+	}
 	if table, rest, ok := slotMapKey(key); ok && rest != "" {
 		if m, ok := lookupPath(f.doc, []string{"slots", table}).(map[string]any); ok {
 			delete(m, rest)

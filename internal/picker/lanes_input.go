@@ -91,11 +91,13 @@ type DrainView struct {
 	ProjectedPct   *float64   `json:"projected_at_reset_pct"`
 	UnavoidablePct *float64   `json:"unavoidable_waste_pct"`
 	FinishBy       *time.Time `json:"finish_by"`
+	// Owner: the owner's drain (`wy account drain`), until FinishBy.
+	Owner bool `json:"owner,omitempty"`
 }
 
 func drainView(d DrainInfo) *DrainView {
 	v := &DrainView{On: d.On, RoomPct: pyRound(d.RoomPct, 1), RoomPts: pyRound(d.RoomPts, 1), NeedHours: pyRound(d.NeedH, 2),
-		HorizonHours: pyRound(d.HorizonH, 2), Running: d.Running, ForwardBurn: pyRound(d.ForwardBurn, 1)}
+		HorizonHours: pyRound(d.HorizonH, 2), Running: d.Running, ForwardBurn: pyRound(d.ForwardBurn, 1), Owner: d.Owner}
 	if !d.On {
 		return v
 	}
@@ -679,6 +681,13 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 				break
 			}
 		}
+		if u := rs[g.rep].policy.DrainUntil; u.After(now) {
+			// The owner drains it: an aggressive drain account until then (setup.md 8.5, Owner drain).
+			acc.DrainUntil = u
+			if acc.Protected {
+				acc.OwnerProtected, acc.Protected = true, false
+			}
+		}
 		acc.Limit7d, acc.Limit5h = laneLimits(rs[g.rep].policy, acc.Protected, p)
 		if in.Mover != nil {
 			acc.MoveUnits = math.Max(0, in.Mover.Units[g.key])
@@ -885,6 +894,9 @@ func laneReason(r Ranked, row LaneRow, earlier int, sid string, urgent bool, now
 		run := d.Running + earlier
 		dr := fmt.Sprintf("drain: %.0f%% of week left, resets %s, finish by %s", math.Max(0, d.Target-d.WM),
 			d.Reset.Local().Format("15:04"), d.FinishBy.Local().Format("15:04"))
+		if d.Owner {
+			dr = fmt.Sprintf("%s: %.0f%% of week left to use", OwnerDrainText(d.FinishBy, now), math.Max(0, d.Target-d.WM))
+		}
 		parts = append(parts, dr, fmt.Sprintf("5h %.0f%%", d.HM), fmt.Sprintf("%d of %d drain lanes running", run, d.Running+d.Capacity))
 		if d.Spill {
 			parts = append(parts, "runs past reset")

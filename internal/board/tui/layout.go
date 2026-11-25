@@ -282,6 +282,9 @@ func (m *model) sectionHead(s section, g glyphSet) line {
 	if gr.Limited {
 		l = append(l, span{text: "  limited", sty: sty{fg: "red"}})
 	}
+	if gr.Note != "" {
+		l = append(l, span{text: "  " + gr.Note, sty: sty{fg: "yellow"}})
+	}
 	if gr.FiveHour != nil {
 		l = append(l, span{text: "  5h " + gr.FiveHour.Text, sty: sty{dim: true}})
 	}

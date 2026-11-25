@@ -8,6 +8,13 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Added
 
+- **Owner drain** (setup.md 8.5 Owner drain, 8.6 Owner drain). `wy account drain <label>
+  [--until <time>|off]` drains an account now, until `until` (default 23:59 today), not only in
+  the day before its weekly reset: new lanes go to it first up to its drain aims (97 weekly, 96
+  five-hour), the switch moves nothing off it before a 5-hour near hit and pulls the biggest
+  movable burners in while its 5-hour projection has room. `--explain`, `--plan` and the board
+  show "draining (owner, until 23:59)". It ends at `until` or at the weekly drain aim. Stored
+  as `next.accounts.<label>.drain_until` on this machine.
 - **Re-check after the step wait** (setup.md 8.6, Re-check). A mid-turn move is re-chosen on
   the state read again just before it is carried out: dropped when its source no longer needs
   it, sent to a better destination that fits now (aggressive before protected). The move

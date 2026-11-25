@@ -266,6 +266,12 @@ type LaneAccount struct {
 	// (MoverView, before the pin reserve; 0: off): its limits, the hard ones too, are no higher,
 	// so the drain, the at-risk test and the rank aim at the level the switch keeps.
 	SwitchCap5, SwitchCap7 float64
+	// DrainUntil: the owner drains it until then (Policy.DrainUntil; zero: off). While it
+	// is on (until after now, its weekly level under the drain aim) the account is an
+	// aggressive drain account whose room is to be used by then (setup.md 8.5, Owner drain).
+	DrainUntil time.Time
+	// OwnerProtected: its mode is protected; the owner drain makes it aggressive meanwhile.
+	OwnerProtected bool
 }
 
 // LaneLease is one lease, local or another machine's.
@@ -838,6 +844,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 		}
 		in.Accounts = accts
 	}
+	in.Accounts = p.ownerDrainEnds(in.Accounts, in.Mover, now)
 	clean := make([]cleanSample, len(in.Accounts))
 	for i, a := range in.Accounts {
 		clean[i] = cleanLaneSample(a.Sample, now)

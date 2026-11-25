@@ -188,6 +188,10 @@ type Account struct {
 	Excluded bool
 	// Drain: the picker spends its room first (it expires unused otherwise).
 	Drain bool
+	// DrainUntil: the owner drains it until then (`wy account drain`; zero: off; setup.md
+	// 8.6, Owner drain): nothing moves off it before a 5-hour hit within UrgentWithin (or its
+	// 5-hour cap), and while its 5-hour projection has room it pulls busy burners in.
+	DrainUntil time.Time
 	// Pins: its live pinned sessions (running, not idle for PinIdle); Reserve5 and Reserve7
 	// the points of its 5-hour and weekly windows kept free for them (Params.PinReserve): its
 	// caps for every other session are its caps less these.
@@ -346,6 +350,9 @@ type Move struct {
 	BestFit time.Duration `json:",omitempty"`
 	// Recheck: what the re-check after its step wait changed ("" none; Recheck).
 	Recheck string `json:",omitempty"`
+	// Pull: pulled onto an account the owner drains (its text, "draining (owner, until
+	// 23:59)"); its source was not over its caps.
+	Pull string `json:",omitempty"`
 }
 
 // Skip is a session on a triggered account the pass leaves where it is, and why.
@@ -605,6 +612,17 @@ func Plan(in Input) Result {
 			}
 			cands = append(cands, s)
 		}
+		// The owner drains it: nothing moves off it before its 5-hour window is at its cap or
+		// hits 100% within UrgentWithin (its weekly room is what the owner wants used).
+		if a.ownerDrain(now) && len(cands) > 0 {
+			if cur := p.Project(a, ss, delta[a.Key], now); !p.near5h(cur) {
+				for _, s := range cands {
+					skip(s, fmt.Sprintf("%s: nothing moves off it before its 5h window is within %d min of 100%% or at its cap",
+						OwnerDrainText(a.DrainUntil, now), int(p.UrgentWithin.Minutes())))
+				}
+				cands = nil
+			}
+		}
 		// A soft trigger (no hit within UrgentWithin) whose burn is mostly a session held back
 		// for now waits for it rather than moving the small ones, which cannot bring the source
 		// under its caps (live pre9: home-18 at 2.3 points/h moved off claude-2 at 10:12 while
@@ -716,7 +734,106 @@ func Plan(in Input) Result {
 			}
 		}
 	}
+	p.pullIn(in, &res, st, delta, byAcc)
 	return res
+}
+
+// ownerDrain reports whether the owner drains a now.
+func (a Account) ownerDrain(now time.Time) bool {
+	return !a.DrainUntil.IsZero() && a.DrainUntil.After(now)
+}
+
+// OwnerDrainText names an owner's drain: "draining (owner, until 23:59)" (a day name when
+// it is not today).
+func OwnerDrainText(until, now time.Time) string {
+	u := until.In(now.Location())
+	f := "15:04"
+	if y, m, d := u.Date(); y != now.Year() || m != now.Month() || d != now.Day() {
+		f = "Mon 15:04"
+	}
+	return "draining (owner, until " + u.Format(f) + ")"
+}
+
+// near5h: pr's 5-hour window is at its cap now or reaches 100% within UrgentWithin.
+func (p Params) near5h(pr Projection) bool {
+	if pr.Level5 >= pr.Cap5 || pr.Level5 >= 100 {
+		return true
+	}
+	if pr.R5 <= 0 || p.UrgentWithin <= 0 {
+		return false
+	}
+	t := (100 - pr.Level5) / pr.R5
+	return t <= pr.Reset5.Hours() && t < p.UrgentWithin.Hours()
+}
+
+// pullIn: an account the owner drains whose 5-hour projection (with this pass's moves) is
+// under its cap − Hysteresis takes the biggest busy burners of the other accounts (not
+// pinned, not interactive, not young, out of cooldown, at least MinBurn), each that still fits
+// as the destination check counts it (the account rate limit too), so its weekly room is used
+// by the owner's until (setup.md 8.6, Owner drain).
+func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]float64, byAcc map[string][]Session) {
+	now := in.Now
+	moving := map[string]bool{}
+	for _, m := range res.Moves {
+		moving[m.Session] = true
+	}
+	draining := map[string]bool{}
+	for _, d := range in.Accounts {
+		draining[d.Key] = d.ownerDrain(now)
+	}
+	for _, d := range in.Accounts {
+		if !d.ownerDrain(now) || !d.LoggedIn || d.Stale || d.Excluded || p.staleFor(d, now) > 0 {
+			continue
+		}
+		if pr := p.Project(d, byAcc[d.Key], delta[d.Key], now); pr.P5 > pr.Cap5-p.Hysteresis || pr.P7 > pr.Cap7-p.Hysteresis {
+			continue
+		}
+		var cands []Session
+		for _, s := range in.Sessions {
+			if s.Account == d.Key || draining[s.Account] || moving[s.ID] || !s.Busy || s.Pinned || s.Interactive || s.Stopped || !s.Movable ||
+				p.young(s, now) || s.Rate < math.Max(p.MinBurn, 1e-9) || p.excluded(s, st, now) != "" {
+				continue
+			}
+			cands = append(cands, s)
+		}
+		sort.SliceStable(cands, func(i, j int) bool {
+			if cands[i].Rate != cands[j].Rate {
+				return cands[i].Rate > cands[j].Rate
+			}
+			return cands[i].ID < cands[j].ID
+		})
+		one := in
+		one.Accounts = []Account{d}
+		text := OwnerDrainText(d.DrainUntil, now)
+		for _, s := range cands {
+			if to, _ := p.destination(one, s, st, delta, urgency{hit: -1}); to != d.Key {
+				continue
+			}
+			var from Account
+			for _, a := range in.Accounts {
+				if a.Key == s.Account {
+					from = a
+				}
+			}
+			mv := Move{Session: s.ID, From: s.Account, To: d.Key, MidTurn: s.Busy, Rate: s.Rate, Interactive: s.Interactive, Pull: text,
+				OrgChanged: Org(d.Key) != from.Org()}
+			mv.Reason = fmt.Sprintf("pulled in: %s is %s at %.1f points/h of burn", d.Label, text, s.Rate)
+			if mv.MidTurn {
+				mv.Reason += "; mid-turn"
+			}
+			if mv.OrgChanged {
+				mv.Reason += "; another organisation"
+			}
+			if p.countsAsMove(s.Rate) {
+				st.movedIn[d.Key]++
+			}
+			st.burnIn[d.Key] += s.Rate
+			delta[d.Key] += s.Rate
+			delta[s.Account] -= s.Rate
+			moving[s.ID] = true
+			res.Moves = append(res.Moves, mv)
+		}
+	}
 }
 
 func hasStopped(ss []Session) bool {
