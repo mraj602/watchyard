@@ -323,6 +323,11 @@ func (w *moveWorld) recordPass(st mover.State, r mover.Result, now time.Time) {
 	for _, a := range r.Accounts {
 		pa := mover.PassAccount{Key: a.Key, Label: a.Label, Protected: a.Protected, Level5: a.Level5, Level7: a.Level7,
 			P5: a.P5, P7: a.P7, Cap5: a.Cap5, Cap7: a.Cap7, R5: a.R5, Reset7S: int64(a.Reset7.Seconds()), Window: a.Window, Note: a.RateNote}
+		for _, ia := range w.input.Accounts {
+			if ia.Key == a.Key && ia.DrainUntil.After(now) {
+				pa.Draining = true
+			}
+		}
 		if la, ok := w.live[a.Key]; ok {
 			pa.Read7, pa.Meter7 = la.WeeklyRead, la.WeeklyMeter
 			pa.Read5, pa.Meter5, pa.Leases5 = la.FiveRead, la.FiveMeter, la.FiveLeases

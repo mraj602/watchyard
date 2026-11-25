@@ -22,9 +22,10 @@ type PassAccount struct {
 	Cap5      float64 `json:"cap5"`
 	Cap7      float64 `json:"cap7"`
 	R5        float64 `json:"r5"`
-	Reset7S   int64   `json:"reset7_s"`         // seconds to the weekly reset
-	Window    string  `json:"window,omitempty"` // "5h" or "7d": over its cap
-	Note      string  `json:"note,omitempty"`   // the rate note ("... used the readings")
+	Reset7S   int64   `json:"reset7_s"`           // seconds to the weekly reset
+	Window    string  `json:"window,omitempty"`   // "5h" or "7d": over its cap
+	Note      string  `json:"note,omitempty"`     // the rate note ("... used the readings")
+	Draining  bool    `json:"draining,omitempty"` // the owner drains it (wy account drain)
 	// Read7 is the weekly reading Level7 starts from, Read7AgeS its age in seconds and Meter7
 	// what the meter, its margin and the unexplained use add (Level7 = Read7 + Meter7).
 	Read7     float64 `json:"l7_read,omitempty"`
@@ -134,6 +135,15 @@ type WeeklyRoom struct {
 	P7      float64   `json:"p7"`
 	Room    float64   `json:"room"`
 	ResetAt time.Time `json:"reset_at"`
+	// Draining: the owner drained it at that pass (wy account drain).
+	Draining bool `json:"draining,omitempty"`
+}
+
+func (w WeeklyRoom) drainMark() string {
+	if w.Draining {
+		return " (draining)"
+	}
+	return ""
 }
 
 // ProtectedOver is the time a protected account's projection was over its cap.
@@ -204,7 +214,7 @@ func weeklyRoom(passes []PassRecord) []WeeklyRoom {
 				label = a.Key
 			}
 			last[a.Key] = WeeklyRoom{Account: label, Level7: a.Level7, P7: a.P7, Room: max(0, 100-max(a.Level7, a.P7)),
-				ResetAt: p.At.Add(time.Duration(a.Reset7S) * time.Second)}
+				ResetAt: p.At.Add(time.Duration(a.Reset7S) * time.Second), Draining: a.Draining}
 		}
 	}
 	out := make([]WeeklyRoom, 0, len(order))
@@ -331,7 +341,7 @@ func (d Digest) Text() string {
 	if len(d.Weekly) > 0 {
 		b.WriteString("\nWeekly room at the reset (projected, as of the last pass):\n")
 		for _, w := range d.Weekly {
-			fmt.Fprintf(&b, "  %s: %.0f points left (level %.0f%%, resets %s)\n", w.Account, w.Room, w.Level7, w.ResetAt.Local().Format("Mon 15:04"))
+			fmt.Fprintf(&b, "  %s: %.0f points left (level %.0f%%, resets %s)%s\n", w.Account, w.Room, w.Level7, w.ResetAt.Local().Format("Mon 15:04"), w.drainMark())
 		}
 	}
 	if len(d.ProtectedOver) > 0 {
@@ -371,7 +381,7 @@ func (d Digest) Summary() string {
 	if len(d.Weekly) > 0 {
 		var ws []string
 		for _, w := range d.Weekly {
-			ws = append(ws, fmt.Sprintf("%s %.0f", w.Account, w.Room))
+			ws = append(ws, fmt.Sprintf("%s %.0f%s", w.Account, w.Room, w.drainMark()))
 		}
 		t += ". Weekly room at reset: " + strings.Join(ws, ", ")
 	}

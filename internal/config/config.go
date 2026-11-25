@@ -152,7 +152,11 @@ type Config struct {
 		MoveMinBurn        float64 `toml:"move_min_burn"`
 		// MovePullMinBurn: an owner-drained account pulls in only sessions burning at least
 		// this many points per hour.
-		MovePullMinBurn  float64 `toml:"move_pull_min_burn"`
+		MovePullMinBurn float64 `toml:"move_pull_min_burn"`
+		// MovePullMargin: a pull keeps the draining account this many points under its caps;
+		// MovePullQuietMin: no pull within this many minutes after a move off it.
+		MovePullMargin   float64 `toml:"move_pull_margin"`
+		MovePullQuietMin float64 `toml:"move_pull_quiet_min"`
 		MoveSpikePasses  float64 `toml:"move_spike_passes"`
 		MoveSpikeNearMin float64 `toml:"move_spike_near_min"`
 		MoveCooldownMin  float64 `toml:"move_cooldown_min"`
@@ -337,7 +341,7 @@ var moveDefaults = map[string]float64{
 	"move_cooldown_min": 20, "move_no_return_min": 60, "move_account_moves": 5, "move_account_burn": 40, "move_expiring_h": 3, "move_stale_min": 10, "move_account_window_min": 15,
 	"move_stopped_wait_min": 20, "move_owner_grace_min": 0, "move_step_wait_min": 3, "move_pass_wait_s": 90,
 	"pin_reserve_5h": 10, "pin_reserve_7d": 5, "move_dest_horizon_min": 0,
-	"move_young_min": 15, "move_min_burn": 1, "move_pull_min_burn": 3,
+	"move_young_min": 15, "move_min_burn": 1, "move_pull_min_burn": 3, "move_pull_margin": 10, "move_pull_quiet_min": 15,
 }
 
 func init() {
@@ -372,6 +376,10 @@ func (c *Config) moveField(k string) *float64 {
 		return &a.MoveMinBurn
 	case "move_pull_min_burn":
 		return &a.MovePullMinBurn
+	case "move_pull_margin":
+		return &a.MovePullMargin
+	case "move_pull_quiet_min":
+		return &a.MovePullQuietMin
 	case "move_spike_passes":
 		return &a.MoveSpikePasses
 	case "move_spike_near_min":

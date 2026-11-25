@@ -961,3 +961,58 @@ func TestPlanOwnerDrain(t *testing.T) {
 		}
 	})
 }
+
+// The pre12 ping-pong on the drained claude-4 (worker, 2026-11-25): 15:08:22 ed2c70e0
+// ai-lane-G moved claude-4 -> claude-2 on a near hit (P5 106%); 15:09:57 08911aa8 ai-lane-H
+// (29 min old, measured 3.3 points/h in a low phase) was pulled claude-6 -> claude-4; by 15:28
+// it burned 14.8 and claude-4 was at P5 101%, moving its burners off again.
+func TestPlanOwnerDrainNoPingPong(t *testing.T) {
+	day := func(h, m, s int) time.Time { return time.Date(2026, 11, 25, h, m, s, 0, time.UTC) }
+	c4k, c2k, c6k := "acct:c4/oA", "acct:c2/oA", "acct:c6/oB"
+	reset5 := day(16, 0, 0)
+	world := func(now time.Time, c4level float64, recent []Record) Input {
+		c4 := Account{Key: c4k, Label: "claude-4", LoggedIn: true, Ratio: 8, ReadAt: now, Rate: 6, Meter: 6, DrainUntil: day(23, 59, 0),
+			W5: Window{Level: c4level, Reset: reset5}, W7: Window{Level: 56, Reset: day(23, 59, 0).Add(80 * time.Hour)}}
+		c2 := Account{Key: c2k, Label: "claude-2", LoggedIn: true, Ratio: 8, ReadAt: now, Rate: 22.2, Meter: 22.2,
+			W5: Window{Level: 10, Reset: day(17, 30, 0)}, W7: Window{Level: 35, Reset: now.Add(140 * time.Hour)}}
+		c6 := Account{Key: c6k, Label: "claude-6", LoggedIn: true, Ratio: 8, ReadAt: now, Rate: 3.3, Meter: 3.3,
+			W5: Window{Level: 50, Reset: day(18, 30, 0)}, W7: Window{Level: 50, Reset: now.Add(75 * time.Hour)}}
+		ss := []Session{
+			{ID: "c4-own", Account: c4k, Rate: 6, Busy: true, Movable: true, Context: 60_000, Started: day(13, 0, 0)},
+			{ID: "ai-lane-H", Account: c6k, Rate: 3.3, Busy: true, Movable: true, Context: 80_000, Started: day(14, 41, 0)},
+		}
+		return Input{Now: now, Params: DefaultParams, Accounts: []Account{c4, c2, c6}, Sessions: ss, Recent: recent, LaneRate: 14}
+	}
+	off := []Record{{Session: "ai-lane-G", From: c4k, To: c2k, At: day(15, 8, 22), Rate: 22.2, RateKnown: true}}
+	for _, c := range []struct {
+		name   string
+		in     Input
+		pulled bool
+		reason string
+	}{
+		{"15:09:57, 95 s after the near-hit move off it", world(day(15, 9, 57), 80, off), false, ""},
+		// 75 + 0.6 h × (6 + 14) = 87, over 95 − 10; at its measured 3.3 it would be 80.6.
+		{"15:24, quiet over: ai-lane-H counted at the lane rate 14 does not fit 10 under the cap", world(day(15, 24, 0), 75, off), false, ""},
+		{"15:24 at its measured burn (no lane rate): it fits", func() Input { in := world(day(15, 24, 0), 75, off); in.LaneRate = 0; return in }(), true, "at 3.3 points/h of burn"},
+		// 80 + 0.6 h × (6 + 3.3) = 85.6: under 95 − 5, over 95 − 10.
+		{"15:24 at its measured burn, 10 under the cap needed", func() Input { in := world(day(15, 24, 0), 80, off); in.LaneRate = 0; return in }(), false, ""},
+		{"15:24 with room: pulled, counted at the lane rate", world(day(15, 24, 0), 60, off), true, "at 3.3 points/h of burn (counted at the lane rate 14.0)"},
+	} {
+		r := Plan(c.in)
+		got := moved(r)["ai-lane-H"] == c4k
+		if got != c.pulled {
+			t.Errorf("%s: pulled %v, want %v (moves %v)", c.name, got, c.pulled, moved(r))
+		}
+		for _, m := range r.Moves {
+			if m.Session == "ai-lane-H" && !strings.Contains(m.Reason, c.reason) {
+				t.Errorf("%s: reason %q", c.name, m.Reason)
+			}
+		}
+	}
+	// The pre12 rules (margin 5, no quiet time, the measured burn) pulled it at 15:09:57.
+	old := world(day(15, 9, 57), 80, off)
+	old.Params.PullMargin, old.Params.PullQuiet, old.LaneRate = 0, 0, 0
+	if moved(Plan(old))["ai-lane-H"] != c4k {
+		t.Errorf("the pre12 rules did not pull it: the table does not replay the case")
+	}
+}
