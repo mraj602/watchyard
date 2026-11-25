@@ -126,6 +126,18 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **Moves on stale data** (live, pre6 05:37, the hub migrating: `wy move --plan` said "claude-4
+  5h 100%: 5h cap reached now: moving its burners" from a reading 3 h 37 min old; the account was
+  at ~68%). An account whose reading is older than `account.move_stale_min` (new, default 10) is
+  neither a source nor a destination; `--plan` says "data stale (age), no moves"; one owner alert
+  when it lasts over 30 minutes. With the switch on, the picker neither blocks an aggressive
+  account nor draws a lane to one on stale data: it ranks it after the accounts with fresh data
+  and `--explain` says so.
+- **A pass acting on minutes-old state** (live 05:40:42: a pass of the pre5 binary, started
+  before the pre6 install, moved 78f476e8 at 0.0 points/h onto aggressive caps for claude-5,
+  set protected at 05:36; its log line has no `rate_known`, which pre6 writes). The current
+  switch keeps claude-5's protected caps and never moves a session under the burn floor (test of
+  that exact state); a pass whose state took over 2 minutes to read now moves nothing.
 - **A moved session's tokens counted to its new account from before the move** (live
   2026-11-25 04:06, 04:16 and 04:25: claude-4's 5-hour level read 100% for one pass at a time
   while its reading was 52-60%, and three sessions were moved off it). The token meter now counts

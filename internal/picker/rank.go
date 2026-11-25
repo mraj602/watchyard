@@ -70,6 +70,10 @@ type MoverView struct {
 	// over min(its expected time (else DestHorizonH), the 5-hour reset), at least DestFloorH,
 	// as the switch judges a destination (0: to the reset).
 	ExpiringH, DestHorizonH, DestFloorH float64
+	// StaleMin: an account whose sample is older than this many minutes has stale data: its
+	// level neither blocks a lane nor draws one (it is ranked after the accounts with fresh
+	// data, setup.md 8.6, Stale data). 0: off.
+	StaleMin float64
 }
 
 // PinReserve is one account's pin reserve: Pins live pinned sessions keep R5 points of its

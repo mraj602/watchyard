@@ -323,6 +323,7 @@ func writeJSONOut(w io.Writer, v any) error {
 // moveWorld is one read of the machine for the mover.
 type moveWorld struct {
 	launches   []mover.Launch
+	builtAt    time.Time // wall clock when its state began to be read
 	input      mover.Input
 	targets    map[string]mover.Target // by account key
 	keyOfDir   map[string]string       // slot dir -> account key
@@ -354,9 +355,10 @@ type moveWorld struct {
 }
 
 func (e moveEnv) world(noHub bool) (*moveWorld, error) {
+	built := time.Now()
 	cfg := e.config()
 	now := e.now()
-	w := &moveWorld{targets: map[string]mover.Target{}, keyOfDir: map[string]string{}, labelOfDir: map[string]string{},
+	w := &moveWorld{builtAt: built, targets: map[string]mover.Target{}, keyOfDir: map[string]string{}, labelOfDir: map[string]string{},
 		proj: map[string]mover.Projection{}, byID: map[string]mover.Session{}, outScope: map[string]bool{},
 		scope: parseScope(cfg.Account.SmartSwitchScope)}
 	inject, err := loadMoveTest(e.getenv, w.scope)
@@ -473,7 +475,8 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	for _, a := range accs {
 		t, loggedIn := w.targets[a.Key]
 		ma := mover.Account{Key: a.Key, Label: t.Label, Protected: a.Protected, Ratio: a.Ratio, Stale: a.Stale, LoggedIn: loggedIn,
-			Drain: drain[a.Key], W5: mover.Window{Level: a.FiveHour, Reset: a.FiveReset}, W7: mover.Window{Level: a.Weekly, Reset: a.WeeklyReset}}
+			Drain: drain[a.Key], W5: mover.Window{Level: a.FiveHour, Reset: a.FiveReset}, W7: mover.Window{Level: a.Weekly, Reset: a.WeeklyReset},
+			ReadAt: a.ReadingAt}
 		if ma.Label == "" {
 			ma.Label = a.Key
 		}
@@ -738,6 +741,7 @@ func moveParams(cfg config.Config) mover.Params {
 	p.AccountMoves, p.AccountWindow = int(a.MoveAccountMoves), mins(a.MoveAccountWindowMin)
 	p.AccountBurn = math.Max(0, a.MoveAccountBurn)
 	p.ExpiringRoom = time.Duration(math.Max(0, a.MoveExpiringH) * float64(time.Hour))
+	p.StaleAfter = mins(math.Max(0, a.MoveStaleMin))
 	p.StoppedWait, p.OwnerGrace, p.StepWait = mins(a.MoveStoppedWaitMin), mins(a.MoveOwnerGraceMin), mins(a.MoveStepWaitMin)
 	p.PassWait = time.Duration(math.Max(0, a.MovePassWaitS) * float64(time.Second))
 	p.PinReserve5, p.PinReserve7 = math.Max(0, a.PinReserve5h), math.Max(0, a.PinReserve7d)
@@ -891,7 +895,10 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		case pr.Held:
 			state = fmt.Sprintf("%s over its cap, pass %d of %d (spike filter)", pr.Window, pr.Streak, w.input.Params.SpikePasses)
 		}
-		if pr.Hit > 0 {
+		if pr.StaleFor > 0 {
+			state = fmt.Sprintf("data stale (%s), no moves", staleAge(pr.StaleFor))
+		}
+		if pr.Hit > 0 && pr.StaleFor == 0 {
 			state += fmt.Sprintf("; 100%% in %s", pr.Hit.Round(time.Minute))
 		}
 		if pr.Left != "" {
@@ -1006,6 +1013,13 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State, relea
 	if msg := strings.Join(w.pinWarns, "; "); st.Changed("pins-warned", msg) && msg != "" {
 		fmt.Fprintln(e.stdout, "warning: "+msg)
 	}
+	if age, old := worldTooOld(w.builtAt, time.Now()); old {
+		// Its config and levels are from before (live 2026-11-25 05:40: a pass that read its
+		// state before an account was set protected moved a session onto aggressive caps
+		// minutes later). The next pass reads them again.
+		fmt.Fprintf(e.stdout, "this pass read its state %s ago (the hub or the disk was slow): no moves\n", age.Round(time.Second))
+		return nil
+	}
 	r := mover.Plan(w.input)
 	var first error
 	type pick struct {
@@ -1036,6 +1050,7 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State, relea
 		}
 	}
 	w.pinAlerts(e.stdout, st, r, e.now())
+	w.staleAlert(e, cfg, st, r)
 	w.recordPass(st, r, e.now())
 	w.sw.At, w.sw.Streak = e.now(), r.Streak
 	if err := st.SaveSwitch(w.sw); err != nil {
@@ -1116,6 +1131,17 @@ func (w *moveWorld) waitStep(e moveEnv, st mover.State, mu *sync.Mutex, l mover.
 		fmt.Fprintf(e.stdout, "%s %s: still inside a step (%s) after %s: moved anyway\n", short(l.SessionID), l.Name, s.Tool, (now.Sub(began) + time.Since(start)).Round(time.Second))
 	}
 	return true
+}
+
+// maxWorldAge: a pass whose state (config, levels, sessions) took longer than this to read
+// moves nothing.
+const maxWorldAge = 2 * time.Minute
+
+// worldTooOld says how long ago (wall clock) a pass began to read its state, and whether that
+// is over maxWorldAge.
+func worldTooOld(built, wall time.Time) (time.Duration, bool) {
+	age := wall.Sub(built)
+	return age, !built.IsZero() && age > maxWorldAge
 }
 
 // betweenSteps waits until session l, moved by hand, is between two tool calls (setup.md

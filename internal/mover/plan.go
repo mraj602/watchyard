@@ -26,6 +26,10 @@ type Params struct {
 	// Cap7 (its 5-hour cap stays Cap5Protected): its room left would expire unused (setup.md
 	// 8.6, Expiring room). 0: never.
 	ExpiringRoom time.Duration
+	// StaleAfter: an account whose reading (Account.ReadAt) is older than this is neither a
+	// trigger source nor a destination (setup.md 8.6, Stale data); StaleAlert: the owner is
+	// alerted once when it lasts longer. 0: off.
+	StaleAfter, StaleAlert time.Duration
 	// Hysteresis: moves go on until the source's projections are this far under its caps, and
 	// a destination must stay this far under its own with the moved burn.
 	Hysteresis float64
@@ -120,6 +124,7 @@ const (
 var DefaultParams = Params{
 	Name: "V2 move the burners (default)",
 	Cap5: 95, Cap7: 98, Cap5Protected: 80, Cap7Protected: 80, ExpiringRoom: 3 * time.Hour,
+	StaleAfter: 10 * time.Minute, StaleAlert: 30 * time.Minute,
 	Hysteresis: 5, BurnWindow: 10 * time.Minute, Pass: time.Minute, WeekSpan: 5 * time.Hour,
 	SpikePasses: 2, ReadingPasses: 3, SpikeNear: 30 * time.Minute,
 	Cooldown: 20 * time.Minute, NoReturn: time.Hour, AccountMoves: 5, AccountBurn: 40, AccountWindow: 15 * time.Minute,
@@ -168,6 +173,9 @@ type Account struct {
 	LoggedIn bool
 	// Stale: its readings are too old to project; never a destination.
 	Stale bool
+	// ReadAt: when the reading its levels start from was taken (zero: not known). Older than
+	// Params.StaleAfter, the account is neither a source nor a destination.
+	ReadAt time.Time
 	// Excluded: never a destination (excluded by settings).
 	Excluded bool
 	// Drain: the picker spends its room first (it expires unused otherwise).
@@ -278,6 +286,8 @@ type Projection struct {
 	ReadingsOnly bool `json:",omitempty"`
 	// Expiring: protected, within ExpiringRoom of its weekly reset: Cap7 is the aggressive cap.
 	Expiring bool `json:",omitempty"`
+	// StaleFor: its reading is this old, over Params.StaleAfter: no moves off or onto it.
+	StaleFor time.Duration `json:",omitempty"`
 	// Left: it stays over its target after this pass's moves because no move can lower it
 	// further ("only pinned burn left ...").
 	Left  string `json:",omitempty"`
@@ -433,6 +443,12 @@ func Plan(in Input) Result {
 		}
 		pr.Triggered = over && (passes <= 1 || pr.Streak >= passes || pr.Hard || near)
 		pr.Held = over && !pr.Triggered
+		if age := p.staleFor(a, now); age > 0 {
+			// Its level rests on an old reading (live: the hub away, "5h 100%" from a reading
+			// 3 h 37 min old while the account was at ~68%): nothing moves off it on that.
+			pr.StaleFor, pr.Triggered, pr.Held = age, false, false
+			delete(res.Streak, a.Key+" "+pr.Window)
+		}
 		proj[a.Key] = pr
 		res.Accounts = append(res.Accounts, pr)
 	}
@@ -443,7 +459,7 @@ func Plan(in Input) Result {
 	// Sources: a cap reached now first, then the soonest hit, then the picker's order.
 	var srcs []Account
 	for _, a := range in.Accounts {
-		if proj[a.Key].Window != "" || hasStopped(byAcc[a.Key]) {
+		if (proj[a.Key].Window != "" && proj[a.Key].StaleFor == 0) || hasStopped(byAcc[a.Key]) {
 			srcs = append(srcs, a)
 		}
 	}
@@ -736,6 +752,28 @@ func (pr Projection) pOf(w string) float64 {
 	return pr.P5
 }
 
+// staleFor is how old a's reading is when that is over StaleAfter (0: fresh, unknown or off).
+func (p Params) staleFor(a Account, now time.Time) time.Duration {
+	if p.StaleAfter <= 0 || a.ReadAt.IsZero() {
+		return 0
+	}
+	if age := now.Sub(a.ReadAt); age > p.StaleAfter {
+		return age
+	}
+	return 0
+}
+
+// StaleAccounts are the accounts of r whose data has been stale for longer than StaleAlert.
+func (p Params) StaleAccounts(r Result) []Projection {
+	var out []Projection
+	for _, pr := range r.Accounts {
+		if p.StaleAlert > 0 && pr.StaleFor > p.StaleAlert {
+			out = append(out, pr)
+		}
+	}
+	return out
+}
+
 // HitAt is when the projection reaches 100% from its current level at its burn (now +
 // (100 − level)/R5, the sooner of the two windows), or zero when that is not in the future:
 // a level already at 100 has no hit time to give (live 2026-11-25: "100% at 04:24" in a pass
@@ -885,7 +923,7 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 	var accs []Account
 	why := "no logged-in account on this machine has room for its burn"
 	for _, a := range in.Accounts {
-		if a.Key == s.Account || !a.LoggedIn || a.Stale || a.Excluded {
+		if a.Key == s.Account || !a.LoggedIn || a.Stale || a.Excluded || p.staleFor(a, in.Now) > 0 {
 			continue
 		}
 		if p.Orgs == OrgsSame && a.Org() != from {

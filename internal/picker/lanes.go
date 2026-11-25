@@ -1020,6 +1020,24 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 					key = laneKey{group: 0, last: ll, hrs: v.hrs, ord: acc.Ord}
 				}
 			}
+			// Stale data (the switch's view, setup.md 8.6): an old sample's level, high or low,
+			// is not trusted. High does not block an aggressive account (live: the hub away,
+			// "5h 100% >= 95" from a sample 3 h 37 min old while the account was at ~68%), and
+			// low does not draw lanes: the account goes after those with fresh data. A protected
+			// account keeps its blocks (its room is kept on any doubt).
+			if in.Mover != nil && in.Mover.StaleMin > 0 && !v.noTS && len(v.unknown) == 0 && v.ageMin > in.Mover.StaleMin && !d.On {
+				note := fmt.Sprintf("data stale (%s min old): its level (5h %s%%, 7d %s%%) neither blocks nor draws a lane; ranked after accounts with fresh data",
+					f0(math.Floor(v.ageMin)), f0(v.h), f0(v.w))
+				switch {
+				case skip && !prot && level >= 2:
+					skip, last, why, capped, soft, fwdFree = false, true, note, false, false, nil
+				case !skip:
+					last, why = true, note
+				}
+				if last && drainOrder {
+					dk.group = max(dk.group, 4)
+				}
+			}
 			row := LaneRow{Key: acc.Key, Protected: prot, Score: sc, Skip: skip, Reason: why, Weekly: v.w, WeeklyM: v.wM, FiveHour: v.h,
 				Reserve: v.wRes, HoursToReset: v.hrs, Leases: v.leaseN, Burst: v.capN, BurstCap: cp, Capped: capped,
 				Added5: v.add5, Meter5: v.m5, Meter7: v.m7, Margin5: v.g5, Margin7: v.g7, WeeklyCap: cap7, FiveHourCap: cap5, SampleAgeMin: v.ageMin, FiveReset: v.fiveRst,

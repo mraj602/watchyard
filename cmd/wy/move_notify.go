@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -260,4 +261,45 @@ func (w *moveWorld) recordPass(st mover.State, r mover.Result, now time.Time) {
 		rec.Accounts = append(rec.Accounts, pa)
 	}
 	_ = st.AppendPass(rec)
+}
+
+// staleAge is a stale reading's age for --plan and the alert ("42 min", "3 h 37 min").
+func staleAge(d time.Duration) string {
+	m := int(d.Round(time.Minute) / time.Minute)
+	if m < 60 {
+		return fmt.Sprintf("%d min", m)
+	}
+	return fmt.Sprintf("%d h %d min", m/60, m%60)
+}
+
+// staleAlert tells the owner once when accounts have had stale data (no moves off or onto
+// them) for longer than Params.StaleAlert (setup.md 8.6, Stale data): one line in the pass's
+// log and one push (as the digest: the hub's switch_digest alert, or direct push when the hub
+// is away). A new alert comes only when the set of such accounts changes to a new one.
+func (w *moveWorld) staleAlert(e moveEnv, cfg config.Config, st mover.State, r mover.Result) {
+	now := e.now()
+	var labels, parts []string
+	for _, pr := range w.input.Params.StaleAccounts(r) {
+		l := w.accLabel(pr.Key)
+		labels = append(labels, l)
+		parts = append(parts, fmt.Sprintf("%s (data %s old)", l, staleAge(pr.StaleFor)))
+	}
+	sort.Strings(labels)
+	if !st.Changed("stale-alerted", strings.Join(labels, ",")) || len(labels) == 0 {
+		return
+	}
+	text := "Smart Account Switch moves nothing off or onto " + strings.Join(parts, ", ") +
+		": their usage readings are old (is the hub reachable?)"
+	fmt.Fprintln(e.stdout, "alert: "+text)
+	o := moveOutFor(e.dirs, cfg, now)
+	if !o.ready() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	p := record.SwitchNoticePayload{Trigger: record.SwitchNoticeDigest, Episode: "stale:" + strconv.FormatInt(now.UnixMilli(), 10),
+		SinceAt: now.UTC().Format(time.RFC3339), Text: cutText(text)}
+	if err := o.deliver(ctx, p, "Smart Account Switch paused on stale data", "Smart Account Switch: an account's data is stale"); err != nil {
+		fmt.Fprintln(e.stdout, "stale-data alert not sent: "+err.Error())
+	}
 }

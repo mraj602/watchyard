@@ -1896,6 +1896,24 @@ environment of another process is never read (keys.md 8).
   drained to 98% of its week until then", `--json` `expiring_room_cap_7d`; `--plan` says
   "expiring room"). After the reset the protected caps hold again (live: protected claude-5 at
   85% an hour before its reset took nothing, its protected cap 80 bounding its drain).
+- **Stale data.** An account whose levels rest on a reading older than `move_stale_min` (10)
+  minutes (the newest usage reading of its seat, from this machine or the hub) is neither a
+  trigger source nor a destination: an old reading plus hours of token meter is not evidence of
+  the level (live, pre6 05:37, the hub migrating: claude-4 read "5h 100%" from a reading 3 h 37
+  min old, the meter since then ~87 points, while the account was at ~68%). Only its sessions
+  stopped at a limit still move (their limit reply is fresh evidence). `--plan` says "data stale
+  (3 h 37 min), no moves". When it lasts over 30 minutes the pass alerts the owner once (a line
+  in its log and a push as the digest's: the hub's `switch_digest` alert, or direct push when
+  the hub is away); a new alert comes only when the set of stale accounts changes. An account
+  with no reading time is not stale by this rule (the picker's own stale and unknown rules
+  hold). For the picker with the switch on, an old sample's level neither blocks an aggressive
+  account nor draws a lane: such an account is ranked after the accounts with fresh data, and
+  `--explain` says "data stale (217 min old): its level (5h 100%, 7d 30%) neither blocks nor
+  draws a lane; ranked after accounts with fresh data". A protected account keeps its blocks.
+- **A slow pass moves nothing.** A pass whose state (config, levels, sessions) took over 2
+  minutes to read moves nothing: the next pass reads it again (live 05:40:42: a pass of the old
+  binary that read its config before claude-5 was set protected moved a session minutes later,
+  at 0.0 points/h).
 
 **Decision (the defaults).** An account **triggers** when P5 is over its 5-hour cap or P7 over its
 weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
@@ -2410,6 +2428,7 @@ move_cap_7d = 98            #   move_cap_5h_protected 80, move_cap_7d_protected 
                             #   move_step_wait_min 3, move_pass_wait_s 90
 move_dest_horizon_min = 90  # an aggressive destination must fit the session this long (its expected time first); 0: until the resets
 move_expiring_h = 3         # within this many hours of a protected account's weekly reset its weekly cap is move_cap_7d (expiring room); 0: never
+move_stale_min = 10         # an account whose reading is older is neither a source nor a destination; the picker ranks it last (stale data); 0: off
 move_young_min = 15         # a session's burn counts for the switch once it is this old (its first minutes burn hot); 0: at once
 move_min_burn = 1           # a session is moved only when its own burn is at least this many points/h (busy alone is not enough)
 pin_reserve_5h = 10         # points of the 5-hour window kept free per live pinned session (8.6)

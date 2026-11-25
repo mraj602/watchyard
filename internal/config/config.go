@@ -156,7 +156,11 @@ type Config struct {
 		MoveAccountBurn    float64 `toml:"move_account_burn"`
 		// MoveExpiringH: within this many hours of a protected account's weekly reset its weekly
 		// cap is the aggressive one (its room would expire unused); 0: never.
-		MoveExpiringH        float64 `toml:"move_expiring_h"`
+		MoveExpiringH float64 `toml:"move_expiring_h"`
+		// MoveStaleMin: an account whose level rests on a reading older than this many minutes
+		// is neither a source nor a destination of the switch, and its level neither blocks nor
+		// attracts the picker's lanes (setup.md 8.6, Stale data); 0: off.
+		MoveStaleMin         float64 `toml:"move_stale_min"`
 		MoveAccountWindowMin float64 `toml:"move_account_window_min"`
 		MoveStoppedWaitMin   float64 `toml:"move_stopped_wait_min"`
 		MoveOwnerGraceMin    float64 `toml:"move_owner_grace_min"`
@@ -322,7 +326,7 @@ var known = map[string]spec{
 var moveDefaults = map[string]float64{
 	"move_cap_5h": 95, "move_cap_7d": 98, "move_cap_5h_protected": 80, "move_cap_7d_protected": 80,
 	"move_hysteresis": 5, "move_burn_min": 10, "move_week_span_h": 5, "move_spike_passes": 2, "move_spike_near_min": 30,
-	"move_cooldown_min": 20, "move_no_return_min": 60, "move_account_moves": 5, "move_account_burn": 40, "move_expiring_h": 3, "move_account_window_min": 15,
+	"move_cooldown_min": 20, "move_no_return_min": 60, "move_account_moves": 5, "move_account_burn": 40, "move_expiring_h": 3, "move_stale_min": 10, "move_account_window_min": 15,
 	"move_stopped_wait_min": 20, "move_owner_grace_min": 0, "move_step_wait_min": 3, "move_pass_wait_s": 90,
 	"pin_reserve_5h": 10, "pin_reserve_7d": 5, "move_dest_horizon_min": 90,
 	"move_young_min": 15, "move_min_burn": 1,
@@ -372,6 +376,8 @@ func (c *Config) moveField(k string) *float64 {
 		return &a.MoveAccountBurn
 	case "move_expiring_h":
 		return &a.MoveExpiringH
+	case "move_stale_min":
+		return &a.MoveStaleMin
 	case "move_account_window_min":
 		return &a.MoveAccountWindowMin
 	case "move_stopped_wait_min":
