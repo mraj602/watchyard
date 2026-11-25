@@ -33,6 +33,18 @@ func TestSimulateChurn(t *testing.T) {
 		mk("after: one rule, as the trigger projects (expected, at least 30 min, else to the horizons)", false, 0),
 		mk("after, and the picker leaves the destination's 5 under the caps", false, DefaultParams.Hysteresis),
 	}
+	// The lease line's expect (1.3.3-pre9 → after): half the lanes leased without --expect
+	// (the picker counts them as medium lanes); pre9's switch knew no lane's length (every
+	// lane to the horizons), after it reads the lease's expected end (to the horizons once
+	// overrun).
+	lease := func(name string, se int) simStrat {
+		s := mk(name, false, DefaultParams.Hysteresis)
+		s.noExpFrac, s.switchExpect = 0.5, se
+		return s
+	}
+	strats = append(strats,
+		lease("pre9: half without --expect; the switch knows no lane's length", switchNone),
+		lease("after: the switch reads the lease's expected end (medium without --expect)", switchLease))
 	runs, par := envInt("WY_SIM_RUNS", 1), envInt("WY_SIM_PAR", 2)
 	pats := simPatterns
 	if os.Getenv("WY_SIM_RUNS") == "" {

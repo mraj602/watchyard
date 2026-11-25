@@ -541,6 +541,9 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 	for _, l := range in.Leases {
 		ll := LaneLease{Key: l.Key, T0: l.At, SID: l.SessionID, C5: l.C5, CF: l.CF,
 			Launched: !l.Launched.IsZero(), Ended: !l.Ended.IsZero(), From: burnNone}
+		if l.ExpectEnd != nil {
+			ll.ExpectEnd = *l.ExpectEnd
+		}
 		var hub *HubLease
 		if hl, ok := own[l.ID]; ok && l.ID != "" {
 			hub = &hl
@@ -788,7 +791,8 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		}
 		earlier[pk.Key]++
 		res.Picks = append(res.Picks, Pick{Ranked: r, SessionID: pk.SID, Urgent: pk.Forced, LaneKind: r.Kind, C5: pk.C5, CF: pk.CF,
-			Drain: pk.Drain, Spill: pk.Spill, FinishBy: pk.FinishBy, Reset: pk.Reset, Expect: pk.Expect, Over: pk.Over})
+			Drain: pk.Drain, Spill: pk.Spill, FinishBy: pk.FinishBy, Reset: pk.Reset, Expect: pk.Expect, Over: pk.Over,
+			SwitchClass: pk.SwitchClass, SwitchDur: pk.SwitchDur})
 	}
 	if len(res.Picks) > 0 {
 		res.Pick = &res.Picks[0].Ranked
@@ -1099,7 +1103,18 @@ func measureLanes(ledger []leases.Lease, local, remote []LaneLease, f5Of map[str
 		sort.Float64s(ls)
 		st.Len, st.NLen = hoursDur(quantile(ls, 0.5)), len(ls)
 	}
-	if rs := pickOf(rates); len(rs) >= laneStatsMin {
+	// The lane burn: the model's own lanes only (a model's burn is its own: Opus lanes burn
+	// several times Sonnet's); without --model, every lane.
+	rs := pickOf(rates)
+	if model != "" {
+		rs = nil
+		for _, x := range rates {
+			if x.model == model {
+				rs = append(rs, x.cost)
+			}
+		}
+	}
+	if len(rs) >= laneStatsMin {
 		sort.Float64s(rs)
 		st.Rate, st.NRate = quantile(rs, laneRateQ), len(rs)
 	}

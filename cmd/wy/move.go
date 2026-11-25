@@ -495,12 +495,8 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 
 	// Sessions: the registry of every folder, with their burn (their token rows of the burn
 	// window, helpers included, × f) and their context.
-	expect := map[string]time.Duration{}
 	started := map[string]time.Time{}
 	for _, l := range lanes {
-		if l.Expect > 0 {
-			expect[l.SID] = max(0, l.Expect-now.Sub(l.T0))
-		}
 		if l.SID != "" {
 			started[l.SID] = l.T0
 		}
@@ -548,13 +544,13 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	}
 	leased := map[string]bool{}
 	ledger2 := leases.Ledger{Dir: filepath.Join(e.dirs.State.Path, "next")}
-	if ls, _, err := ledger2.Read(now); err == nil {
-		for _, l := range ls {
-			if l.SessionID != "" {
-				leased[l.SessionID] = true
-			}
+	ls2, _, _ := ledger2.Read(now)
+	for _, l := range ls2 {
+		if l.SessionID != "" {
+			leased[l.SessionID] = true
 		}
 	}
+	expect := laneExpect(lanes, ls2, now)
 	log := st.Log(now.Add(-6 * time.Hour))
 	last := map[string]mover.LogEntry{}
 	for _, x := range log {
@@ -1230,8 +1226,12 @@ func moveLease(e moveEnv, sid string, t mover.Target, from string, protected boo
 	defer unlock()
 	now := e.now()
 	parent := ""
+	var exp leases.Line // the session's expected end, kept on the new lease
 	if ls, _, err := g.Read(now); err == nil {
 		for _, l := range ls {
+			if l.SessionID == sid && l.ExpectEnd != nil {
+				exp.Expect, exp.ExpectMin, exp.ExpectEnd = l.Expect, l.ExpectMin, l.ExpectEnd
+			}
 			if l.SessionID == sid && l.Parent != "" {
 				parent = l.Parent
 			}
@@ -1244,7 +1244,8 @@ func moveLease(e moveEnv, sid string, t mover.Target, from string, protected boo
 		kind = "protected"
 	}
 	_ = g.Append(leases.Line{V: 1, Op: leases.OpLease, ID: record.NewID(now), At: now.UTC(), Key: t.Key, Account: acct, Org: org,
-		Folder: "~/" + filepath.Base(t.Dir), Label: t.Label, Kind: kind, SessionID: sid, Strategy: "move", MovedFrom: from, Parent: parent})
+		Folder: "~/" + filepath.Base(t.Dir), Label: t.Label, Kind: kind, SessionID: sid, Strategy: "move", MovedFrom: from, Parent: parent,
+		Expect: exp.Expect, ExpectMin: exp.ExpectMin, ExpectEnd: exp.ExpectEnd})
 	_, _ = g.Mark(sid, "launched", now)
 	return parent
 }
@@ -1317,4 +1318,36 @@ func peersTags() (map[string][]string, map[string]string) {
 		tags[x.Session], handles[x.Session] = x.Tags, x.Handle
 	}
 	return tags, handles
+}
+
+// laneExpect is each running lane's expected time left for the switch (setup.md 8.6, one
+// rule): to its lease's expected end (expect_end; the picker writes one for every lane, a
+// medium lane's without --expect), 0 once it overran (the switch then projects it to the
+// horizons). A lane whose lease line has none (a move lease written before) takes its
+// session's latest one in the ledger; a lease with neither, as before (its in-run --expect).
+func laneExpect(lanes []picker.LiveLane, ledger []leases.Lease, now time.Time) map[string]time.Duration {
+	ends := map[string]time.Time{}
+	var at = map[string]time.Time{}
+	for _, l := range ledger {
+		if l.SessionID != "" && l.ExpectEnd != nil && !l.At.Before(at[l.SessionID]) {
+			ends[l.SessionID], at[l.SessionID] = *l.ExpectEnd, l.At
+		}
+	}
+	out := map[string]time.Duration{}
+	for _, l := range lanes {
+		if l.SID == "" {
+			continue
+		}
+		end := l.ExpectEnd
+		if end.IsZero() {
+			end = ends[l.SID]
+		}
+		switch {
+		case !end.IsZero():
+			out[l.SID] = max(0, end.Sub(now))
+		case l.Expect > 0:
+			out[l.SID] = max(0, l.Expect-now.Sub(l.T0))
+		}
+	}
+	return out
 }

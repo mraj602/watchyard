@@ -60,8 +60,9 @@ func TestLanesStaleData(t *testing.T) {
 // Live (pre7): the picker leased 2de58a08 (ai-lane-C3; the ledger line has no --expect, drain
 // true) on claude-3 at 07:36, 7d 85%, cap 88 (98 less its 2 pins' 10), its 5 hours resetting in
 // 45 minutes; the switch moved it off at 07:53, "7d projected 95% (cap 88%) at 16.4 points/h".
-// A lane of unknown length counts as a medium lane (at most its cost, live pre8), and a
-// placement must stay the switch's 5-point margin under the caps, as a moved session must.
+// A lane of unknown length counts as a medium lane (48 minutes, as the switch counts it from its
+// lease line), at the measured 16.4 within 3× the medium class's 4 (12), and a placement must
+// stay the switch's 5-point margin under the caps, as a moved session must.
 func TestLanesNoPlacementTheSwitchUndoes(t *testing.T) {
 	s := world(40, 20)
 	s["claude-3"] = LaneSample{TS: hrs(-5.0 / 60), Weekly: fp(85), FiveHour: fp(22), FiveHourReset: hrs(0.75), WeeklyReset: hrs(49.5)}
@@ -83,21 +84,21 @@ func TestLanesNoPlacementTheSwitchUndoes(t *testing.T) {
 	if isProt("claude-3") {
 		t.Skip("claude-3 is protected in this fixture")
 	}
-	// At 85 (no --expect): 85 + 1.8 × 5 h / ρ + the medium lane's ≤ 3.2 / ρ ≈ 86.7, over 88 − 5.
+	// At 85 (no --expect): 85 + 1.8 × 5 h / ρ + 12 × 0.8 h / ρ ≈ 87.6, over 88 − 5.
 	row := rowOf(rank(t, mk(85, nil)), "claude-3")
 	if !row.Skip || !strings.Contains(row.Reason, "7d 85%") || !strings.Contains(row.Reason, "over its cap 88% less the switch's 5-point margin") {
 		t.Fatalf("claude-3 at 85: %+v", row)
 	}
-	// At 79: 79 + 1.25 + 0.44 ≈ 80.7 with no --expect, and 79 + 1.25 + 18.2 × 0.5 h / ρ ≈ 82.5
+	// At 79: 79 + 1.25 + 1.33 ≈ 81.6 with no --expect, and 79 + 1.25 + 16.4 × 0.5 h / ρ ≈ 81.4
 	// for a short lane (counted for 30 minutes): both under 83, placed.
 	for _, ex := range [][]LaneExpect{nil, {{Class: ExpectShort}}} {
 		if row := rowOf(rank(t, mk(79, ex)), "claude-3"); strings.Contains(row.Reason, "switch's projection") {
 			t.Fatalf("claude-3 at 79 (%v): %+v", ex, row)
 		}
 	}
-	// Without the margin, at 86: 86 + 1.25 + 0.44 ≈ 87.7, under 88.
+	// Without the margin, at 85: 87.6, under 88.
 	mv.Hysteresis = 0
-	if row := rowOf(rank(t, mk(86, nil)), "claude-3"); strings.Contains(row.Reason, "switch's projection") {
-		t.Fatalf("claude-3 at 86 without the margin: %+v", row)
+	if row := rowOf(rank(t, mk(85, nil)), "claude-3"); strings.Contains(row.Reason, "switch's projection") {
+		t.Fatalf("claude-3 at 85 without the margin: %+v", row)
 	}
 }

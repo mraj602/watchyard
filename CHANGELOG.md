@@ -130,8 +130,13 @@ All notable changes to Watchyard are recorded here. The format follows
   "at 56-59 points/h with this lane the switch's projection is 131-262%", lanes burning ~9-14).
   A lane is now a picker lease's session over its whole life across moves; move and handoff
   leases are not lanes; ended lanes count from 20 minutes. The switch-projection check takes a
-  new lane at most at 2× its class's burn (`--explain`: "Lane burn (switch check)", with when it
-  was clamped), and a lane without `--expect` as a medium lane, at most its cost.
+  new lane at its model's measured burn (that model's p75, at least 10 lanes), within [0.5×,
+  3×] its class's burn (`--explain`: "Lane burn (switch check)", with when it was clamped), and
+  a lane without `--expect` as a medium lane (48 minutes).
+- **The switch knows a lane's length.** The lease line keeps `expect`, `expect_min` and
+  `expect_end` (a medium lane's without `--expect`; a move lease keeps its session's); the
+  switch projects a lane's burn to that end while it runs inside it (at least 30 minutes), to
+  the horizons once it overruns. Older lines as before.
 - **Moves the trigger undoes** (live, pre7: 3b2611ed moved claude-2 → claude-6 at 06:12 and
   claude-6 → claude-4 at 06:35). The destination check now projects with the trigger's own
   formula and horizon on that account after the move (to its resets, moves already planned this

@@ -146,6 +146,10 @@ type Pick struct {
 	// estimates); Over: placed past a soft limit because no account was free under them.
 	Expect string
 	Over   bool
+	// SwitchClass, SwitchDur: the lane's class and expected time as the switch counts it
+	// (written to its lease line: expect, expect_min, expect_end).
+	SwitchClass string
+	SwitchDur   time.Duration
 }
 
 // Hint is the one-line instruction for the agent on a drain pick ("" otherwise).

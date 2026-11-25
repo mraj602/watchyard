@@ -1521,15 +1521,19 @@ single write and flushed to disk (`fsync`, and the folder when a day file is cre
 the next. Lines:
 
 - `{"v": 1, "op": "lease", "id", "at", "key", "account", "org", "folder", "label", "kind",
-  "session_id", "c5", "cf", "model", "strategy", "urgent", "batch", "drain", "finish_by", "moved_from", "parent"}`: `id` a ULID, `at` the
+  "session_id", "c5", "cf", "model", "strategy", "urgent", "batch", "drain", "finish_by", "moved_from", "parent",
+  "expect", "expect_min", "expect_end"}`: `id` a ULID, `at` the
   pick time (RFC 3339 UTC), `key` the seat key, `kind` `aggressive` or `protected`,
   `session_id` from `--session-id` (absent without it), `c5` and `cf` the lane charge and full
   cost in 5-hour points, `model` from `--model` (absent without it), `strategy` the strategy
   that picked, `urgent` true when `--urgent` passed a burst cap, `batch` the id shared by the
   picks of one call, `drain` true and `finish_by` (RFC 3339 UTC) for a drain pick (both absent
   otherwise). A move (8.6) writes a `lease` line with `strategy` `move` and `moved_from`, the
-  label of the account the session left, and the old lease's `parent`. `parent`: the session
-  that asked for the lease (`--parent`, 8.5 flags).
+  label of the account the session left, and the old lease's `parent` and `expect*`. `parent`:
+  the session that asked for the lease (`--parent`, 8.5 flags). `expect` (`short`, `medium`,
+  `long`), `expect_min` and `expect_end` (RFC 3339 UTC): the lane's length as the
+  switch-projection check counted it (a medium lane's without `--expect`; absent with
+  estimates off); the switch projects the lane's burn to `expect_end` (8.6).
 - `{"v": 1, "op": "bind", "id", "at", "session_id"}`: the lease `id` names session `session_id`
   from now on (a `claude --bg` lane, whose id is known only after its launch).
 - `{"v": 1, "op": "launched", "at", "session_id"}`: written by `wy hook` on `SessionStart`.
@@ -2024,22 +2028,27 @@ places no new lane on an account where the switch would move a session off: the 
 projection (`internal/projection`, the same function on both sides) of the account's measured
 burn now (this machine's sessions and other machines' sessions the hub measured, as above) plus
 the new lane's burn, against the switch's caps less the pin reserve. The new lane's burn is the
-larger of its estimate's (cost over wall time, or `r`) and the measured lane burn `R` (8.5 Lane
-statistics): a size class sets how long a lane runs, not how fast it burns (live: a "medium"
-lane counted as 4 points per hour while Opus lanes here burn 12-26), at most 2× its class's
-burn (cost over time; medium without `--expect`), and `--explain` prints the line "Lane burn
-(switch check)" with the measured `R` and whether it was clamped. A lane without `--expect`
-counts as a medium lane: the medium class's time, at most its cost. The account's own burn is
+measured lane burn `R` of its model (8.5 Lane statistics; with `--model`, that model's own lanes
+only, at least 10) and else its estimate's (cost over wall time, or `r`): a size class sets how
+long a lane runs, not how fast it burns (live: a "medium" lane counted as 4 points per hour
+while Opus lanes here burn 12-26). It is kept within [0.5×, 3×] its class's burn (cost over
+time; medium without `--expect`), and `--explain` prints the line "Lane burn (switch check)"
+with the burn, where it came from, whether it was clamped and for how long. A lane without
+`--expect` counts as a medium lane, for the medium class's time (48 minutes). The account's own burn is
 projected to the resets. One rule counts a session's burn on all three sides (the picker's
 acceptance, the switch's trigger, the switch's destination check): inside its lease's expected
 duration (`--expect`) it burns for max(expected remaining, 30 minutes), at most to each
 window's horizon; unknown or overrun, to the horizons (the 5-hour reset, and min(weekly reset,
 5 hours)). A short lane cannot burn 5 hours (live: an idle account refused a 25-minute lane at
-23 points/h, "projection 115%"). The lease's `--expect` is not kept in the ledger, so a running
-lane is of unknown length to the switch; the picker's new lane without `--expect` is a medium
-lane (above), so the two still differ for such lanes (live, pre7: 2de58a08, no `--expect`,
-placed on claude-3 at 7d 85% and moved off 17 minutes later, "7d projected 95% (cap 88%) at
-16.4 points/h"); the 5-point margin below keeps most of those off.
+23 points/h, "projection 115%"). The lease line keeps the lane's length as the picker counted
+it: `expect` (the class; `medium` without `--expect`), `expect_min` and `expect_end` (the pick
+plus its time); a move lease keeps its session's. The switch takes a lane's expected time left
+from it (`expect_end` − now; a move lease written without it, its session's latest), and once
+the lane overruns it projects it to the horizons; lease lines without it (older) as before:
+unknown, to the horizons. So the switch counts a running lane as the picker did when it placed
+it (live, pre7: 2de58a08, no `--expect`, placed on claude-3 at 7d 85% and moved off 17 minutes
+later, "7d projected 95% (cap 88%) at 16.4 points/h": the picker had counted it for 90 minutes,
+the switch to the horizons).
 A placement is a destination too: the picker lets a lane in only while the projection stays
 `move_hysteresis` (5) points under the caps less the pin reserve, as a moved session must.
 Simulator (`internal/mover/sim_churn_test.go`, 30 runs × 10 patterns, per run-day): moves the

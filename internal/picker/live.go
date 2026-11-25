@@ -38,6 +38,9 @@ type LiveLane struct {
 	Rate     float64
 	Measured bool
 	Expect   time.Duration
+	// ExpectEnd: its lease's expected end (zero: unknown): the switch projects its burn to it
+	// while it runs inside it.
+	ExpectEnd time.Time
 }
 
 // Live reads the accounts and the running lanes from the lanes input.
@@ -79,7 +82,7 @@ func (in LaneInput) Live() ([]LiveAccount, []LiveLane) {
 		if bw > 0 {
 			r = math.Max(0, L.Recent) * f5[L.Key] / bw
 		}
-		lanes = append(lanes, LiveLane{Key: L.Key, SID: L.SID, T0: L.T0, Rate: r, Measured: L.RecentOK, Expect: L.Expect})
+		lanes = append(lanes, LiveLane{Key: L.Key, SID: L.SID, T0: L.T0, Rate: r, Measured: L.RecentOK, Expect: L.Expect, ExpectEnd: L.ExpectEnd})
 	}
 	return accs, lanes
 }

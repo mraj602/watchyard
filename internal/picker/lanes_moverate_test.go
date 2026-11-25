@@ -61,17 +61,42 @@ func TestMeasureLanesMoveLeases(t *testing.T) {
 	}
 }
 
-// The new lane in the switch-projection check: a measured burn far above its class's is cut to
-// 2× the class's, and a lane without --expect adds at most the medium class's cost.
+// The new lane in the switch-projection check: the measured burn (the model's p75) within
+// [0.5×, 3×] its class's, a lane without --expect a medium lane for the medium class's time.
 func TestSwitchLaneClamp(t *testing.T) {
 	p := DefaultLaneParams
 	med := p.ExpectMedium.Cost / p.ExpectMedium.Dur.Hours() // 4 points/h
-	sl := p.switchLane(57, "", 0, LaneStats{})
-	if !sl.clamped || !near1(sl.rate, 2*med, 1e-9) || sl.class != ExpectMedium || sl.dur != p.ExpectMedium.Dur || sl.maxPts != p.ExpectMedium.Cost {
-		t.Fatalf("no --expect at 57: %+v", sl)
+	sl := p.switchLane(9, "", 0, LaneStats{Rate: 57, NRate: 14})
+	if !sl.clamped || !near1(sl.rate, 3*med, 1e-9) || sl.class != ExpectMedium || sl.dur != p.ExpectMedium.Dur {
+		t.Fatalf("no --expect, measured 57: %+v", sl)
 	}
-	sl = p.switchLane(9, ExpectLong, 3*time.Hour, LaneStats{})
-	if sl.clamped || sl.rate != 9 || sl.maxPts != 0 {
-		t.Fatalf("long at 9 (under 2 × 4.7): %+v", sl)
+	// Opus lanes measured at 11 (under 3 × 4): taken as measured.
+	if sl = p.switchLane(4, "", 0, LaneStats{Rate: 11, NRate: 14}); sl.clamped || sl.rate != 11 {
+		t.Fatalf("measured 11: %+v", sl)
+	}
+	// Not measured: the estimate's rate, within the band.
+	if sl = p.switchLane(9, ExpectLong, 3*time.Hour, LaneStats{}); sl.clamped || sl.rate != 9 || sl.dur != 3*time.Hour {
+		t.Fatalf("long at 9 (2.3 ... 14): %+v", sl)
+	}
+	if sl = p.switchLane(0.5, ExpectMedium, time.Hour, LaneStats{Rate: 1, NRate: 10}); !sl.clamped || sl.rate != 0.5*med {
+		t.Fatalf("measured 1: %+v", sl)
+	}
+}
+
+// Each pick carries the lane as the switch-projection check counted it, for its lease line:
+// without --expect a medium lane for the medium class's time; with one, its class and time.
+func TestLanePickSwitchExpect(t *testing.T) {
+	in := laneIn(world(40, 20), 1)
+	in.Params = DefaultLaneParams
+	pk := rank(t, in).Picks[0]
+	if pk.SwitchClass != ExpectMedium || pk.SwitchDur != DefaultLaneParams.ExpectMedium.Dur {
+		t.Fatalf("no --expect: %+v", pk)
+	}
+	in.Expects = []LaneExpect{{Dur: 20 * time.Minute}}
+	pk = rank(t, in).Picks[0]
+	// (EstFloor: a lane costing more than it says runs longer at its rate: 20 min at the short
+	// class's rate, raised to the mean lane cost, 46 min 40 s; the check used the same time.)
+	if pk.SwitchClass != ExpectShort || pk.SwitchDur < 20*time.Minute || pk.SwitchDur > time.Hour {
+		t.Fatalf("--expect 20m: %+v", pk)
 	}
 }

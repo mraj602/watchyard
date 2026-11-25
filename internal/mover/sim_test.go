@@ -207,6 +207,8 @@ type simLane struct {
 	othersAt float64
 	// forced: no account had room under the picker's check; it was placed anyway.
 	forced bool
+	// noExp: leased without --expect (simStrat.noExpFrac).
+	noExp bool
 }
 
 // trueRate10 is rate10 without the startup burst's excess.
@@ -377,6 +379,14 @@ type simStrat struct {
 	// expected duration else 90 minutes, at least an hour, at most to the 5-hour reset, the
 	// weekly part too). Neither: the whole lane to the horizons (the earlier simulator).
 	expectPick, oldPick bool
+	// noExpFrac: this share of the lanes is leased without --expect (the picker counts them as
+	// medium lanes, simMediumMin). switchExpect: what the switch knows of a lane's length:
+	// switchAll (0) the picker's estimate of every lane (the earlier simulator); switchNone
+	// nothing (1.3.3-pre9: the lease line had no expect, every lane to the horizons);
+	// switchLease the lease line's expected end (its estimate, a medium lane's without
+	// --expect), to the horizons once overrun.
+	noExpFrac    float64
+	switchExpect int
 	// pickMargin: the picker's acceptance leaves this much under the caps (the destination's
 	// hysteresis); 0: up to the caps.
 	pickMargin float64
@@ -490,6 +500,12 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			}
 			lanes = append(lanes, c)
 			byID[c.id] = c
+		}
+	}
+	if st.noExpFrac > 0 { // its own stream: the other draws stay as they were
+		nr := rand.New(rand.NewPCG(seed, 9))
+		for _, l := range lanes {
+			l.noExp = nr.Float64() < st.noExpFrac
 		}
 	}
 	accIdx := map[string]int{}
@@ -731,6 +747,9 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 					l.acc = groups[l.group]
 				default:
 					newMF, newMult, newExp = l.mf, l.mult, float64(l.work)*l.expMult
+					if l.noExp {
+						newExp = simMediumMin
+					}
 					l.placed = true
 					res.Placed++
 					l.acc = place(m, l.est)
@@ -1077,7 +1096,18 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			s := Session{ID: l.id, Account: accs[l.acc].key, Rate: st.rateOf(l), Busy: l.busy > 0 && l.restart == 0 && !l.stopped,
 				Stopped: l.stopped, Interactive: l.owner, Movable: true, Context: l.ctx, Pinned: l.coord != nil && st.pinned,
 				ModelFactor: l.mf, Started: simAt(l.start)}
-			if l.coord == nil && !l.owner && l.work > l.age {
+			switch {
+			case l.coord != nil || l.owner:
+			case st.switchExpect == switchNone:
+			case st.switchExpect == switchLease:
+				end := float64(l.work) * l.expMult // the lease line's expect_end, from its start
+				if l.noExp {
+					end = simMediumMin
+				}
+				if left := end - float64(m-l.start); left > 0 {
+					s.Expected = time.Duration(left * float64(time.Minute))
+				}
+			case l.work > l.age:
 				s.Expected = time.Duration(float64(l.work-l.age)*l.expMult) * time.Minute // the picker's estimate
 			}
 			if l.typed >= 0 {
@@ -1644,3 +1674,11 @@ func (l *simLane) steps(secs float64) {
 		secs -= d
 	}
 }
+
+// simStrat.switchExpect values; simMediumMin: the medium class's minutes (a lane without --expect).
+const (
+	switchAll = iota
+	switchNone
+	switchLease
+	simMediumMin = 48.0
+)
