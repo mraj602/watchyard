@@ -1000,7 +1000,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 					// The new lane at the measured lane burn (setup.md 8.5, The switch's projection):
 					// a size class's cost over its wall time is the average of lanes mostly idle.
 					sl := p.switchLane(lr, lclass, ldur, in.Stats)
-					if why5 := moverOver(in.Mover, acc, v, sl, p, now); why5 != "" {
+					if why5 := moverOver(in.Mover, acc, v, sl, p, now, freshLanes(in.Mover, leases, acc, sl.rate, p, now)); why5 != "" {
 						skip, why, level, capped, soft = true, why5, 3, false, false
 					}
 				}
@@ -1329,7 +1329,7 @@ func (m *MoverView) expiring(protected bool, hrs float64) bool {
 // lr 5-hour points per hour runs there ("" when it would not): its projection at its measured
 // burn plus the lane (projection.Levels, the switch's own maths) over the switch's caps less
 // the pin reserve.
-func moverOver(m *MoverView, acc LaneAccount, v laneState, sl switchLaneEst, p LaneParams, now time.Time) string {
+func moverOver(m *MoverView, acc LaneAccount, v laneState, sl switchLaneEst, p LaneParams, now time.Time, fresh []freshLane) string {
 	lr, expect := sl.rate, sl.dur
 	pa := p.account(acc)
 	c5, c7 := m.caps(acc.Protected, v.hrs)
@@ -1355,6 +1355,14 @@ func moverOver(m *MoverView, acc LaneAccount, v laneState, sl switchLaneEst, p L
 	}
 	l5, l7 := projection.Levels(0, 0, math.Max(0, lr), pa.ratio(), math.Min(hl, h5), math.Min(hl, v.hrs), math.Min(hl, m.WeekSpanH))
 	p5, p7 = p5+l5, p7+l7
+	for _, f := range fresh { // lanes leased minutes ago, not in the meter yet
+		fh := math.Inf(1)
+		if f.left > 0 {
+			fh = math.Max(f.left.Hours(), m.ExpectFloorH)
+		}
+		f5, f7 := projection.Levels(0, 0, f.rate, pa.ratio(), math.Min(fh, h5), math.Min(fh, v.hrs), math.Min(fh, m.WeekSpanH))
+		p5, p7, r = p5+f5, p7+f7, r+f.rate
+	}
 	// Under the caps less the destination's margin, as a moved session must be (a placement
 	// is a destination too).
 	if !projection.Over(p5, p7, c5, c7, acc.PinReserve5, acc.PinReserve7, m.Hysteresis) {
@@ -1432,6 +1440,17 @@ func (p LaneParams) switchLane(lr float64, class string, dur time.Duration, st L
 	return sl
 }
 
+// SwitchLaneRate is the burn the switch-projection check counts a new lane without --expect
+// at (points per hour): the switch counts its young lanes at it in its destination check.
+func (in LaneInput) SwitchLaneRate() float64 {
+	p := in.Params
+	_, _, _, lr := p.laneStats(in.Stats)
+	if p.UseEstimate {
+		lr = p.estimate(LaneExpect{}, LaneAccount{}, in.Stats).rate()
+	}
+	return p.switchLane(lr, "", 0, in.Stats).rate
+}
+
 // SwitchLaneNote is the --explain line of the new lane's burn in the switch-projection check,
 // for a lane of the given class ("" no --expect): "" when the switch is off.
 func SwitchLaneNote(in LaneInput, class string, dur time.Duration) string {
@@ -1471,4 +1490,41 @@ func SwitchLaneNote(in LaneInput, class string, dur time.Duration) string {
 		s += " (no --expect: a medium lane, as the switch counts it until it overruns)"
 	}
 	return s
+}
+
+// freshLane is a lane leased on an account in the last MoverView.YoungMin minutes: the part of
+// its burn the meter does not have yet (points per hour) and its expected time left (0:
+// unknown).
+type freshLane struct {
+	rate float64
+	left time.Duration
+}
+
+// freshLanes are acc's lanes leased in the last m.YoungMin minutes, this call's earlier picks
+// included, each at the new-lane burn rate less what the meter measured of it (live pre9: four
+// lanes leased onto claude-2 around 10:00 each saw it nearly idle; 15 minutes later they burned
+// 60-90 points/h and the switch moved sessions off).
+func freshLanes(m *MoverView, ls []LaneLease, acc LaneAccount, rate float64, p LaneParams, now time.Time) []freshLane {
+	if m == nil || m.YoungMin <= 0 || rate <= 0 {
+		return nil
+	}
+	f5, bw := p.account(acc).F5, p.BurnWindow.Hours()
+	var out []freshLane
+	for _, L := range ls {
+		if L.Key != acc.Key || L.Ended || L.Remote || now.Sub(L.T0) >= time.Duration(m.YoungMin*float64(time.Minute)) {
+			continue
+		}
+		measured := 0.0
+		if L.RecentOK && bw > 0 {
+			measured = math.Max(0, L.Recent) * f5 / bw
+		}
+		if x := rate - measured; x > 0 {
+			f := freshLane{rate: x}
+			if !L.ExpectEnd.IsZero() {
+				f.left = max(0, L.ExpectEnd.Sub(now))
+			}
+			out = append(out, f)
+		}
+	}
+	return out
 }

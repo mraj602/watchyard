@@ -1078,7 +1078,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			}
 			continue
 		}
-		in := Input{Now: simAt(m), Params: st.p, Recent: recs, Streak: streak}
+		in := Input{Now: simAt(m), Params: st.p, Recent: recs, Streak: streak, LaneRate: simLaneRate}
 		for i, a := range accs {
 			v := view[i]
 			acc := Account{Key: a.key, Label: a.key, Protected: a.protected, Ratio: simRatio, Rate: v.rate, RateNote: v.note, LoggedIn: a.loggedIn,
@@ -1682,3 +1682,7 @@ const (
 	switchLease
 	simMediumMin = 48.0
 )
+
+// simLaneRate: the picker's new-lane burn the switch's destination counts young lanes at (3×
+// the medium class's 4 points/h, the clamp's top; live Opus lanes measure ~14).
+const simLaneRate = 12.0

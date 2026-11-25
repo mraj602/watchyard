@@ -85,6 +85,8 @@ type Params struct {
 	// off it at 06:35, "5h projected 111%").
 	DestHorizon time.Duration
 	oldDest     bool
+	// noYoungDest (simulator): the destination counts young lanes at 0, as 1.3.3-pre9.
+	noYoungDest bool
 	// CheapMoves: among the sessions whose move alone fixes the overload, the most points
 	// freed per re-read cost (context × ModelFactor) first, then the highest burn, then the
 	// youngest.
@@ -256,6 +258,11 @@ type Input struct {
 	// Streak: per account, on how many consecutive passes before this one it triggered (the
 	// spike filter).
 	Streak map[string]int
+	// LaneRate: the burn the picker counts a new lane at (points per hour; its switch check,
+	// setup.md 8.5). The destination check counts each lane under YoungGate (its burn left
+	// out of the trigger's projection) at it, not 0: in a few minutes it will count. 0: at
+	// its measured burn.
+	LaneRate float64
 }
 
 // Projection is one account's projections at its burn now.
@@ -964,8 +971,26 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 		}
 		accs = append(accs, a)
 	}
+	// Lanes under YoungGate count at the lane burn (else their measured burn), not 0: the
+	// trigger leaves out their first minutes but counts them 15 minutes in, and a move
+	// accepted onto an account of fresh lanes was then undone (live pre9: ai-lane-E, 27.1
+	// points/h, moved claude-6 → claude-2 at 10:00:58 while claude-2 had 6.5-8.7 points/h of
+	// young lanes left out; they burned 60-90 points/h by 10:10, "5h projected 95%").
 	byAcc := map[string][]Session{}
+	young := map[string]float64{}
+	fromReadings := map[string]bool{} // the readings' slope has their burn already
+	for _, a := range in.Accounts {
+		fromReadings[a.Key] = a.FromReadings
+	}
 	for _, x := range in.Sessions {
+		if !p.oldDest && !p.noYoungDest && p.young(x, now) && x.Rate <= 0 && !x.Stopped && !fromReadings[x.Account] {
+			r := x.YoungRate
+			if in.LaneRate > 0 {
+				r = in.LaneRate
+			}
+			x.Rate = r
+			young[x.Account] += r
+		}
 		byAcc[x.Account] = append(byAcc[x.Account], x)
 	}
 	// The trigger's projection of the account after the move (Project: to the resets, the
@@ -974,6 +999,7 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 	// not fire on it for this move.
 	room := func(a Account) (Projection, bool) {
 		r := math.Max(0, s.Rate)
+		a.Rate += young[a.Key]
 		pr := p.Project(a, byAcc[a.Key], delta[a.Key]+r, now)
 		if p.MinBurn >= 0 && !p.IdleMoves && s.Expected > 0 && r > 0 {
 			e := max(s.Expected, ExpectFloor).Hours()

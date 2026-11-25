@@ -324,6 +324,7 @@ func writeJSONOut(w io.Writer, v any) error {
 type moveWorld struct {
 	launches   []mover.Launch
 	builtAt    time.Time // wall clock when its state began to be read
+	laneRate   float64   // the picker's new-lane burn: young lanes count at it in the destination check
 	input      mover.Input
 	targets    map[string]mover.Target // by account key
 	keyOfDir   map[string]string       // slot dir -> account key
@@ -458,6 +459,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		return nil, errors.New("the lanes picker gave no reading")
 	}
 	accs, lanes := lin.Live()
+	w.laneRate = lin.SwitchLaneRate()
 
 	// Accounts in the picker's order (its first pick first); Plan puts protected ones last.
 	order := map[string]int{}
@@ -558,6 +560,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	}
 	w.sw = st.LoadSwitch(now, params.Pass)
 	w.input.Now, w.input.Params, w.input.Recent = now, params, mover.Records(log)
+	w.input.LaneRate = w.laneRate
 	w.input.Streak = w.sw.Streak
 	for _, l := range w.launches {
 		key := w.keyOfDir[l.Slot]

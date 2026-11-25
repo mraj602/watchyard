@@ -44,7 +44,12 @@ func TestSimulateChurn(t *testing.T) {
 	}
 	strats = append(strats,
 		lease("pre9: half without --expect; the switch knows no lane's length", switchNone),
-		lease("after: the switch reads the lease's expected end (medium without --expect)", switchLease))
+		func() simStrat {
+			s := lease("pre9 destination: young lanes at 0; the switch reads the lease's expected end", switchLease)
+			s.p.noYoungDest = true
+			return s
+		}(),
+		lease("after: the switch reads the lease's expected end, young lanes at the lane burn in the destination", switchLease))
 	runs, par := envInt("WY_SIM_RUNS", 1), envInt("WY_SIM_PAR", 2)
 	pats := simPatterns
 	if os.Getenv("WY_SIM_RUNS") == "" {

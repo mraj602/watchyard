@@ -74,6 +74,10 @@ type MoverView struct {
 	// the caps, as a moved session must (the switch's destination check): a placement is a
 	// destination too, and one let in up to the cap is moved off at the next rise.
 	Hysteresis float64
+	// YoungMin: lanes leased on an account in the last YoungMin minutes (this call's earlier
+	// picks included) count at the new-lane burn less what the meter measured of them: their
+	// burn is not in the meter yet, and the switch will count it once they are YoungMin old.
+	YoungMin float64
 	// StaleMin: an account whose sample is older than this many minutes has stale data: its
 	// level neither blocks a lane nor draws one (it is ranked after the accounts with fresh
 	// data, setup.md 8.6, Stale data). 0: off.

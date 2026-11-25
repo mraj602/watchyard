@@ -100,3 +100,37 @@ func TestLanePickSwitchExpect(t *testing.T) {
 		t.Fatalf("--expect 20m: %+v", pk)
 	}
 }
+
+// Live (pre9, ~10:00): four lanes went onto claude-2 within minutes, each checked against its
+// nearly idle meter; 15 minutes later they burned 60-90 points/h. Lanes leased on the account
+// in the last 15 minutes (this call's earlier picks too) now count at the lane burn.
+func TestLanesFreshLanesCount(t *testing.T) {
+	picksOn := func(young float64) int {
+		s := world(40, 20)
+		for k := range s { // only claude-2 has room
+			s[k] = LaneSample{TS: hrs(-1.0 / 60), Weekly: fp(99), FiveHour: fp(20), FiveHourReset: hrs(3), WeeklyReset: hrs(100)}
+		}
+		s["claude-2"] = LaneSample{TS: hrs(-1.0 / 60), Weekly: fp(30), FiveHour: fp(20), FiveHourReset: hrs(3), WeeklyReset: hrs(100)}
+		in := laneIn(s, 6)
+		in.Params = DefaultLaneParams
+		in.Stats = LaneStats{Rate: 12, NRate: 20}
+		in.Mover = &MoverView{Cap5: 50, Cap7: 98, Cap5Protected: 80, Cap7Protected: 80, WeekSpanH: 5, Units: map[string]float64{},
+			ExpectFloorH: 0.5, Hysteresis: 5, YoungMin: young}
+		n := 0
+		r := rank(t, in)
+		for _, pk := range r.Picks {
+			if pk.Key == "claude-2" {
+				n++
+			}
+		}
+		t.Logf("young %v: picks %v", young, picksOf(r))
+		return n
+	}
+	// 20 + k × 12 × 0.8 h <= 50 − 5: at most 2 lanes.
+	if n := picksOn(15); n > 2 {
+		t.Fatalf("%d lanes on claude-2 with the fresh lanes counted, want <= 2", n)
+	}
+	if n := picksOn(0); n <= 2 {
+		t.Fatalf("without the rule: %d lanes on claude-2, want more (each checked against the idle meter)", n)
+	}
+}

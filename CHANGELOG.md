@@ -133,6 +133,11 @@ All notable changes to Watchyard are recorded here. The format follows
   new lane at its model's measured burn (that model's p75, at least 10 lanes), within [0.5×,
   3×] its class's burn (`--explain`: "Lane burn (switch check)", with when it was clamped), and
   a lane without `--expect` as a medium lane (48 minutes).
+- **Fresh lanes count** (live pre9: ai-lane-E moved onto claude-2 at 10:00:58 while its fresh
+  lanes' burn was left out; they burned 60-90 points/h by 10:10 and the trigger fired at 10:11).
+  The destination check counts lanes under 15 minutes at the picker's new-lane burn, and the
+  picker's switch check counts lanes leased on the account in the last 15 minutes (this call's
+  earlier picks included) at the new-lane burn less what the meter measured of them.
 - **The switch knows a lane's length.** The lease line keeps `expect`, `expect_min` and
   `expect_end` (a medium lane's without `--expect`; a move lease keeps its session's); the
   switch projects a lane's burn to that end while it runs inside it (at least 30 minutes), to

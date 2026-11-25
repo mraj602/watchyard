@@ -1,6 +1,7 @@
 package mover
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -586,5 +587,44 @@ func TestPlanCheapMoves(t *testing.T) {
 	}
 	if ModelFactor("claude-haiku-4-5") != 1 || ModelFactor("x") != 0 {
 		t.Error("model factors")
+	}
+}
+
+// Live (pre9, 10:00:58): ai-lane-E (27.1 points/h) moved claude-6 → claude-2, accepted: claude-2
+// at 6%, 0.1 points/h counted, its 5-hour reset ~2.5 h away, cap 85; its three fresh lanes'
+// 8.7 points/h were left out (under 15 minutes): 6 + 27.2 × 2.5 = 74 <= 80. By 10:10 they
+// burned 60-90 points/h and at 10:11 the trigger fired ("5h projected 95% (cap 85%)"). The
+// destination counts young lanes at the lane burn (else their measured burn).
+func TestPlanDestinationCountsYoungLanes(t *testing.T) {
+	now := time.Date(2026, 11, 25, 4, 30, 58, 0, time.UTC)
+	old := now.Add(-3 * time.Hour)
+	c6 := Account{Key: "acct:c6/oB", Label: "claude-6", Rate: 30.5, Meter: 30.5, LoggedIn: true, Ratio: 8, ReadAt: now,
+		W5: Window{Level: 9, Reset: now.Add(4 * time.Hour)}, W7: Window{Level: 44, Reset: now.Add(100 * time.Hour)}}
+	c2 := Account{Key: "acct:c2/oA", Label: "claude-2", Rate: 0.1 + 8.7, Meter: 0.1 + 8.7, LoggedIn: true, Ratio: 8, ReadAt: now,
+		W5: Window{Level: 6, Reset: now.Add(150 * time.Minute)}, W7: Window{Level: 24, Reset: now.Add(140 * time.Hour)}}
+	ss := []Session{
+		{ID: "ai-lane-E", Account: c6.Key, Rate: 27.1, Busy: true, Movable: true, Context: 80_000, Started: old},
+		{ID: "c6-own", Account: c6.Key, Rate: 3.4, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old},
+		{ID: "home-18", Account: c2.Key, Rate: 0.1, Busy: true, Movable: true, Context: 30_000, Started: old},
+	}
+	for i, r := range []float64{2.1, 3.0, 3.6} {
+		ss = append(ss, Session{ID: fmt.Sprintf("fresh-%d", i), Account: c2.Key, Rate: r, Busy: true, Movable: true,
+			Context: 20_000, Started: now.Add(-time.Duration(3+i) * time.Minute)})
+	}
+	in := Input{Now: now, Params: DefaultParams, Accounts: []Account{c2, c6}, Sessions: ss,
+		Streak: map[string]int{c6.Key + " " + Win5h: 5}}
+	if got := moved(Plan(in)); got["ai-lane-E"] == c2.Key {
+		t.Fatalf("ai-lane-E moved onto claude-2 with its young lanes at their measured 8.7: %v", got)
+	}
+	in.LaneRate = 12
+	if got := moved(Plan(in)); got["ai-lane-E"] == c2.Key {
+		t.Fatalf("ai-lane-E moved onto claude-2 with its young lanes at 3 × 12: %v", got)
+	}
+	// Without the young lanes (all older): 6 + (8.8 + 27.1) × 2.5 = 96, also refused; with
+	// them at 0 (the pre9 rule) it was 6 + 27.2 × 2.5 = 74: accepted.
+	in.LaneRate = 0
+	in.Params.oldDest = true // the young lanes counted at 0, as pre9 (the horizon off)
+	if got := moved(Plan(in)); got["ai-lane-E"] != c2.Key {
+		t.Fatalf("pre9 rule: %v", got)
 	}
 }
