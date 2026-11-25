@@ -165,7 +165,7 @@ func (t *moveTest) applyAccount(a *mover.Account, now time.Time) bool {
 	if x.WeeklyResetMin != nil {
 		a.W7.Reset = now.Add(mins(*x.WeeklyResetMin))
 	}
-	a.Stale = false
+	a.Stale, a.ReadAt = false, now // test levels are read now
 	return true
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -317,7 +318,15 @@ func TestMoveOutForHubRecord(t *testing.T) {
 	if err := o.deliver(context.Background(), p, "t", "p"); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(f.dirs.State.Path, "outbox", "2026-11-24.jsonl"))
+	// The outbox names its day file by the wall clock, not by now.
+	files, _ := filepath.Glob(filepath.Join(f.dirs.State.Path, "outbox", "20*.jsonl"))
+	var b []byte
+	var err error
+	if len(files) != 1 {
+		err = fmt.Errorf("day files %v", files)
+	} else {
+		b, err = os.ReadFile(files[0])
+	}
 	if err != nil || strings.Count(string(b), `"kind":"switch_notice"`) != 1 {
 		t.Fatalf("outbox: %v %s", err, b)
 	}

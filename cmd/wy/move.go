@@ -147,6 +147,7 @@ func moveCmd(e moveEnv, args []string) error {
 			return "~/" + filepath.Base(dir)
 		}
 		for _, x := range es {
+<<<<<<< HEAD
 			line := fmt.Sprintf("%s  %s  %s -> %s  %s  %s", x.At.Local().Format("01-02 15:04"), short(x.SessionID), name(x.FromDir, x.From), name(x.ToDir, x.To), x.Kind, x.Reason)
 			if x.Error != "" {
 				line += "  FAILED: " + x.Error
@@ -155,6 +156,13 @@ func moveCmd(e moveEnv, args []string) error {
 		}
 		if len(es) == 0 {
 			fmt.Fprintf(e.stdout, "No moves in the last %s.\n", *since)
+=======
+			reason := x.Reason
+			if x.Recheck != "" {
+				reason += " (" + x.Recheck + ")"
+			}
+			fmt.Fprintf(e.stdout, "%s  %s  %s -> %s  %s  %s\n", x.At.Local().Format("01-02 15:04"), short(x.SessionID), name(x.FromDir, x.From), name(x.ToDir, x.To), x.Kind, reason)
+>>>>>>> origin/feat/smart-switch-v2
 		}
 		printPinRows(e.stdout, pins)
 		for _, x := range warns {
@@ -175,15 +183,22 @@ func moveCmd(e moveEnv, args []string) error {
 	case *plan:
 		r := mover.Plan(w.input)
 		r.Skips = w.inScope(r.Skips)
+		rcs := st.Rechecks(e.now().Add(-time.Hour))
 		if *asJSON {
 			doc := w.planDoc(r)
 			doc["skipped"] = r.Skips
+			if len(rcs) > 0 {
+				doc["rechecks"] = rcs
+			}
 			return writeJSONOut(e.stdout, doc)
 		}
 		w.printPlan(e.stdout, r, cfg)
 		for _, k := range r.Skips {
 			l, _ := w.launch(k.Session)
 			fmt.Fprintf(e.stdout, "%s %s stays on %s: %s\n", short(k.Session), l.Name, w.accLabel(k.Account), k.Why)
+		}
+		for _, x := range rcs {
+			fmt.Fprintln(e.stdout, recheckLine(x))
 		}
 		return nil
 	case *auto:
@@ -265,9 +280,7 @@ func moveCmd(e moveEnv, args []string) error {
 		if pr.Window == mover.Win7d {
 			mv.P, mv.ResetAt = pr.P7, e.now().Add(pr.Reset7)
 		}
-		if pr.Hit >= 0 {
-			mv.HitAt = e.now().Add(pr.Hit)
-		}
+		mv.HitAt = pr.HitAt(e.now())
 	}
 	if t.Key != "" && mover.Org(t.Key) != mover.Org(w.keyOfDir[l.Slot]) {
 		mv.OrgChanged = true
@@ -337,6 +350,9 @@ func writeJSONOut(w io.Writer, v any) error {
 // moveWorld is one read of the machine for the mover.
 type moveWorld struct {
 	launches   []mover.Launch
+	builtAt    time.Time // wall clock when its state began to be read
+	noHub      bool      // read with --no-hub (a re-check reads the same way)
+	laneRate   float64   // the picker's new-lane burn: young lanes count at it in the destination check
 	input      mover.Input
 	targets    map[string]mover.Target // by account key
 	keyOfDir   map[string]string       // slot dir -> account key
@@ -368,9 +384,10 @@ type moveWorld struct {
 }
 
 func (e moveEnv) world(noHub bool) (*moveWorld, error) {
+	built := time.Now()
 	cfg := e.config()
 	now := e.now()
-	w := &moveWorld{targets: map[string]mover.Target{}, keyOfDir: map[string]string{}, labelOfDir: map[string]string{},
+	w := &moveWorld{builtAt: built, noHub: noHub, targets: map[string]mover.Target{}, keyOfDir: map[string]string{}, labelOfDir: map[string]string{},
 		proj: map[string]mover.Projection{}, byID: map[string]mover.Session{}, outScope: map[string]bool{},
 		scope: parseScope(cfg.Account.SmartSwitchScope)}
 	inject, err := loadMoveTest(e.getenv, w.scope)
@@ -470,6 +487,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		return nil, errors.New("the lanes picker gave no reading")
 	}
 	accs, lanes := lin.Live()
+	w.laneRate = lin.SwitchLaneRate()
 
 	// Accounts in the picker's order (its first pick first); Plan puts protected ones last.
 	order := map[string]int{}
@@ -487,7 +505,8 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	for _, a := range accs {
 		t, loggedIn := w.targets[a.Key]
 		ma := mover.Account{Key: a.Key, Label: t.Label, Protected: a.Protected, Ratio: a.Ratio, Stale: a.Stale, LoggedIn: loggedIn,
-			Drain: drain[a.Key], W5: mover.Window{Level: a.FiveHour, Reset: a.FiveReset}, W7: mover.Window{Level: a.Weekly, Reset: a.WeeklyReset}}
+			Drain: drain[a.Key], W5: mover.Window{Level: a.FiveHour, Reset: a.FiveReset}, W7: mover.Window{Level: a.Weekly, Reset: a.WeeklyReset},
+			ReadAt: a.ReadingAt, DrainUntil: a.DrainUntil}
 		if ma.Label == "" {
 			ma.Label = a.Key
 		}
@@ -506,12 +525,8 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 
 	// Sessions: the registry of every folder, with their burn (their token rows of the burn
 	// window, helpers included, × f) and their context.
-	expect := map[string]time.Duration{}
 	started := map[string]time.Time{}
 	for _, l := range lanes {
-		if l.Expect > 0 {
-			expect[l.SID] = max(0, l.Expect-now.Sub(l.T0))
-		}
 		if l.SID != "" {
 			started[l.SID] = l.T0
 		}
@@ -559,13 +574,14 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	}
 	leased := map[string]bool{}
 	ledger2 := leases.Ledger{Dir: filepath.Join(e.dirs.State.Path, "next")}
-	if ls, _, err := ledger2.Read(now); err == nil {
-		for _, l := range ls {
-			if l.SessionID != "" {
-				leased[l.SessionID] = true
-			}
+	ls2, _, _ := ledger2.Read(now)
+	for _, l := range ls2 {
+		if l.SessionID != "" {
+			leased[l.SessionID] = true
 		}
 	}
+	firstLeases(started, ls2)
+	expect := laneExpect(lanes, ls2, now)
 	log := st.Log(now.Add(-6 * time.Hour))
 	last := map[string]mover.LogEntry{}
 	for _, x := range log {
@@ -573,6 +589,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	}
 	w.sw = st.LoadSwitch(now, params.Pass)
 	w.input.Now, w.input.Params, w.input.Recent = now, params, mover.Records(log)
+	w.input.LaneRate = w.laneRate
 	w.input.Streak = w.sw.Streak
 	for _, l := range w.launches {
 		key := w.keyOfDir[l.Slot]
@@ -744,7 +761,7 @@ func moveParams(cfg config.Config) mover.Params {
 		p.BurnWindow = mins(a.MoveBurnMin)
 	}
 	p.WeekSpan = mins(60 * a.MoveWeekSpanH)
-	p.DestHorizon = mins(a.MoveDestHorizonMin)
+	p.DestHorizon = 0 // retired: a destination is judged as the trigger projects it (move_dest_horizon_min ignored)
 	p.YoungGate = mins(a.MoveYoungMin)
 	p.MinBurn = math.Max(0, a.MoveMinBurn)
 	p.SpikePasses, p.SpikeNear = int(a.MoveSpikePasses), mins(a.MoveSpikeNearMin)
@@ -752,6 +769,7 @@ func moveParams(cfg config.Config) mover.Params {
 	p.AccountMoves, p.AccountWindow = int(a.MoveAccountMoves), mins(a.MoveAccountWindowMin)
 	p.AccountBurn = math.Max(0, a.MoveAccountBurn)
 	p.ExpiringRoom = time.Duration(math.Max(0, a.MoveExpiringH) * float64(time.Hour))
+	p.StaleAfter = mins(math.Max(0, a.MoveStaleMin))
 	p.StoppedWait, p.OwnerGrace, p.StepWait = mins(a.MoveStoppedWaitMin), mins(a.MoveOwnerGraceMin), mins(a.MoveStepWaitMin)
 	p.PassWait = time.Duration(math.Max(0, a.MovePassWaitS) * float64(time.Second))
 	p.PinReserve5, p.PinReserve7 = math.Max(0, a.PinReserve5h), math.Max(0, a.PinReserve7d)
@@ -892,8 +910,12 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "ACCOUNT\t5H\t7D\tBURN/H\tP5\tP7\tCAPS\tPIN RESERVE\tSTATE")
 	loggedIn := map[string]bool{}
+	drainUntil := map[string]time.Time{}
 	for _, a := range w.input.Accounts {
 		loggedIn[a.Key] = a.LoggedIn
+		if a.DrainUntil.After(w.input.Now) {
+			drainUntil[a.Key] = a.DrainUntil
+		}
 	}
 	for _, pr := range r.Accounts {
 		state := "under its caps"
@@ -905,7 +927,10 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		case pr.Held:
 			state = fmt.Sprintf("%s over its cap, pass %d of %d (spike filter)", pr.Window, pr.Streak, w.input.Params.SpikePasses)
 		}
-		if pr.Hit >= 0 {
+		if pr.StaleFor > 0 {
+			state = fmt.Sprintf("data stale (%s), no moves", staleAge(pr.StaleFor))
+		}
+		if pr.Hit > 0 && pr.StaleFor == 0 {
 			state += fmt.Sprintf("; 100%% in %s", pr.Hit.Round(time.Minute))
 		}
 		if pr.Left != "" {
@@ -913,6 +938,9 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		}
 		if pr.Expiring {
 			state += fmt.Sprintf("; expiring room: weekly cap %.0f%% until its weekly reset in %s", pr.Cap7+pr.Reserve7, pr.Reset7.Round(time.Minute))
+		}
+		if u, ok := drainUntil[pr.Key]; ok {
+			state = mover.OwnerDrainText(u, w.input.Now) + "; " + state
 		}
 		if !loggedIn[pr.Key] {
 			state += "; not logged in here (never a destination)"
@@ -990,7 +1018,7 @@ func (w *moveWorld) humanMessage(cfg config.Config, l mover.Launch, t mover.Targ
 	case mv.ByHand:
 	case mv.Stopped && mv.Window != "":
 		fmt.Fprintf(&b, " (it was stopped at %s's %s limit)", from, mv.Window)
-	case mv.Window != "" && !mv.HitAt.IsZero():
+	case mv.Window != "" && mv.HitAt.After(at):
 		fmt.Fprintf(&b, " (%s's %s would hit 100%% at %s)", from, mv.Window, mover.Clock(mv.HitAt, at))
 	}
 	if l.Kind == mover.KindTerminal {
@@ -1019,6 +1047,13 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State, relea
 	}
 	if msg := strings.Join(w.pinWarns, "; "); st.Changed("pins-warned", msg) && msg != "" {
 		fmt.Fprintln(e.stdout, "warning: "+msg)
+	}
+	if age, old := worldTooOld(w.builtAt, time.Now()); old {
+		// Its config and levels are from before (live 2026-11-25 05:40: a pass that read its
+		// state before an account was set protected moved a session onto aggressive caps
+		// minutes later). The next pass reads them again.
+		fmt.Fprintf(e.stdout, "this pass read its state %s ago (the hub or the disk was slow): no moves\n", age.Round(time.Second))
+		return nil
 	}
 	r := mover.Plan(w.input)
 	var first error
@@ -1050,6 +1085,7 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State, relea
 		}
 	}
 	w.pinAlerts(e.stdout, st, r, e.now())
+	w.staleAlert(e, cfg, st, r)
 	w.recordPass(st, r, e.now())
 	w.sw.At, w.sw.Streak = e.now(), r.Streak
 	if err := st.SaveSwitch(w.sw); err != nil {
@@ -1074,8 +1110,15 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State, relea
 			mu.Lock()
 			defer mu.Unlock()
 			st.ClearWait(m.Session)
-			note := mover.Note(w.accLabel(m.From), w.targets[m.To].Label, e.now(), m, w.chainLabels(st, m.Session, e.now())...)
-			n, err := w.carryOut(e, cfg, st, l, w.targets[m.To], note, m.Reason, true, m)
+			t := w.targets[m.To]
+			if m.MidTurn && time.Since(w.builtAt) >= recheckAfter {
+				var ok bool
+				if m, t, ok = w.recheck(e, st, l, m); !ok {
+					return
+				}
+			}
+			note := mover.Note(w.accLabel(m.From), t.Label, e.now(), m, w.chainLabels(st, m.Session, e.now())...)
+			n, err := w.carryOut(e, cfg, st, l, t, note, m.Reason, true, m)
 			if err != nil {
 				if first == nil {
 					first = err
@@ -1088,6 +1131,54 @@ func (w *moveWorld) autoPass(e moveEnv, cfg config.Config, st mover.State, relea
 	wg.Wait()
 	w.tell(e, told) // one notice per parent for the whole pass
 	return first
+}
+
+// recheckLine is a re-check of the last hour for --plan.
+func recheckLine(x mover.RecheckEntry) string {
+	at := x.At.Local().Format("15:04")
+	if x.To == "" {
+		return fmt.Sprintf("re-check %s: %s %s was planned %s -> %s, not moved: %s", at, short(x.SessionID), x.Name, x.From, x.Planned, strings.TrimPrefix(x.Why, "re-checked after its step wait: "))
+	}
+	return fmt.Sprintf("re-check %s: %s %s was planned %s -> %s, moved to %s instead (the state read again after its step wait)", at, short(x.SessionID), x.Name, x.From, x.Planned, x.To)
+}
+
+// recheckAfter: a move carried out this long after its pass began to read its state is
+// re-chosen on state read again (setup.md 8.6, Re-check). A variable for the tests.
+var recheckAfter = 5 * time.Second
+
+// beforeRecheck runs just before a re-check reads the state again (tests: the state changes
+// during the step wait).
+var beforeRecheck func()
+
+// recheck reads the state again after m's step wait and re-chooses (mover.Recheck): false
+// drops the move; a changed destination is recorded (rechecks.jsonl, the move's recheck field)
+// and printed. A failed read keeps the move as planned.
+func (w *moveWorld) recheck(e moveEnv, st mover.State, l mover.Launch, m mover.Move) (mover.Move, mover.Target, bool) {
+	t := w.targets[m.To]
+	if beforeRecheck != nil {
+		beforeRecheck()
+	}
+	w2, err := e.world(w.noHub)
+	if err != nil {
+		fmt.Fprintf(e.stdout, "%s %s: the re-check after its step wait could not read the state (%v): moved as planned\n", short(m.Session), l.Name, err)
+		return m, t, true
+	}
+	nm, why, ok := mover.Recheck(w2.input, m)
+	rec := mover.RecheckEntry{At: e.now(), SessionID: m.Session, Name: l.Name, From: w.accLabel(m.From), Planned: t.Label, Why: why}
+	if !ok {
+		fmt.Fprintf(e.stdout, "%s %s: not moved to %s: %s\n", short(m.Session), l.Name, t.Label, why)
+		_ = st.AppendRecheck(rec)
+		return m, t, false
+	}
+	if nt, ok := w2.targets[nm.To]; ok {
+		t = nt
+	}
+	if nm.Recheck != "" {
+		rec.To = t.Label
+		fmt.Fprintf(e.stdout, "%s %s: %s\n", short(m.Session), l.Name, nm.Recheck)
+		_ = st.AppendRecheck(rec)
+	}
+	return nm, t, true
 }
 
 // waitStep waits, within this pass's share (Params.PassWait), for mid-turn session l to be
@@ -1132,11 +1223,27 @@ func (w *moveWorld) waitStep(e moveEnv, st mover.State, mu *sync.Mutex, l mover.
 	return true
 }
 
-// betweenSteps waits until session l is between two tool calls (setup.md 8.6, Between
-// steps), up to account.move_step_wait_min or until the projected hit, whichever is sooner,
-// and records on mv what the note says: the last step ended, or the step it is stopped inside.
+// maxWorldAge: a pass whose state (config, levels, sessions) took longer than this to read
+// moves nothing.
+const maxWorldAge = 2 * time.Minute
+
+// worldTooOld says how long ago (wall clock) a pass began to read its state, and whether that
+// is over maxWorldAge.
+func worldTooOld(built, wall time.Time) (time.Duration, bool) {
+	age := wall.Sub(built)
+	return age, !built.IsZero() && age > maxWorldAge
+}
+
+// betweenSteps waits until session l, moved by hand, is between two tool calls (setup.md
+// 8.6, Between steps), up to account.move_pass_wait_s (a pass's share; the owner is waiting
+// at the prompt: live 2026-11-25, 3.5 minutes per move at the full step wait), the step wait
+// or until the projected hit, whichever is sooner, and records on mv what the note says: the
+// last step ended, or the step it is stopped inside.
 func (w *moveWorld) betweenSteps(e moveEnv, st mover.State, l mover.Launch, mv *mover.Move) {
 	max := w.input.Params.StepWait
+	if pw := w.input.Params.PassWait; pw > 0 && pw < max {
+		max = pw
+	}
 	if !mv.HitAt.IsZero() {
 		if until := mv.HitAt.Sub(e.now()) - time.Minute; until < max {
 			max = until
@@ -1146,6 +1253,9 @@ func (w *moveWorld) betweenSteps(e moveEnv, st mover.State, l mover.Launch, mv *
 		max = 0
 	}
 	host := moveHost(e, st)
+	if x := st.StepNow(l.SessionID, time.Now()); max >= 5*time.Second && x.In {
+		fmt.Fprintf(e.stdout, "%s %s is inside a step (%s): waiting up to %s for it to end\n", short(l.SessionID), l.Name, x.Tool, max.Round(time.Second))
+	}
 	start := time.Now()
 	s, between := st.WaitStep(l.SessionID, max, func() bool { return host.Alive(l) })
 	switch {
@@ -1183,7 +1293,7 @@ func (w *moveWorld) carryOut(e moveEnv, cfg config.Config, st mover.State, l mov
 	argv, err := mover.Execute(host, l, t, cfg.Account.MoveLaunch, note, log)
 	from := w.labelOfDir[l.Slot]
 	entry := mover.LogEntry{At: e.now(), SessionID: l.SessionID, Name: l.Name, From: w.keyOfDir[l.Slot], To: t.Key, FromDir: l.Slot, ToDir: t.Dir,
-		Kind: l.Kind, Auto: auto, Reason: reason, Argv: argv, Rate: mv.Rate, RateKnown: true}
+		Kind: l.Kind, Auto: auto, Reason: reason, Argv: argv, Rate: mv.Rate, RateKnown: true, Recheck: mv.Recheck}
 	if err != nil {
 		entry.Error = err.Error()
 		_ = st.Append(entry)
@@ -1244,8 +1354,12 @@ func moveLease(e moveEnv, sid string, t mover.Target, from string, protected boo
 	defer unlock()
 	now := e.now()
 	parent := ""
+	var exp leases.Line // the session's expected end, kept on the new lease
 	if ls, _, err := g.Read(now); err == nil {
 		for _, l := range ls {
+			if l.SessionID == sid && l.ExpectEnd != nil {
+				exp.Expect, exp.ExpectMin, exp.ExpectEnd = l.Expect, l.ExpectMin, l.ExpectEnd
+			}
 			if l.SessionID == sid && l.Parent != "" {
 				parent = l.Parent
 			}
@@ -1258,7 +1372,8 @@ func moveLease(e moveEnv, sid string, t mover.Target, from string, protected boo
 		kind = "protected"
 	}
 	_ = g.Append(leases.Line{V: 1, Op: leases.OpLease, ID: record.NewID(now), At: now.UTC(), Key: t.Key, Account: acct, Org: org,
-		Folder: "~/" + filepath.Base(t.Dir), Label: t.Label, Kind: kind, SessionID: sid, Strategy: "move", MovedFrom: from, Parent: parent})
+		Folder: "~/" + filepath.Base(t.Dir), Label: t.Label, Kind: kind, SessionID: sid, Strategy: "move", MovedFrom: from, Parent: parent,
+		Expect: exp.Expect, ExpectMin: exp.ExpectMin, ExpectEnd: exp.ExpectEnd})
 	_, _ = g.Mark(sid, "launched", now)
 	return parent
 }
@@ -1331,4 +1446,47 @@ func peersTags() (map[string][]string, map[string]string) {
 		tags[x.Session], handles[x.Session] = x.Tags, x.Handle
 	}
 	return tags, handles
+}
+
+// firstLeases sets each running lane's start to its session's first lease in the ledger: its
+// real age, not its last move's lease (a moved session is not a new one; setup.md 8.6, Young
+// sessions; live pre9: 54c4e1e8 "under 15 min old" on claude-6 12 minutes after its move).
+func firstLeases(started map[string]time.Time, ledger []leases.Lease) {
+	for _, l := range ledger {
+		if t, ok := started[l.SessionID]; ok && l.SessionID != "" && !l.At.IsZero() && l.At.Before(t) {
+			started[l.SessionID] = l.At
+		}
+	}
+}
+
+// laneExpect is each running lane's expected time left for the switch (setup.md 8.6, one
+// rule): to its lease's expected end (expect_end; the picker writes one for every lane, a
+// medium lane's without --expect), 0 once it overran (the switch then projects it to the
+// horizons). A lane whose lease line has none (a move lease written before) takes its
+// session's latest one in the ledger; a lease with neither, as before (its in-run --expect).
+func laneExpect(lanes []picker.LiveLane, ledger []leases.Lease, now time.Time) map[string]time.Duration {
+	ends := map[string]time.Time{}
+	var at = map[string]time.Time{}
+	for _, l := range ledger {
+		if l.SessionID != "" && l.ExpectEnd != nil && !l.At.Before(at[l.SessionID]) {
+			ends[l.SessionID], at[l.SessionID] = *l.ExpectEnd, l.At
+		}
+	}
+	out := map[string]time.Duration{}
+	for _, l := range lanes {
+		if l.SID == "" {
+			continue
+		}
+		end := l.ExpectEnd
+		if end.IsZero() {
+			end = ends[l.SID]
+		}
+		switch {
+		case !end.IsZero():
+			out[l.SID] = max(0, end.Sub(now))
+		case l.Expect > 0:
+			out[l.SID] = max(0, l.Expect-now.Sub(l.T0))
+		}
+	}
+	return out
 }

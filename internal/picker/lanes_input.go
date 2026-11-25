@@ -91,11 +91,13 @@ type DrainView struct {
 	ProjectedPct   *float64   `json:"projected_at_reset_pct"`
 	UnavoidablePct *float64   `json:"unavoidable_waste_pct"`
 	FinishBy       *time.Time `json:"finish_by"`
+	// Owner: the owner's drain (`wy account drain`), until FinishBy.
+	Owner bool `json:"owner,omitempty"`
 }
 
 func drainView(d DrainInfo) *DrainView {
 	v := &DrainView{On: d.On, RoomPct: pyRound(d.RoomPct, 1), RoomPts: pyRound(d.RoomPts, 1), NeedHours: pyRound(d.NeedH, 2),
-		HorizonHours: pyRound(d.HorizonH, 2), Running: d.Running, ForwardBurn: pyRound(d.ForwardBurn, 1)}
+		HorizonHours: pyRound(d.HorizonH, 2), Running: d.Running, ForwardBurn: pyRound(d.ForwardBurn, 1), Owner: d.Owner}
 	if !d.On {
 		return v
 	}
@@ -289,6 +291,37 @@ func windowOf(c Candidate, key string) *Window {
 	return nil
 }
 
+// leaseAt is one lease of a session: from when, on which account.
+type leaseAt struct {
+	at  time.Time
+	key string
+}
+
+// rowKey is the account a token row made at at counts to: the account of the session's
+// latest lease begun by then; before its first lease, the account of the folder that ran it
+// (slot); else the session's account (cur), else the folder's. A session moved from A to B
+// makes its rows before the move on A: counting them all to B (its last lease) put B's
+// 5-hour level at 100% after moves in while its reading was ~60% (live 2026-11-25 04:06,
+// 04:25: moves out of a full-looking account with "100% at" the pass time).
+func rowKey(tl []leaseAt, at time.Time, slot, cur string) string {
+	k := ""
+	for _, x := range tl {
+		if x.at.After(at) {
+			break
+		}
+		k = x.key
+	}
+	switch {
+	case k != "":
+		return k
+	case len(tl) > 0 && slot != "":
+		return slot
+	case cur != "":
+		return cur
+	}
+	return slot
+}
+
 // meter5 is the units counted against the 5-hour level since the reading, and whether the
 // reading's 5-hour level still counts (its window is open).
 func meter5(us []unitAt, ts time.Time, five reading, now time.Time) (float64, bool) {
@@ -473,11 +506,18 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		}
 	}
 	leased := map[string]bool{}
+	// timeline: each leased session's leases by start, for the meter (a moved session's
+	// rows count to the account it was on when it made them).
+	timeline := map[string][]leaseAt{}
 	for _, l := range in.Leases {
 		if l.SessionID != "" {
 			keyOf[l.SessionID] = l.Key
 			leased[l.SessionID] = true
+			timeline[l.SessionID] = append(timeline[l.SessionID], leaseAt{l.At, l.Key})
 		}
+	}
+	for _, tl := range timeline {
+		sort.SliceStable(tl, func(i, j int) bool { return tl[i].at.Before(tl[j].at) })
 	}
 	perSession := map[string][]unitAt{}
 	for _, t := range in.Outbox.Tokens {
@@ -502,7 +542,10 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 	var ls []LaneLease
 	for _, l := range in.Leases {
 		ll := LaneLease{Key: l.Key, T0: l.At, SID: l.SessionID, C5: l.C5, CF: l.CF,
-			Launched: !l.Launched.IsZero(), Ended: !l.Ended.IsZero(), From: burnNone}
+			Launched: !l.Launched.IsZero(), Ended: !l.Ended.IsZero(), From: burnNone, Moved: moveLease(l)}
+		if l.ExpectEnd != nil {
+			ll.ExpectEnd = *l.ExpectEnd
+		}
 		var hub *HubLease
 		if hl, ok := own[l.ID]; ok && l.ID != "" {
 			hub = &hl
@@ -562,10 +605,7 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		if bs.fromHub(t.Session, t.At) {
 			continue
 		}
-		k := keyOf[t.Session]
-		if k == "" {
-			k = slotKey[t.Slot]
-		}
+		k := rowKey(timeline[t.Session], t.At, slotKey[t.Slot], keyOf[t.Session])
 		if k != "" {
 			perKey[k] = append(perKey[k], unitAt{t.At, t.Units})
 		}
@@ -641,6 +681,13 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 				break
 			}
 		}
+		if u := rs[g.rep].policy.DrainUntil; u.After(now) {
+			// The owner drains it: an aggressive drain account until then (setup.md 8.5, Owner drain).
+			acc.DrainUntil = u
+			if acc.Protected {
+				acc.OwnerProtected, acc.Protected = true, false
+			}
+		}
 		acc.Limit7d, acc.Limit5h = laneLimits(rs[g.rep].policy, acc.Protected, p)
 		if in.Mover != nil {
 			acc.MoveUnits = math.Max(0, in.Mover.Units[g.key])
@@ -663,6 +710,15 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 	lr, err := RankLanes(lin)
 	if err != nil {
 		return res, err
+	}
+	if p.UseEstimate {
+		if est := p.estimate(lin.expectAt(0), LaneAccount{}, lin.Stats); est.given {
+			res.LaneBurn = SwitchLaneNote(lin, est.class, hoursDur(est.dur))
+		} else {
+			res.LaneBurn = SwitchLaneNote(lin, "", 0)
+		}
+	} else {
+		res.LaneBurn = SwitchLaneNote(lin, "", 0)
 	}
 	res.Waiting = lr.Waiting
 	if lr.Waiting > 0 {
@@ -744,7 +800,8 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		}
 		earlier[pk.Key]++
 		res.Picks = append(res.Picks, Pick{Ranked: r, SessionID: pk.SID, Urgent: pk.Forced, LaneKind: r.Kind, C5: pk.C5, CF: pk.CF,
-			Drain: pk.Drain, Spill: pk.Spill, FinishBy: pk.FinishBy, Reset: pk.Reset, Expect: pk.Expect, Over: pk.Over})
+			Drain: pk.Drain, Spill: pk.Spill, FinishBy: pk.FinishBy, Reset: pk.Reset, Expect: pk.Expect, Over: pk.Over,
+			SwitchClass: pk.SwitchClass, SwitchDur: pk.SwitchDur})
 	}
 	if len(res.Picks) > 0 {
 		res.Pick = &res.Picks[0].Ranked
@@ -837,6 +894,9 @@ func laneReason(r Ranked, row LaneRow, earlier int, sid string, urgent bool, now
 		run := d.Running + earlier
 		dr := fmt.Sprintf("drain: %.0f%% of week left, resets %s, finish by %s", math.Max(0, d.Target-d.WM),
 			d.Reset.Local().Format("15:04"), d.FinishBy.Local().Format("15:04"))
+		if d.Owner {
+			dr = fmt.Sprintf("%s: %.0f%% of week left to use", OwnerDrainText(d.FinishBy, now), math.Max(0, d.Target-d.WM))
+		}
 		parts = append(parts, dr, fmt.Sprintf("5h %.0f%%", d.HM), fmt.Sprintf("%d of %d drain lanes running", run, d.Running+d.Capacity))
 		if d.Spill {
 			parts = append(parts, "runs past reset")
@@ -931,13 +991,29 @@ const laneStatsMin = 10
 const (
 	laneRateQ        = 0.75
 	laneRateMinAge   = 30 * time.Minute
-	laneRateMinEnded = 5 * time.Minute
+	laneRateMinEnded = 20 * time.Minute
 )
 
+// moveLease reports whether a ledger lease was written by a move (wy move, the switch, a
+// handoff), not by the picker: it continues a lane, it is not a new one.
+func moveLease(l leases.Lease) bool {
+	return l.Strategy == "move" || l.Strategy == "handoff" || l.MovedFrom != ""
+}
+
 // measureLanes measures the lane cost (p75 and mean of the 5-hour points a finished lane used,
-// or a lane's first 5 hours) and the median lane length (launched to ended, from this
-// machine's ledger) over the leases read (8 days); a model's own lanes when there are enough
-// of them. local are the LaneLeases of ledger, in the same order; remote other machines'.
+// or a lane's first 5 hours), the median lane length and the lane burn rate over the leases
+// read (8 days); a model's own lanes when there are enough of them. local are the LaneLeases
+// of ledger, in the same order; remote other machines'.
+//
+// A lane is a picker lease's session over its whole life: a move ends the session on one
+// account and resumes it on another under a new lease with the same session id (live pre8:
+// the move leases, a few minutes of wall time each with the resume's cache write, and the
+// picker leases ended at their first move while their burn ran on, made the measured lane
+// burn 57 points/h against ~9 and refused every account). So: picker leases only, each
+// from its launch to the end of the last lease of its session (or now while that runs), the
+// burn its session used since (every account); leases written by moves are not lanes.
+// Other machines' leases (the hub does not say which are moves, nor their sessions' later
+// leases) count for the cost only, not the length or the rate.
 func measureLanes(ledger []leases.Lease, local, remote []LaneLease, f5Of map[string]float64, model string, now time.Time) LaneStats {
 	type lane struct {
 		cost  float64
@@ -946,55 +1022,72 @@ func measureLanes(ledger []leases.Lease, local, remote []LaneLease, f5Of map[str
 	var costs []lane
 	var lens []lane
 	var rates []lane // 5-hour points per hour of wall time (the field cost holds the rate)
-	add := func(L LaneLease, m string) {
+	add := func(L LaneLease, m string, running bool, start time.Time) {
 		f5 := f5Of[L.Key]
-		if f5 <= 0 || !L.Seen || L.Burned <= 0 || (!L.Ended && now.Sub(L.T0) < window5h) {
+		if f5 <= 0 || !L.Seen || L.Burned <= 0 || (running && now.Sub(start) < window5h) {
 			return
 		}
 		costs = append(costs, lane{L.Burned * f5, m})
 	}
-	// rate: a lane's burn over its wall time, from its start to its end (ended, at least
-	// laneRateMinEnded) or to now (running for laneRateMinAge or more: a young lane's first
-	// minutes burn far above its steady rate).
-	rate := func(L LaneLease, m string, start, end time.Time) {
-		f5 := f5Of[L.Key]
-		if f5 <= 0 || !L.Seen || L.Burned <= 0 || start.IsZero() {
-			return
+	// The end of each session's life: its last lease (by time) and whether that one ended.
+	type life struct {
+		at    time.Time // the last lease's time
+		end   time.Time
+		ended bool
+	}
+	lives := map[string]life{}
+	for i, l := range ledger {
+		if l.SessionID == "" || i >= len(local) {
+			continue
 		}
-		least := laneRateMinEnded
-		if end.IsZero() {
-			if L.Ended {
-				return // ended at a time this machine does not know
-			}
-			end, least = now, laneRateMinAge
+		if x, ok := lives[l.SessionID]; ok && x.at.After(l.At) {
+			continue
 		}
-		h := end.Sub(start).Hours()
-		if h < least.Hours() {
-			return
-		}
-		rates = append(rates, lane{L.Burned * f5 / h, m})
+		lives[l.SessionID] = life{at: l.At, end: l.Ended, ended: local[i].Ended}
 	}
 	for i, L := range local {
-		m := ""
-		if i < len(ledger) {
-			m = ledger[i].Model
-			l := ledger[i]
-			start := l.At
-			if !l.Launched.IsZero() {
-				start = l.Launched
-			}
-			if !l.Ended.IsZero() {
-				if d := l.Ended.Sub(start); d > 0 {
-					lens = append(lens, lane{d.Hours(), m})
-				}
-			}
-			rate(L, m, start, l.Ended)
+		if i >= len(ledger) {
+			break
 		}
-		add(L, m)
+		l := ledger[i]
+		if moveLease(l) {
+			continue
+		}
+		m := l.Model
+		start := l.At
+		if !l.Launched.IsZero() {
+			start = l.Launched
+		}
+		end, ended := l.Ended, L.Ended
+		if x, ok := lives[l.SessionID]; ok && l.SessionID != "" {
+			end, ended = x.end, x.ended
+		}
+		add(L, m, !ended, start)
+		if ended && !end.IsZero() {
+			if d := end.Sub(start); d > 0 {
+				lens = append(lens, lane{d.Hours(), m})
+			}
+		}
+		// The rate: its burn over its wall time, to its end (ended, at least laneRateMinEnded)
+		// or to now (running for laneRateMinAge or more: a young lane's first minutes burn far
+		// above its steady rate).
+		f5 := f5Of[L.Key]
+		if f5 <= 0 || !L.Seen || L.Burned <= 0 {
+			continue
+		}
+		least := laneRateMinEnded
+		switch {
+		case !ended:
+			end, least = now, laneRateMinAge
+		case end.IsZero():
+			continue // ended at a time this machine does not know
+		}
+		if h := end.Sub(start).Hours(); h >= least.Hours() {
+			rates = append(rates, lane{L.Burned * f5 / h, m})
+		}
 	}
 	for _, L := range remote {
-		add(L, "")
-		rate(L, "", L.T0, time.Time{})
+		add(L, "", !L.Ended, L.T0)
 	}
 	pickOf := func(xs []lane) []float64 {
 		var mine, all []float64
@@ -1022,7 +1115,18 @@ func measureLanes(ledger []leases.Lease, local, remote []LaneLease, f5Of map[str
 		sort.Float64s(ls)
 		st.Len, st.NLen = hoursDur(quantile(ls, 0.5)), len(ls)
 	}
-	if rs := pickOf(rates); len(rs) >= laneStatsMin {
+	// The lane burn: the model's own lanes only (a model's burn is its own: Opus lanes burn
+	// several times Sonnet's); without --model, every lane.
+	rs := pickOf(rates)
+	if model != "" {
+		rs = nil
+		for _, x := range rates {
+			if x.model == model {
+				rs = append(rs, x.cost)
+			}
+		}
+	}
+	if len(rs) >= laneStatsMin {
 		sort.Float64s(rs)
 		st.Rate, st.NRate = quantile(rs, laneRateQ), len(rs)
 	}

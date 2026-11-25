@@ -148,7 +148,7 @@ func burnCmd(e moveEnv, window time.Duration, asJSON, noHub bool) error {
 		ba := &burnAccount{Account: a.Label, FiveHour: a.W5.Level, Weekly: a.W7.Level}
 		if pr, ok := w.proj[a.Key]; ok {
 			ba.FivePerH = pr.R5
-			if pr.Hit >= 0 {
+			if pr.Hit > 0 {
 				ba.HitIn = pr.Hit.Round(time.Minute).String()
 			}
 		}

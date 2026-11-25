@@ -114,6 +114,8 @@ type Group struct {
 	FiveHour *Window `json:"five_hour"`
 	SevenDay *Window `json:"seven_day"`
 	Limited  bool    `json:"limited"`
+	// Note: the owner drains the account ("draining (owner, until 23:59)"; "" none).
+	Note string `json:"note,omitempty"`
 	// Rows are row ids in /v1/sessions order (needs-you first, then newest activity).
 	Rows []string `json:"rows"`
 }

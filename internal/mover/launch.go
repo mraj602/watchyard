@@ -394,6 +394,8 @@ func Note(from, to string, at time.Time, mv Move, chain ...string) string {
 	switch {
 	case mv.ByHand:
 		// The owner's call: no projection claim.
+	case mv.Pull != "":
+		s += fmt.Sprintf(": %s is %s and has room for your burn", to, mv.Pull)
 	case mv.Stopped && mv.Window != "":
 		s += fmt.Sprintf(" (stopped at the %s limit, which resets at %s)", mv.Window, Clock(mv.ResetAt, at))
 	case mv.Window != "" && !mv.HitAt.IsZero() && mv.HitAt.After(at):

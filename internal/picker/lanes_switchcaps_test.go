@@ -94,13 +94,28 @@ func TestLanesMoverMeasuredLaneRate(t *testing.T) {
 	if r := rank(t, in); r.Picks[0].Key != first {
 		t.Fatalf("quiet account skipped: %+v", rowOf(r, first))
 	}
-	// Lanes here burn 30 points/h: 10 + 32 × 3 h = 106, over 95.
+	// A long lane at a measured 30 points/h is clamped to 3× the long class's burn (3 × 14 / 3
+	// = 14): 10 + (2 + 14) × 3 h = 58, eligible; the account at 70%: 70 + 48 = 118, refused at
+	// 16 points/h (2 + 14), not 32.
 	in.Stats = LaneStats{Rate: 30, NRate: 20}
-	r := rank(t, in)
-	row := rowOf(r, first)
-	if !row.Skip || !strings.Contains(row.Reason, "at 32 points/h") {
+	in.Expects = []LaneExpect{{Class: ExpectLong}}
+	if r := rank(t, in); r.Picks[0].Key != first {
+		t.Fatalf("clamped long lane refused: %+v", rowOf(r, first))
+	}
+	s[first] = LaneSample{TS: hrs(-5.0 / 60), Weekly: fp(40), FiveHour: fp(70), FiveHourReset: hrs(3), WeeklyReset: hrs(72)}
+	in2 := laneIn(s, 1)
+	in2.Params, in2.Stats, in2.Expects, in2.Mover = in.Params, in.Stats, in.Expects, mv
+	for i := range in2.Accounts {
+		in2.Accounts[i].MoveUnits = mv.Units[in2.Accounts[i].Key]
+	}
+	row := rowOf(rank(t, in2), first)
+	if !row.Skip || !strings.Contains(row.Reason, "at 16 points/h") {
 		t.Fatalf("row %+v", row)
 	}
+	if n := SwitchLaneNote(in2, ExpectLong, 3*time.Hour); !strings.Contains(n, "clamped from 30.0 to at most 3× the long class's 4.7 points/h") {
+		t.Fatalf("note %q", n)
+	}
+	in.Expects = nil
 	// A lane rate under the class's keeps the class's (the larger).
 	in.Stats = LaneStats{Rate: 0.5, NRate: 20}
 	if r := rank(t, in); r.Picks[0].Key != first {

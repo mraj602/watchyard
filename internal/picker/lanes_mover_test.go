@@ -13,10 +13,10 @@ func TestLanesMoverProjection(t *testing.T) {
 	in := laneIn(s, 1)
 	in.Params = DefaultLaneParams
 	first := rank(t, in).Picks[0].Key
-	// The first pick burns 27 points/h now: 10 + 27 × 3 h = 91, plus the lane, over 95.
+	// The first pick burns 30 points/h now: 10 + 30 × 3 h = 100, over 95 with the lane.
 	mv := &MoverView{Cap5: 95, Cap7: 98, Cap5Protected: 80, Cap7Protected: 80, WeekSpanH: 5, Units: map[string]float64{}}
 	f5 := DefaultLaneParams.F5
-	mv.Units[first] = 27 / f5
+	mv.Units[first] = 30 / f5
 	in.Mover = mv
 	for i := range in.Accounts {
 		in.Accounts[i].MoveUnits = mv.Units[in.Accounts[i].Key]

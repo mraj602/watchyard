@@ -266,6 +266,12 @@ type LaneAccount struct {
 	// (MoverView, before the pin reserve; 0: off): its limits, the hard ones too, are no higher,
 	// so the drain, the at-risk test and the rank aim at the level the switch keeps.
 	SwitchCap5, SwitchCap7 float64
+	// DrainUntil: the owner drains it until then (Policy.DrainUntil; zero: off). While it
+	// is on (until after now, its weekly level under the drain aim) the account is an
+	// aggressive drain account whose room is to be used by then (setup.md 8.5, Owner drain).
+	DrainUntil time.Time
+	// OwnerProtected: its mode is protected; the owner drain makes it aggressive meanwhile.
+	OwnerProtected bool
 }
 
 // LaneLease is one lease, local or another machine's.
@@ -275,9 +281,11 @@ type LaneLease struct {
 	SID      string
 	C5, CF   *float64 // nil: the current price
 	Launched bool
-	Ended    bool    // its session ended
-	Burned   float64 // weighted units its session used since T0
-	Seen     bool    // the meter saw its session
+	Ended    bool // its session ended
+	// Moved: a move wrote it (a session moved here, not a new lane): never a fresh lane.
+	Moved  bool
+	Burned float64 // weighted units its session used since T0
+	Seen   bool    // the meter saw its session
 	// Remote: another machine's lease. Settle: nothing measures its session (no hub burn and
 	// no local session), so a reading at least Settle after T0 ends it: that reading holds
 	// the lane's use so far (setup.md 8.5, effective state 3).
@@ -295,6 +303,9 @@ type LaneLease struct {
 	Spill   bool
 	Expect  time.Duration
 	EstRate float64
+	// ExpectEnd: when the lane is expected to end as the switch counts it (its lease line's
+	// expect_end; zero: unknown, an older line).
+	ExpectEnd time.Time
 }
 
 // Lease states in LeaseCharge.
@@ -413,6 +424,10 @@ type LanePick struct {
 	// account had room under it (NoStall). Expect: the size class used ("" the measured median).
 	Over   bool
 	Expect string
+	// SwitchClass and SwitchDur: the lane as the switch-projection check counted it (its
+	// --expect class and time; medium without one), kept in its lease line for the switch.
+	SwitchClass string
+	SwitchDur   time.Duration
 }
 
 // LaneResult is what RankLanes decided.
@@ -829,6 +844,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 		}
 		in.Accounts = accts
 	}
+	in.Accounts = p.ownerDrainEnds(in.Accounts, in.Mover, now)
 	clean := make([]cleanSample, len(in.Accounts))
 	for i, a := range in.Accounts {
 		clean[i] = cleanLaneSample(a.Sample, now)
@@ -924,10 +940,11 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 				tl = p.laneTail(in.Stats)
 				lr := r                // the new lane's burn, points per hour
 				var ldur time.Duration // its expected time (0: unknown)
+				lclass := ""           // its size class when --expect gave one
 				if p.UseEstimate {
 					est := p.estimate(in.cur, acc, in.Stats)
 					if est.given {
-						ldur = hoursDur(est.dur)
+						ldur, lclass = hoursDur(est.dur), est.class
 					}
 					if est.given && (!p.EstFloor || est.cost > tl) {
 						tl = est.cost
@@ -991,10 +1008,8 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 				if in.Mover != nil && !skip && len(v.unknown) == 0 {
 					// The new lane at the measured lane burn (setup.md 8.5, The switch's projection):
 					// a size class's cost over its wall time is the average of lanes mostly idle.
-					if in.Stats.Rate > lr {
-						lr = in.Stats.Rate
-					}
-					if why5 := moverOver(in.Mover, acc, v, lr, ldur, p, now); why5 != "" {
+					sl := p.switchLane(lr, lclass, ldur, in.Stats)
+					if why5 := moverOver(in.Mover, acc, v, sl, p, now, freshLanes(in.Mover, leases, acc, sl.rate, p, now)); why5 != "" {
 						skip, why, level, capped, soft = true, why5, 3, false, false
 					}
 				}
@@ -1018,6 +1033,24 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 				expiring = !prot && v.hrs <= p.ExpH && v.h < p.ExpMax5h
 				if expiring {
 					key = laneKey{group: 0, last: ll, hrs: v.hrs, ord: acc.Ord}
+				}
+			}
+			// Stale data (the switch's view, setup.md 8.6): an old sample's level, high or low,
+			// is not trusted. High does not block an aggressive account (live: the hub away,
+			// "5h 100% >= 95" from a sample 3 h 37 min old while the account was at ~68%), and
+			// low does not draw lanes: the account goes after those with fresh data. A protected
+			// account keeps its blocks (its room is kept on any doubt).
+			if in.Mover != nil && in.Mover.StaleMin > 0 && !v.noTS && len(v.unknown) == 0 && v.ageMin > in.Mover.StaleMin && !d.On {
+				note := fmt.Sprintf("data stale (%s min old): its level (5h %s%%, 7d %s%%) neither blocks nor draws a lane; ranked after accounts with fresh data",
+					f0(math.Floor(v.ageMin)), f0(v.h), f0(v.w))
+				switch {
+				case skip && !prot && level >= 2:
+					skip, last, why, capped, soft, fwdFree = false, true, note, false, false, nil
+				case !skip:
+					last, why = true, note
+				}
+				if last && drainOrder {
+					dk.group = max(dk.group, 4)
 				}
 			}
 			row := LaneRow{Key: acc.Key, Protected: prot, Score: sc, Skip: skip, Reason: why, Weekly: v.w, WeeklyM: v.wM, FiveHour: v.h,
@@ -1124,6 +1157,13 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 					est := p.estimate(in.cur, a, in.Stats)
 					lp.Expect = est.class
 					pl.Expect, pl.EstRate = hoursDur(est.dur), est.rate()
+					cls, d := "", time.Duration(0)
+					if est.given {
+						cls, d = est.class, hoursDur(est.dur)
+					}
+					sl := p.switchLane(0, cls, d, in.Stats)
+					lp.SwitchClass, lp.SwitchDur = sl.class, sl.dur
+					pl.ExpectEnd = now.Add(sl.dur)
 				}
 			}
 		}
@@ -1239,6 +1279,7 @@ func lessRounded(a, b LaneRow) bool {
 
 // f0 formats like Python's "{:.0f}" (round half to even on the exact value).
 func f0(x float64) string { return strconv.FormatFloat(x, 'f', 0, 64) }
+func f1(x float64) string { return strconv.FormatFloat(x, 'f', 1, 64) }
 
 // pyRound rounds like Python's round(x, n): correctly, half to even.
 func pyRound(x float64, n int) float64 {
@@ -1297,7 +1338,8 @@ func (m *MoverView) expiring(protected bool, hrs float64) bool {
 // lr 5-hour points per hour runs there ("" when it would not): its projection at its measured
 // burn plus the lane (projection.Levels, the switch's own maths) over the switch's caps less
 // the pin reserve.
-func moverOver(m *MoverView, acc LaneAccount, v laneState, lr float64, expect time.Duration, p LaneParams, now time.Time) string {
+func moverOver(m *MoverView, acc LaneAccount, v laneState, sl switchLaneEst, p LaneParams, now time.Time, fresh []freshLane) string {
+	lr, expect := sl.rate, sl.dur
 	pa := p.account(acc)
 	c5, c7 := m.caps(acc.Protected, v.hrs)
 	if c5 <= 0 && c7 <= 0 {
@@ -1307,30 +1349,44 @@ func moverOver(m *MoverView, acc LaneAccount, v laneState, lr float64, expect ti
 	if !v.fiveRst.IsZero() && v.fiveRst.After(now) {
 		h5 = v.fiveRst.Sub(now).Hours()
 	}
-	// The account's own burn to the resets, as the switch projects it; the new lane only for
-	// as long as it is expected to run (else DestHorizonH), at most to the 5-hour reset, at
-	// least DestFloorH, as the switch judges a destination: a short lane cannot burn 5 hours.
+	// The account's own burn to the resets, as the switch projects it; the new lane as the
+	// switch's trigger will count it once it runs (mover.ExpectFloor): with an expected
+	// duration (--expect) for max(that, ExpectFloorH), at most to each window's horizon; else
+	// to the horizons (the 5-hour reset; min(the weekly reset, WeekSpanH)). A short lane cannot
+	// burn 5 hours, and a lane of unknown length is not let in on a shorter horizon than the
+	// trigger's (live pre7: 2de58a08 placed on claude-3 at 07:36 on a 90-minute horizon, moved
+	// off at 07:53, "7d projected 95% (cap 88%)").
 	r := acc.MoveUnits*pa.F5 + math.Max(0, lr)
 	p5, p7 := projection.Levels(v.hM, v.wM, acc.MoveUnits*pa.F5, pa.ratio(), h5, v.hrs, m.WeekSpanH)
-	hl := h5
-	if m.DestHorizonH > 0 {
-		hl = m.DestHorizonH
-		if expect > 0 {
-			hl = expect.Hours()
-		}
-		hl = math.Max(math.Min(hl, h5), m.DestFloorH)
+	hl := math.Inf(1)
+	if expect > 0 {
+		hl = math.Max(expect.Hours(), m.ExpectFloorH)
 	}
-	l5, l7 := projection.Levels(0, 0, math.Max(0, lr), pa.ratio(), math.Min(hl, h5), math.Min(hl, v.hrs), m.WeekSpanH)
+	l5, l7 := projection.Levels(0, 0, math.Max(0, lr), pa.ratio(), math.Min(hl, h5), math.Min(hl, v.hrs), math.Min(hl, m.WeekSpanH))
 	p5, p7 = p5+l5, p7+l7
-	if !projection.Over(p5, p7, c5, c7, acc.PinReserve5, acc.PinReserve7, 0) {
+	for _, f := range fresh { // lanes leased minutes ago, not in the meter yet
+		fh := math.Inf(1)
+		if f.left > 0 {
+			fh = math.Max(f.left.Hours(), m.ExpectFloorH)
+		}
+		f5, f7 := projection.Levels(0, 0, f.rate, pa.ratio(), math.Min(fh, h5), math.Min(fh, v.hrs), math.Min(fh, m.WeekSpanH))
+		p5, p7, r = p5+f5, p7+f7, r+f.rate
+	}
+	// Under the caps less the destination's margin, as a moved session must be (a placement
+	// is a destination too).
+	if !projection.Over(p5, p7, c5, c7, acc.PinReserve5, acc.PinReserve7, m.Hysteresis) {
 		return ""
 	}
-	if p5-pinLess(c5, acc.PinReserve5) >= p7-pinLess(c7, acc.PinReserve7) {
-		return fmt.Sprintf("5h %s%%: at %s points/h with this lane the switch's projection is %s%%, over its cap %s%% (it would move a session off)",
-			f0(v.hM), f0(pyRound(r, 1)), f0(p5), f0(pinLess(c5, acc.PinReserve5)))
+	marg := ""
+	if m.Hysteresis > 0 {
+		marg = fmt.Sprintf(" less the switch's %s-point margin", f0(m.Hysteresis))
 	}
-	return fmt.Sprintf("7d %s%%: at %s points/h with this lane the switch's projection is %s%%, over its cap %s%% (it would move a session off)",
-		f0(v.wM), f0(pyRound(r, 1)), f0(p7), f0(pinLess(c7, acc.PinReserve7)))
+	if p5-pinLess(c5, acc.PinReserve5) >= p7-pinLess(c7, acc.PinReserve7) {
+		return fmt.Sprintf("5h %s%%: at %s points/h with this lane the switch's projection is %s%%, over its cap %s%%%s (it would move a session off)",
+			f0(v.hM), f0(pyRound(r, 1)), f0(p5), f0(pinLess(c5, acc.PinReserve5)), marg)
+	}
+	return fmt.Sprintf("7d %s%%: at %s points/h with this lane the switch's projection is %s%%, over its cap %s%%%s (it would move a session off)",
+		f0(v.wM), f0(pyRound(r, 1)), f0(p7), f0(pinLess(c7, acc.PinReserve7)), marg)
 }
 
 // expiringCap is the weekly level a protected account near its reset may be drained to (0: not
@@ -1341,4 +1397,145 @@ func expiringCap(m *MoverView, acc LaneAccount, prot bool, hrs float64) float64 
 	}
 	_, c7 := m.caps(prot, hrs)
 	return pinLess(c7, acc.PinReserve7)
+}
+
+// laneRateLo, laneRateHi: the switch-projection check takes a new lane at the measured lane
+// burn (the model's p75, LaneStats.Rate) within [laneRateLo, laneRateHi] × its size class's
+// burn (cost over wall time; medium without --expect). A measured burn far outside it is a
+// measuring fault, not a lane (live pre8: 57 points/h from move leases against ~9-14).
+const (
+	laneRateLo = 0.5
+	laneRateHi = 3.0
+)
+
+// switchLaneEst is a new lane as the switch-projection check counts it: its burn (points per
+// hour), its class and expected time (medium without --expect, as the switch counts a lane
+// whose lease says so); Clamped: the burn was brought into the band (From: before).
+type switchLaneEst struct {
+	rate, from float64
+	dur        time.Duration
+	class      string
+	clamped    bool
+}
+
+// switchLane is the new lane for the switch-projection check: at the measured lane burn rate
+// st.Rate when measured (else lr, its estimate's), within [laneRateLo, laneRateHi] × its
+// class's burn; a lane without --expect (class "") is a medium lane, for the medium class's
+// time (the switch counts it so too, from its lease line, until it overruns).
+func (p LaneParams) switchLane(lr float64, class string, dur time.Duration, st LaneStats) switchLaneEst {
+	if st.Rate > 0 {
+		lr = st.Rate
+	}
+	sl := switchLaneEst{rate: lr, from: lr, dur: dur, class: class}
+	switch class {
+	case ExpectShort, ExpectMedium, ExpectLong:
+	default:
+		sl.class = ExpectMedium
+	}
+	b := p.classBench(sl.class, st)
+	if class == "" || dur <= 0 {
+		b = p.classBench(ExpectMedium, st)
+		sl.class, sl.dur = ExpectMedium, b.Dur
+	}
+	if b.Dur > 0 && b.Cost > 0 {
+		c := b.Cost / b.Dur.Hours()
+		switch {
+		case sl.rate > laneRateHi*c:
+			sl.rate, sl.clamped = laneRateHi*c, true
+		case sl.rate < laneRateLo*c:
+			sl.rate, sl.clamped = laneRateLo*c, true
+		}
+	}
+	return sl
+}
+
+// SwitchLaneRate is the burn the switch-projection check counts a new lane without --expect
+// at (points per hour): the switch counts its young lanes at it in its destination check.
+func (in LaneInput) SwitchLaneRate() float64 {
+	p := in.Params
+	_, _, _, lr := p.laneStats(in.Stats)
+	if p.UseEstimate {
+		lr = p.estimate(LaneExpect{}, LaneAccount{}, in.Stats).rate()
+	}
+	return p.switchLane(lr, "", 0, in.Stats).rate
+}
+
+// SwitchLaneNote is the --explain line of the new lane's burn in the switch-projection check,
+// for a lane of the given class ("" no --expect): "" when the switch is off.
+func SwitchLaneNote(in LaneInput, class string, dur time.Duration) string {
+	if in.Mover == nil {
+		return ""
+	}
+	p := in.Params
+	_, _, _, lr := p.laneStats(in.Stats)
+	if p.UseEstimate {
+		x := LaneExpect{Class: class}
+		if class == "" {
+			x = LaneExpect{}
+		}
+		lr = p.estimate(x, LaneAccount{}, in.Stats).rate()
+	}
+	sl := p.switchLane(lr, class, dur, in.Stats)
+	s := fmt.Sprintf("Lane burn (switch check): a new %s lane at %s points/h", sl.class, f1(sl.rate))
+	lanes := "lanes"
+	if in.Stats.Model != "" {
+		lanes = in.Stats.Model + " lanes"
+	}
+	if in.Stats.NRate > 0 {
+		s += fmt.Sprintf(" (measured: p75 of %d %s)", in.Stats.NRate, lanes)
+	} else {
+		s += fmt.Sprintf(" (its estimate: fewer than %d %s measured)", laneStatsMin, lanes)
+	}
+	if sl.clamped {
+		c := sl.rate / laneRateHi
+		lim := "at most " + f0(laneRateHi)
+		if sl.from < sl.rate {
+			c, lim = sl.rate/laneRateLo, "at least "+f1(laneRateLo)
+		}
+		s += fmt.Sprintf("; clamped from %s to %s× the %s class's %s points/h", f1(sl.from), lim, sl.class, f1(c))
+	}
+	s += fmt.Sprintf("; for %s min", f0(sl.dur.Minutes()))
+	if class == "" {
+		s += " (no --expect: a medium lane, as the switch counts it until it overruns)"
+	}
+	return s
+}
+
+// freshLane is a lane leased on an account in the last MoverView.YoungMin minutes: the part of
+// its burn the meter does not have yet (points per hour) and its expected time left (0:
+// unknown).
+type freshLane struct {
+	rate float64
+	left time.Duration
+}
+
+// freshLanes are acc's lanes leased in the last m.YoungMin minutes, this call's earlier picks
+// included, each at the new-lane burn rate less what the meter measured of it (live pre9: four
+// lanes leased onto claude-2 around 10:00 each saw it nearly idle; 15 minutes later they burned
+// 60-90 points/h and the switch moved sessions off).
+func freshLanes(m *MoverView, ls []LaneLease, acc LaneAccount, rate float64, p LaneParams, now time.Time) []freshLane {
+	if m == nil || m.YoungMin <= 0 || rate <= 0 {
+		return nil
+	}
+	f5, bw := p.account(acc).F5, p.BurnWindow.Hours()
+	var out []freshLane
+	for _, L := range ls {
+		// A moved session is not a new lane: its burn is measured (the switch counts it at the
+		// burn it moved with).
+		if L.Key != acc.Key || L.Ended || L.Remote || L.Moved || now.Sub(L.T0) >= time.Duration(m.YoungMin*float64(time.Minute)) {
+			continue
+		}
+		measured := 0.0
+		if L.RecentOK && bw > 0 {
+			measured = math.Max(0, L.Recent) * f5 / bw
+		}
+		if x := rate - measured; x > 0 {
+			f := freshLane{rate: x}
+			if !L.ExpectEnd.IsZero() {
+				f.left = max(0, L.ExpectEnd.Sub(now))
+			}
+			out = append(out, f)
+		}
+	}
+	return out
 }

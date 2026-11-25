@@ -1097,8 +1097,11 @@ account with neither has no reading time.
    0.1 × cache_read` of the token rows of the sessions of that seat: this machine's token rows
    (outbox), except that a leased session whose burned units come from the hub (3) is counted
    from the hub's per-minute units of it (`burn`) instead of this machine's rows of the lease's
-   life. A session's seat is that of its lease, else that of its hook events, else the login
-   of the row's `slot`. Other machines' sessions without a recent lease are not in the meter:
+   life. A row's seat is that of the session's lease begun by the row's time (a session moved
+   from A to B counts its rows before the move to A: counting them all to its last lease put B's
+   5-hour level at 100% right after moves in while its reading was ~60%); a row from before the
+   session's first lease is the login of its `slot`; an unleased session's is that of its hook
+   events, else the login of the row's `slot`. Other machines' sessions without a recent lease are not in the meter:
    only readings show their use. `m5` = units since the later of `ts` and the start of the current 5-hour
    window: while the reading's window is open that is `resets_at − 5 h`; when it has ended,
    the next window starts at the first token after its reset (and so on, 5 hours each), and
@@ -1283,16 +1286,32 @@ account out of the drain; they only limit how many more it takes).
   speed). It leaves the drain as soon as one fails (no state is kept between calls). A protected
   account in drain may use its room up to `W − M` (not its target or pace line), with its 5-hour
   floor kept.
+- *Owner drain* (owner 2026-11-25). `wy account drain <label> [--until <time>]` sets
+  `next.accounts.<label>.drain_until` (RFC 3339; `--until` takes `15:04` today, `2006-01-02 15:04`
+  or RFC 3339; none is 23:59 today) in this machine's config; `wy account drain <label> off`
+  deletes it. Not shared through the hub. While `until` is in the future the account drains as
+  an **aggressive** drain account (a protected one too) whatever its hours to the weekly reset:
+  `H = min(H, until − now + guard)`, so `finish_by = until`, with the same drain margins (aims
+  97 weekly, 96 five-hour) and capacities. It ends by itself at `until`, or once its weekly
+  level reaches `W − M` (the account is then as configured again). `--explain`, the table,
+  `--plan` and the board show "draining (owner, until 23:59)" ("Thu 07:00" when not today).
 - *Lane statistics.* From the leases read (this machine's ledger, 8 days; other machines' leases
   with a hub burn): `E` the p75, `Ē` the mean and `E95` the p95 of the 5-hour points (`f ×` units) of lanes that
   ended or are 5 hours old, and `L` the median length of this machine's ended lanes (launched to
   ended); with `--model`, that model's own lanes when there are at least 10. Fewer than 10:
   the fallbacks 8 points (all three) and 15 minutes. A new lane burns `r = Ē / L` points per hour.
   The **lane burn** `R` is the p75 of the lanes' 5-hour points per hour of wall time: lanes that
-  ended (this machine's, launched to ended, 5 minutes or more) and lanes running for 30 minutes
-  or more (their burn so far over their age; a younger lane's first minutes burn far above its
-  steady rate), with `--model` that model's own when there are at least 10; fewer than 10: not
-  measured.
+  ended (this machine's, 20 minutes or more) and lanes running for 30 minutes or more (their
+  burn so far over their age; a younger lane's first minutes burn far above its steady rate),
+  with `--model` that model's own when there are at least 10; fewer than 10: not measured.
+  A lane is a picker lease's session over its whole life, across moves: from its launch to the
+  end of its session's last lease (or now), the burn its session used since. Leases written by
+  moves (strategy `move` or `handoff`, or `moved_from`) are not lanes, for `E`, `L` or `R`, and
+  other machines' leases count for `E` only (the hub does not say which are moves). Live pre8:
+  a moved session keeps its id, its lease ends at the move and a new lease starts, each lease's
+  burn being its session's since; the move leases (minutes of wall time, the resume's cache
+  write) and the picker leases ended at their first move made `R` 57 points/h against ~9-14,
+  and every account was refused.
 - *Forward burn* of the running lanes before a time `T`: `F(T) = Σ rate × min(rem, T)` over the
   account's leases that are not ended and younger than 5 hours (settled and not yet launched ones
   included), where `rate` = the units the session used in the last 15 minutes `× f` per hour when
@@ -1511,15 +1530,19 @@ single write and flushed to disk (`fsync`, and the folder when a day file is cre
 the next. Lines:
 
 - `{"v": 1, "op": "lease", "id", "at", "key", "account", "org", "folder", "label", "kind",
-  "session_id", "c5", "cf", "model", "strategy", "urgent", "batch", "drain", "finish_by", "moved_from", "parent"}`: `id` a ULID, `at` the
+  "session_id", "c5", "cf", "model", "strategy", "urgent", "batch", "drain", "finish_by", "moved_from", "parent",
+  "expect", "expect_min", "expect_end"}`: `id` a ULID, `at` the
   pick time (RFC 3339 UTC), `key` the seat key, `kind` `aggressive` or `protected`,
   `session_id` from `--session-id` (absent without it), `c5` and `cf` the lane charge and full
   cost in 5-hour points, `model` from `--model` (absent without it), `strategy` the strategy
   that picked, `urgent` true when `--urgent` passed a burst cap, `batch` the id shared by the
   picks of one call, `drain` true and `finish_by` (RFC 3339 UTC) for a drain pick (both absent
   otherwise). A move (8.6) writes a `lease` line with `strategy` `move` and `moved_from`, the
-  label of the account the session left, and the old lease's `parent`. `parent`: the session
-  that asked for the lease (`--parent`, 8.5 flags).
+  label of the account the session left, and the old lease's `parent` and `expect*`. `parent`:
+  the session that asked for the lease (`--parent`, 8.5 flags). `expect` (`short`, `medium`,
+  `long`), `expect_min` and `expect_end` (RFC 3339 UTC): the lane's length as the
+  switch-projection check counted it (a medium lane's without `--expect`; absent with
+  estimates off); the switch projects the lane's burn to `expect_end` (8.6).
 - `{"v": 1, "op": "bind", "id", "at", "session_id"}`: the lease `id` names session `session_id`
   from now on (a `claude --bg` lane, whose id is known only after its launch).
 - `{"v": 1, "op": "launched", "at", "session_id"}`: written by `wy hook` on `SessionStart`.
@@ -1893,6 +1916,24 @@ environment of another process is never read (keys.md 8).
   drained to 98% of its week until then", `--json` `expiring_room_cap_7d`; `--plan` says
   "expiring room"). After the reset the protected caps hold again (live: protected claude-5 at
   85% an hour before its reset took nothing, its protected cap 80 bounding its drain).
+- **Stale data.** An account whose levels rest on a reading older than `move_stale_min` (10)
+  minutes (the newest usage reading of its seat, from this machine or the hub) is neither a
+  trigger source nor a destination: an old reading plus hours of token meter is not evidence of
+  the level (live, pre6 05:37, the hub migrating: claude-4 read "5h 100%" from a reading 3 h 37
+  min old, the meter since then ~87 points, while the account was at ~68%). Only its sessions
+  stopped at a limit still move (their limit reply is fresh evidence). `--plan` says "data stale
+  (3 h 37 min), no moves". When it lasts over 30 minutes the pass alerts the owner once (a line
+  in its log and a push as the digest's: the hub's `switch_digest` alert, or direct push when
+  the hub is away); a new alert comes only when the set of stale accounts changes. An account
+  with no reading time is not stale by this rule (the picker's own stale and unknown rules
+  hold). For the picker with the switch on, an old sample's level neither blocks an aggressive
+  account nor draws a lane: such an account is ranked after the accounts with fresh data, and
+  `--explain` says "data stale (217 min old): its level (5h 100%, 7d 30%) neither blocks nor
+  draws a lane; ranked after accounts with fresh data". A protected account keeps its blocks.
+- **A slow pass moves nothing.** A pass whose state (config, levels, sessions) took over 2
+  minutes to read moves nothing: the next pass reads it again (live 05:40:42: a pass of the old
+  binary that read its config before claude-5 was set protected moved a session minutes later,
+  at 0.0 points/h).
 
 **Decision (the defaults).** An account **triggers** when P5 is over its 5-hour cap or P7 over its
 weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
@@ -1901,7 +1942,7 @@ weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
 | --- | --- | --- |
 | Pass | every 60 s while the switch is on (each `wy tick`) | the burn changes in minutes; a pass reads local files and the hub once |
 | Burn window | `move_burn_min` 10 min | long enough to smooth one turn, short enough to see a lane start burning hot |
-| Young sessions | a session under `move_young_min` = 15 min old (since its lease, else unknown: old) has its burn left out of its account's R5 (not of a rate from the readings, which are still compared with the full meter) | a lane's first minutes (reading the codebase, cache writes) burn several times its steady rate, and the burn window then holds only those minutes: live 2026-11-25 two lanes moved 3 minutes after launch. Simulator (300 runs × 7 patterns, a start-up burst of 3-6× for 3-8 minutes): moves of lanes under 15 minutes whose source was under its caps at its steady burn 3.65 → 0.23 a day, all stopped minutes 1172 → 1164, protected minutes over 80 +0.9%; 10 and 12 minutes left 1.85 and 1.32, the rate × min(1, age/10) 2.89, cache writes weighted 0.25 for 10 minutes 2.68, the picker's estimate while young 3.52 |
+| Young sessions | a session under `move_young_min` = 15 min old (since its first lease in the ledger, across moves, else unknown: old; a session moved onto its account within 15 min is never young: its burn counts at once, at the burn it moved with; live pre9 10:47: 54c4e1e8, moved onto claude-6 at 10:35 at 21.9 points/h, "under 15 min old" while claude-6 was over its cap) has its burn left out of its account's R5 (not of a rate from the readings, which are still compared with the full meter) | a lane's first minutes (reading the codebase, cache writes) burn several times its steady rate, and the burn window then holds only those minutes: live 2026-11-25 two lanes moved 3 minutes after launch. Simulator (300 runs × 7 patterns, a start-up burst of 3-6× for 3-8 minutes): moves of lanes under 15 minutes whose source was under its caps at its steady burn 3.65 → 0.23 a day, all stopped minutes 1172 → 1164, protected minutes over 80 +0.9%; 10 and 12 minutes left 1.85 and 1.32, the rate × min(1, age/10) 2.89, cache writes weighted 0.25 for 10 minutes 2.68, the picker's estimate while young 3.52 |
 | Burn floor | `move_min_burn` = 1 point/h: a running session is a candidate only when its own measured burn over the burn window is at least this; a session under `move_young_min` is never one (its burn does not count yet); the greedy stops at a pick that would not lower the source's projection | moving a session that burns nothing frees nothing and costs a re-read: live 2026-11-25 a mid-turn headless lane at 0.0 points/h was moved with a 4.6 points/h one |
 | Trigger | P5 > `move_cap_5h` (95; protected 80) or P7 > `move_cap_7d` (98; protected 80) | owner rule 1: the projected 5-hour level must stay at 95-98 or under; rule 2: the weekly 98 (aggressive) or 80 (protected); a protected account's 5-hour level never over 80 |
 | Hard now | the level is at its cap now: trigger at once | the projection cannot be under the cap any more |
@@ -1913,13 +1954,16 @@ weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
 | Stopped by a limit | a session whose last turn a limit ended (`StopFailure` `rate_limit`) is a candidate too, whatever its burn (it wants to burn): moved when that window resets `move_stopped_wait_min` = 20 min or more from now, else it waits for the reset | a move takes a minute or two and re-reads the context; a near reset is cheaper |
 | Choice | greedy, recomputed after each pick: first a session whose move alone brings both projections under cap − hysteresis (the fewest moves); among those, the most points freed per re-read (burn ÷ (context, at least 20k tokens, × model factor: opus 5, sonnet 3, haiku 1, else 3)), then the highest burn, then the youngest; among the others the highest burn, then the smaller context, then the longest expected remaining time | the highest burner frees the most; when several would each do, the cheapest re-read (simulator: small gain, below) |
 | Enough | stop when P5 and P7 of the source are at most cap − `move_hysteresis` (5); for a window whose level now is already at or over cap − 5, at most the cap (no move takes a projection under the level now; live: claude-3 at 84.1 of cap 88 had every unpinned session moved off, down to 0.2 points/h). Still over with nothing left a move would lower: `--plan` says "only pinned burn left (x points/h pinned, y unpinned)" | hysteresis: no move back and forth around the cap; a target that can be met |
-| Destination | logged in on this machine (never an account only another machine has); not its own, not stale, not excluded; organisation per `move_orgs`; an aggressive account: its P5 and P7 (with the moves already planned in this pass) plus this session's burn for h stay at most its caps − 5, h = min(the session's expected remaining time, else `move_dest_horizon_min` = 90 min; the time to that account's 5-hour reset), at least 60 min; a protected account: the full rule, its P5 and P7 with this session's burn added until its resets at most its caps − 5, and only when no aggressive account fits; order: aggressive accounts first, draining ones (the picker's `drain` class: room that expires unused) first, then the soonest 5-hour reset, then the most room; protected accounts last and only within their 80/80 caps | the session must be able to run there; room that expires is worth most |
+| Destination | logged in on this machine (never an account only another machine has); not its own, not stale, not excluded; organisation per `move_orgs`; its P5 and P7 as the trigger will project them after the move (to its resets, with the moves already planned in this pass, this session's burn until its expected end when known, else to the resets) at most its caps − 5, so the next trigger does not undo the move (live pre7: 3b2611ed moved onto claude-6 at 06:12 on a 90-minute horizon, 39 + 27 × 1.5 ≈ 80, and off it at 06:35, "5h projected 111%"; `move_dest_horizon_min` is retired and ignored); a protected account only when no aggressive account fits; a session moved onto an account within `move_young_min` counts there at the burn it moved with (its re-read is left out), not 0, and a lane under `move_young_min` (its burn left out of the trigger's projection) at the picker's new-lane burn (else its measured burn), not 0: the trigger counts it 15 minutes in (live pre9: ai-lane-E, 27.1 points/h, moved onto claude-2 at 10:00:58 while its fresh lanes' 6.5-8.7 points/h were left out; they burned 60-90 points/h by 10:10 and the trigger fired at 10:11, "5h projected 95% (cap 85%)"); order: aggressive accounts first, draining ones (the picker's `drain` class: room that expires unused) first, then the soonest 5-hour reset, then the most room; protected accounts last and only within their 80/80 caps | the session must be able to run there; room that expires is worth most |
 | No account fits | no move; `--plan` says why ("no logged-in account on this machine has room for its burn", "no account of its organisation has room (account.move_orgs = same)", "account rate limit") | |
 | Cooldown | `move_cooldown_min` 20 min per session | |
 | No return | never back to the account it left within `move_no_return_min` 60 min, unless that account's 5-hour window reset since | no ping-pong |
 | Account rate limit | at most `move_account_moves` 5 moves of sessions burning at least the burn floor, and at most `move_account_burn` 40 points/h of moved burn (one move always fits), into one account per `move_account_window_min` 15 min. Soft for aggressive accounts: an aggressive account with room that only these limits hold back takes the move before any protected account does (live: claude-2 at 13%/18% had taken 3 moves, two of them 0.2-0.5 points/h, and the next went to protected claude-7, projected 74% against its cap 60) | a burst of moves must not overfill one account; the destination's projection check is the real guard |
+| Near hit | the source reaches 100% before its 5-hour (or weekly) reset within 60 min by its first projection in the pass, or is hard now: (1) the account rate limit does not hold the move back (it applies to soft triggers only); (2) the greedy takes the highest burner first after the sessions whose move alone fixes the source; (3) when no destination stays under its caps − 5 until its own reset, the switch takes the aggressive account (not one this session may not return to) that stays under its caps the longest, if that is at least as long as the source has left and at least 30 min: `--plan` says "best available: claude-6 fits for 2h15m". Protected accounts never take a best-available move. A soft trigger (no hit within 60 min) whose sessions in their cooldown (or with a move under way) burn more than all the movable ones together, and those cannot bring it under its caps, waits ("waiting: moving the others (1.7 points/h) would not bring claude-6 under its caps while 21.9 points/h held back for now burns more"); the owner grace does not count (it moves another burner on purpose) | live pre9: home-18 (2.3 points/h) moved off claude-2 at 10:12 while ai-lane-E (27.1) cooled down, and home-00 (1.7) off claude-6 at 10:37 while 54c4e1e8 (21.9) did; live 2026-11-25 10:31: claude-4 at 78%, 43.8 points/h, P5 99%: the switch moved only a 2.7 points/h session; 25.9 points/h stayed ("account rate limit") and 16.9 points/h ("no logged-in account has room") while claude-6 was at 16% and claude-2 at 34%. Two hours on claude-6 beat a hit in 20 minutes |
 | Once per window | none: a long session may move many times | owner: long sessions may need several moves |
 | Between steps | a mid-turn session is stopped once no step runs, waiting up to `move_step_wait_min` 3 min in all, never past one minute before the hit; a pass's waits run side by side, at most `move_pass_wait_s` 90 s, the rest wait on in the next pass | a step stopped half-way is often run again after the resume |
+| Owner drain | an account the owner drains (8.5, Owner drain): (1) nothing moves off it unless its 5-hour window is at its cap or reaches 100% within 60 min ("draining (owner, until 23:59): nothing moves off it before ..."); (2) while its 5-hour (and weekly) projection to its reset is under its cap − 5 (the hysteresis), the pass pulls in the biggest movable burners of other accounts (busy, not pinned, not interactive, not young, out of cooldown, at least the burn floor), one by one, each only when it fits under the caps after the ones before, the account rate limit applying ("pulled in: claude-4 is draining (owner, until 18:00) at 20.0 points/h of burn") | owner 2026-11-25: claude-4 should finish its weekly room today, before a free full reset |
+| Re-check | a mid-turn move carried out 5 s or more after its pass began to read its state is re-chosen on the state read again just before it is carried out: the pass is planned again (its own move lock left out); no move for it now (its source no longer needs it, or another session's move is enough) drops it ("not moved to claude-7: re-checked after its step wait: ..."); another destination takes it (aggressive before protected, as always), the move record's `recheck` saying so ("re-checked after its step wait: claude-4, not claude-7 as planned"). Each change is kept in `move/rechecks.jsonl` and `--plan` lists those of the last hour ("re-check 11:58: 441d209b ... was planned claude-2 -> claude-7, moved to claude-4 instead"); `--list` shows the note. A failed read keeps the move as planned | a step wait is up to 3 minutes; live pre10: 441d209b was planned onto protected claude-7 at 11:57:35 (claude-4 projected 90.2 of its 90) and moved at 11:58:41, when claude-4 had room (its burn fell from 11.3 to 9.6 points/h) |
 | Owner grace | `move_owner_grace_min`, default 0 (off): an interactive session the owner typed into within it stays | the simulator shows no clear gain (below); off |
 
 **Pinned sessions.** A pinned session never moves. Pins come from Claude Code only (the owner's
@@ -1996,14 +2040,40 @@ places no new lane on an account where the switch would move a session off: the 
 projection (`internal/projection`, the same function on both sides) of the account's measured
 burn now (this machine's sessions and other machines' sessions the hub measured, as above) plus
 the new lane's burn, against the switch's caps less the pin reserve. The new lane's burn is the
-larger of its estimate's (cost over wall time, or `r`) and the measured lane burn `R` (8.5 Lane
-statistics): a size class sets how long a lane runs, not how fast it burns (live: a "medium"
-lane counted as 4 points per hour while Opus lanes here burn 12-26). The account's own burn is
-projected to the resets; the new lane only over its expected time (`--expect`; else
-`move_dest_horizon_min`, 90 min), at most to the 5-hour reset, at least an hour, as the switch
-judges a destination: a short lane cannot burn 5 hours (live: an idle account refused a 25-minute
-lane at 23 points/h, "projection 115%"). The switch projects a running session with an expected
-end (its lease's) the same way: only until then; unknown or overrun, to the resets. The switch reads the
+measured lane burn `R` of its model (8.5 Lane statistics; with `--model`, that model's own lanes
+only, at least 10) and else its estimate's (cost over wall time, or `r`): a size class sets how
+long a lane runs, not how fast it burns (live: a "medium" lane counted as 4 points per hour
+while Opus lanes here burn 12-26). It is kept within [0.5×, 3×] its class's burn (cost over
+time; medium without `--expect`), and `--explain` prints the line "Lane burn (switch check)"
+with the burn, where it came from, whether it was clamped and for how long. A lane without
+`--expect` counts as a medium lane, for the medium class's time (48 minutes). The account's own burn is
+projected to the resets. One rule counts a session's burn on all three sides (the picker's
+acceptance, the switch's trigger, the switch's destination check): inside its lease's expected
+duration (`--expect`) it burns for max(expected remaining, 30 minutes), at most to each
+window's horizon; unknown or overrun, to the horizons (the 5-hour reset, and min(weekly reset,
+5 hours)). A short lane cannot burn 5 hours (live: an idle account refused a 25-minute lane at
+23 points/h, "projection 115%"). The lease line keeps the lane's length as the picker counted
+it: `expect` (the class; `medium` without `--expect`), `expect_min` and `expect_end` (the pick
+plus its time); a move lease keeps its session's. The switch takes a lane's expected time left
+from it (`expect_end` − now; a move lease written without it, its session's latest), and once
+the lane overruns it projects it to the horizons; lease lines without it (older) as before:
+unknown, to the horizons. So the switch counts a running lane as the picker did when it placed
+it (live, pre7: 2de58a08, no `--expect`, placed on claude-3 at 7d 85% and moved off 17 minutes
+later, "7d projected 95% (cap 88%) at 16.4 points/h": the picker had counted it for 90 minutes,
+the switch to the horizons).
+Lanes leased on the account in the last `move_young_min` (15) minutes, this call's earlier picks
+included, count at the new-lane burn less what the meter measured of them, each for its
+expected time: their burn is not in the meter yet (live pre9: four lanes went onto claude-2
+within minutes, each checked against its idle meter).
+A placement is a destination too: the picker lets a lane in only while the projection stays
+`move_hysteresis` (5) points under the caps less the pin reserve, as a moved session must.
+Simulator (`internal/mover/sim_churn_test.go`, 30 runs × 10 patterns, per run-day): moves the
+trigger undid within 30 minutes (no new session there, burn not up 25%) 3.92 → 1.81; placements
+the switch undid within 30 minutes (not forced, no new session, burn within 50% of the
+estimate) 1.02 → 0.79; moves 41.8 → 34.9, all stopped minutes 1438 → 1396, pinned stopped
+413 → 408, protected minutes over 80 619 → 628. Of the placements still undone, 0.48 a day are
+the simulator's readings slope (30 minutes) holding a lane's start-up burst its 10-minute meter
+has dropped; `wy move` takes both over the one burn window. The switch reads the
 accounts from the same readings and effective state as the picker (8.5, Effective state; the
 picker's measured level, without lease charges, is `--json` `weekly_measured_pct`), and each
 pass logs the weekly reading and what the meter adds to it in `passes.jsonl` (`l7_read`,
@@ -2036,8 +2106,9 @@ only matters when several sessions would each fix an account. The destination ho
 protected accounts lower (minutes over 80 -4%, highest 5-hour level 84.6 → 82.0) and stops the
 pinned sessions as long as before (-0.7% pinned stopped minutes, +0.3% all stopped minutes,
 inside the 5% the owner allowed), but moves 32% more (aggressive accounts with a little room
-now take a short session), so 34% more re-read; it is on by default (`move_dest_horizon_min 0`
-turns it off).
+now take a short session), so 34% more re-read. It is retired: the trigger projects to the
+resets, so a destination let in on 90 minutes was moved off again within the cooldown (live
+pre7, 3b2611ed).
 
 **Interactive sessions.** A session is *interactive* (a person uses it) when it is: a plain
 terminal session; a `wy run` session; a tmux pane with Remote Control on; or a tmux pane that got
@@ -2175,6 +2246,11 @@ a turn). The hook marks such a prompt (it starts "Watchyard moved this session")
 > still need them. Background shells keep running (listed as stopped; check their output files).
 > Carry on with your task.
 
+The hit time (here, in the reason of the move log and the phone notice, and in the human's
+message) is now + (100 − level)/R5 from the account's current level and burn, the sooner of
+the two windows; it is left out when that is not after the pass (an account already at 100%;
+live: "100% at 04:24" in a pass at 04:25).
+
 Only when the organisation changed, "(different organisation: earlier thinking blocks are not
 visible to you; the conversation is intact)" follows the reason (e2e: a cross-organisation
 resume drops the other organisation's thinking blocks and goes on). A session moved while
@@ -2214,7 +2290,12 @@ check its result before redoing it." The wait runs in the pass, which `wy tick` 
 the tick is never held up. `<state>/move/pass.lock` is held only while a pass plans (one plans at
 a time); each move holds its session's lock (`<state>/move/locks/<session>.lock`) while it waits
 and runs, so the next pass runs and leaves that session alone ("a move of it is under way"), and
-`wy move` by hand refuses it. The timer's
+`wy move` by hand refuses it. `wy move --plan` is read-only and takes no lock: it tests a
+session's lock with a shared, non-blocking probe of the existing file (it creates nothing), and
+taking a session's lock retries for one second, so a probe never makes a move refuse. A
+mid-turn `wy move --now` by hand waits for the step as a pass does, but at most
+`move_pass_wait_s` (90 s; the owner is at the prompt: at the full 3 minutes each move by hand
+took 3.5), and says so first ("inside a step (Bash): waiting up to 1m30s"). The timer's
 systemd service has `KillMode=process`: with the default (`control-group`) systemd kills the
 detached pass when `wy tick` exits, and no timer pass ever finishes (live run, 1.3.3-pre3). A
 unit an older wy wrote is rewritten by the next `wy update`; `wy doctor` warns about one without
@@ -2419,8 +2500,9 @@ move_cap_7d = 98            #   move_cap_5h_protected 80, move_cap_7d_protected 
                             #   move_account_moves 5, move_account_burn 40, move_account_window_min 15,
                             #   move_stopped_wait_min 20, move_owner_grace_min 0,
                             #   move_step_wait_min 3, move_pass_wait_s 90
-move_dest_horizon_min = 90  # an aggressive destination must fit the session this long (its expected time first); 0: until the resets
+move_dest_horizon_min = 0   # retired, ignored: a destination must fit as the trigger projects it (to the resets)
 move_expiring_h = 3         # within this many hours of a protected account's weekly reset its weekly cap is move_cap_7d (expiring room); 0: never
+move_stale_min = 10         # an account whose reading is older is neither a source nor a destination; the picker ranks it last (stale data); 0: off
 move_young_min = 15         # a session's burn counts for the switch once it is this old (its first minutes burn hot); 0: at once
 move_min_burn = 1           # a session is moved only when its own burn is at least this many points/h (busy alone is not enough)
 pin_reserve_5h = 10         # points of the 5-hour window kept free per live pinned session (8.6)

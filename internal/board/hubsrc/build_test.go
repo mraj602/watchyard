@@ -85,3 +85,18 @@ func TestHubLessMatchesHubOrder(t *testing.T) {
 		t.Errorf("order = %s, want abcd (needs-you oldest first, then newest activity)", got)
 	}
 }
+
+// The owner's drains reach the hub board: "draining (owner, until 23:59)" by the label.
+func TestDefaultBuildDrains(t *testing.T) {
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	label, weekly := "claude-4", 54.0
+	in := BuildInput{Now: now, Loc: time.UTC, Hub: board.HubInfo{State: board.HubLive}, Source: board.SourceHub,
+		Seats: []wireSeat{{ID: "s4", Label: &label, Windows: []wireWindow{{Key: "seven_day", UsedPct: &weekly}}}},
+		Drains: func() map[string]time.Time {
+			return map[string]time.Time{"claude-4": time.Date(2026, 11, 25, 23, 59, 0, 0, time.UTC)}
+		}}
+	v := DefaultBuild(in)
+	if len(v.Groups) != 1 || v.Groups[0].Note != "draining (owner, until 23:59)" {
+		t.Errorf("groups = %+v", v.Groups)
+	}
+}

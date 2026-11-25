@@ -113,6 +113,9 @@ type Policy struct {
 	// SetCap5h and SetCap7d are the explicit cap_5h and cap_7d (0 = not set): the lanes
 	// strategy reads them instead of the mode's caps.
 	SetCap5h, SetCap7d float64
+	// DrainUntil: the owner drains the account until then (next.accounts.<key>.drain_until;
+	// zero: off; setup.md 8.5, Owner drain).
+	DrainUntil time.Time
 }
 
 // Protected reports whether the lanes strategy keeps the account for its owner: mode
@@ -194,6 +197,13 @@ func (s Settings) PolicyFor(c Candidate) (Policy, []string) {
 	}
 	if a.Weight > 0 {
 		p.Weight = a.Weight
+	}
+	if a.DrainUntil != "" {
+		if t, err := time.Parse(time.RFC3339, a.DrainUntil); err == nil {
+			p.DrainUntil = t
+		} else {
+			warn = append(warn, fmt.Sprintf("next.accounts.%s.drain_until %q is not a time; ignoring it", key, a.DrainUntil))
+		}
 	}
 	return p, warn
 }

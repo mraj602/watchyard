@@ -1,6 +1,7 @@
 package mover
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -431,42 +432,76 @@ func TestPlanDestinationAddsPlanned(t *testing.T) {
 	}
 }
 
-// Params.DestHorizon: an aggressive destination needs room for the moved session's burn for
-// min(its expected remaining (else DestHorizon), the destination's 5-hour reset), at least
-// DestFloor; a protected one room to its resets, and only when no aggressive one fits.
-func TestPlanDestinationHorizon(t *testing.T) {
+// A destination is judged with the trigger's own projection (to its resets, Hysteresis
+// under the caps), the moved session until its expected end as the trigger counts it there;
+// a protected one only when no aggressive one fits. The old 90-minute horizon (oldDest, the
+// simulator's comparison) let in moves the next trigger undid.
+func TestPlanDestinationAsTrigger(t *testing.T) {
 	// b resets in 4 h: 26.5 points/h to the reset is 106, over 90; for 90 minutes it is 40.
 	mk := func() Input {
-		return Input{Accounts: []Account{acc("a", 90, 3*time.Hour, 30), acc("b", 0, 4*time.Hour, 10), prot("p", 0, 30*time.Minute, 10)},
+		in := Input{Accounts: []Account{acc("a", 90, 3*time.Hour, 30), acc("b", 0, 4*time.Hour, 10), prot("p", 0, 30*time.Minute, 10)},
 			Sessions: []Session{lane("s", "a", 26.5, true)}}
+		in.Params = DefaultParams
+		return in
 	}
-	in := mk()
-	in.Params = DefaultParams
-	in.Params.DestHorizon = 0
-	if got := moved(plan(in)); got["s"] != "p" {
+	if got := moved(plan(mk())); got["s"] != "p" {
 		t.Fatalf("room to the resets: %v", got)
 	}
-	in = mk()
-	in.Params = DefaultParams
+	in := mk()
+	in.Params.DestHorizon, in.Params.oldDest = 90*time.Minute, true
 	if got := moved(plan(in)); got["s"] != "b" {
-		t.Fatalf("horizon: %v", got)
+		t.Fatalf("old horizon: %v", got)
 	}
-	// Expected to run 4 more hours: its burn to b's reset does not fit; the protected one
-	// (room to its reset in 30 min) takes it.
+	// Expected to end in an hour: the trigger counts its burn on b for that hour (26.5).
 	in = mk()
-	in.Params = DefaultParams
+	in.Sessions[0].Expected = time.Hour
+	if got := moved(plan(in)); got["s"] != "b" {
+		t.Fatalf("short session: %v", got)
+	}
+	// Expected to run 4 more hours: to b's reset, over; the protected one takes it.
+	in = mk()
 	in.Sessions[0].Expected = 4 * time.Hour
 	if got := moved(plan(in)); got["s"] != "p" {
 		t.Fatalf("long session: %v", got)
 	}
-	// The floor: a session about to end is still judged on an hour.
-	in = mk()
+}
+
+// Live (pre7 1082fe05): 3b2611ed (21 points/h) moved claude-2 -> claude-6 at 06:12 and
+// claude-6 -> claude-4 at 06:35 ("5h projected 111% (cap 85%)"). At 06:12 claude-6 was at 39%
+// with 2 points/h of its own, ai-lane-C2 (4.1) moved in at 06:10 (young by its new lease, so
+// its burn was left out), its 5-hour reset 2.5 h away, cap 85 (95 less a pin's 10).
+func TestPlanNoMoveTheTriggerUndoes(t *testing.T) {
+	now := time.Date(2026, 11, 25, 0, 42, 0, 0, time.UTC)
+	old := now.Add(-2 * time.Hour)
+	c2 := Account{Key: "acct:c2/oA", Label: "claude-2", Rate: 30, Meter: 30, LoggedIn: true, Ratio: 8, ReadAt: now,
+		W5: Window{Level: 70, Reset: now.Add(3 * time.Hour)}, W7: Window{Level: 21, Reset: now.Add(100 * time.Hour)}}
+	c6 := Account{Key: "acct:c6/oB", Label: "claude-6", Rate: 2 + 4.1, Meter: 2 + 4.1, LoggedIn: true, Ratio: 8, ReadAt: now, Pins: 1, Reserve5: 10, Reserve7: 5,
+		W5: Window{Level: 39, Reset: now.Add(150 * time.Minute)}, W7: Window{Level: 39, Reset: now.Add(100 * time.Hour)}}
+	ss := []Session{
+		{ID: "3b2611ed", Account: c2.Key, Rate: 21, Busy: true, Movable: true, Context: 80_000, Started: old},
+		{ID: "other", Account: c2.Key, Rate: 9, Busy: true, Movable: true, Context: 80_000, Started: old},
+		{ID: "c2-lane", Account: c6.Key, Rate: 4.1, Busy: true, Movable: true, Context: 80_000, Started: now.Add(-2 * time.Minute)},
+		{ID: "own", Account: c6.Key, Rate: 2, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old},
+	}
+	in := Input{Now: now, Params: DefaultParams, Accounts: []Account{c2, c6}, Sessions: ss,
+		Streak: map[string]int{c2.Key + " " + Win5h: 5},
+		Recent: []Record{{Session: "c2-lane", From: "acct:c5/oA", To: c6.Key, At: now.Add(-2 * time.Minute), Rate: 4.1, RateKnown: true}}}
+	r := Plan(in)
+	if got := moved(r); got["3b2611ed"] == c6.Key {
+		t.Fatalf("3b2611ed moved onto claude-6 (39 + (6.1 + 21) x 2.5 = 107 > 80): %+v", r.Moves)
+	}
+	// The old rule took it: C2's burn left out (young) and 3b2611ed for 90 minutes only,
+	// 39 + 2 x 2.5 + 21 x 1.5 = 75.5 <= 80.
+	in.Params.DestHorizon, in.Params.oldDest = 90*time.Minute, true
+	in.Recent = nil
+	if got := moved(Plan(in)); got["3b2611ed"] != c6.Key {
+		t.Fatalf("old rule: %v", got)
+	}
+	// What the trigger then saw on claude-6 (06:35, C2 and 3b2611ed counted): over its cap.
 	in.Params = DefaultParams
-	in.Accounts[1].W5.Level = 60 // 60 + 26.5 × 1 h = 86.5 fits under 90; 60 + 26.5 × 1.5 h would not
-	in.Sessions[0].Expected = 5 * time.Minute
-	in.Accounts[0].W5.Level = 94 // its 5 minutes left still take a over its cap (94 + 2.2)
-	if got := moved(plan(in)); got["s"] != "b" {
-		t.Fatalf("floor: %v", got)
+	pr := in.Params.Project(c6, []Session{ss[2], ss[3], {ID: "3b2611ed", Account: c6.Key, Rate: 20.1, Started: old}}, 0, now.Add(23*time.Minute))
+	if pr.Window != Win5h {
+		t.Fatalf("trigger at 06:35: %+v", pr)
 	}
 }
 
@@ -553,4 +588,332 @@ func TestPlanCheapMoves(t *testing.T) {
 	if ModelFactor("claude-haiku-4-5") != 1 || ModelFactor("x") != 0 {
 		t.Error("model factors")
 	}
+}
+
+// Live (pre9, 10:00:58): ai-lane-E (27.1 points/h) moved claude-6 → claude-2, accepted: claude-2
+// at 6%, 0.1 points/h counted, its 5-hour reset ~2.5 h away, cap 85; its three fresh lanes'
+// 8.7 points/h were left out (under 15 minutes): 6 + 27.2 × 2.5 = 74 <= 80. By 10:10 they
+// burned 60-90 points/h and at 10:11 the trigger fired ("5h projected 95% (cap 85%)"). The
+// destination counts young lanes at the lane burn (else their measured burn).
+func TestPlanDestinationCountsYoungLanes(t *testing.T) {
+	now := time.Date(2026, 11, 25, 4, 30, 58, 0, time.UTC)
+	old := now.Add(-3 * time.Hour)
+	c6 := Account{Key: "acct:c6/oB", Label: "claude-6", Rate: 30.5, Meter: 30.5, LoggedIn: true, Ratio: 8, ReadAt: now,
+		W5: Window{Level: 9, Reset: now.Add(4 * time.Hour)}, W7: Window{Level: 44, Reset: now.Add(100 * time.Hour)}}
+	c2 := Account{Key: "acct:c2/oA", Label: "claude-2", Rate: 0.1 + 8.7, Meter: 0.1 + 8.7, LoggedIn: true, Ratio: 8, ReadAt: now,
+		W5: Window{Level: 6, Reset: now.Add(150 * time.Minute)}, W7: Window{Level: 24, Reset: now.Add(140 * time.Hour)}}
+	ss := []Session{
+		{ID: "ai-lane-E", Account: c6.Key, Rate: 27.1, Busy: true, Movable: true, Context: 80_000, Started: old},
+		{ID: "c6-own", Account: c6.Key, Rate: 3.4, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old},
+		{ID: "home-18", Account: c2.Key, Rate: 0.1, Busy: true, Movable: true, Context: 30_000, Started: old},
+	}
+	for i, r := range []float64{2.1, 3.0, 3.6} {
+		ss = append(ss, Session{ID: fmt.Sprintf("fresh-%d", i), Account: c2.Key, Rate: r, Busy: true, Movable: true,
+			Context: 20_000, Started: now.Add(-time.Duration(3+i) * time.Minute)})
+	}
+	in := Input{Now: now, Params: DefaultParams, Accounts: []Account{c2, c6}, Sessions: ss,
+		Streak: map[string]int{c6.Key + " " + Win5h: 5}}
+	if got := moved(Plan(in)); got["ai-lane-E"] == c2.Key {
+		t.Fatalf("ai-lane-E moved onto claude-2 with its young lanes at their measured 8.7: %v", got)
+	}
+	in.LaneRate = 12
+	if got := moved(Plan(in)); got["ai-lane-E"] == c2.Key {
+		t.Fatalf("ai-lane-E moved onto claude-2 with its young lanes at 3 × 12: %v", got)
+	}
+	// Without the young lanes (all older): 6 + (8.8 + 27.1) × 2.5 = 96, also refused; with
+	// them at 0 (the pre9 rule) it was 6 + 27.2 × 2.5 = 74: accepted.
+	in.LaneRate = 0
+	in.Params.oldDest = true // the young lanes counted at 0, as pre9 (the horizon off)
+	if got := moved(Plan(in)); got["ai-lane-E"] != c2.Key {
+		t.Fatalf("pre9 rule: %v", got)
+	}
+}
+
+// Live (pre9, worker 10:31): claude-4 at 78% 5h, burning ~44 points/h (ai-lane-E-r1 25.9,
+// ai-lane-D 16.9, a3fc9098 2.7), projected 100% at ~10:54. The switch moved only the 2.7: the
+// 25.9 was held back by claude-6's account rate limit, the 16.9 found "no logged-in account
+// on this machine has room for its burn", while claude-6 was at 16% and claude-2 at 34%. A
+// near hit lifts the rate limit, moves the highest burner first, and takes the account that
+// stays under its caps longest when none has room to its reset.
+func TestPlanNearHitMovesTheBurners(t *testing.T) {
+	now := time.Date(2026, 11, 25, 5, 1, 0, 0, time.UTC)
+	old := now.Add(-2 * time.Hour)
+	for _, c := range []struct {
+		name  string
+		level float64 // claude-4's 5-hour level: the hit in (100 − level) / 45.5 h
+	}{{"78% (hit in 29 min)", 78}, {"69.7% (hit in 40 min)", 69.7}} {
+		t.Run(c.name, func(t *testing.T) {
+			c4 := Account{Key: "acct:c4/oA", Label: "claude-4", Rate: 45.5, Meter: 45.5, LoggedIn: true, Ratio: 8, ReadAt: now,
+				W5: Window{Level: c.level, Reset: now.Add(3 * time.Hour)}, W7: Window{Level: 48, Reset: now.Add(100 * time.Hour)}}
+			c6 := Account{Key: "acct:c6/oB", Label: "claude-6", Rate: 4.7, Meter: 4.7, LoggedIn: true, Ratio: 8, ReadAt: now, Pins: 1, Reserve5: 10, Reserve7: 5,
+				W5: Window{Level: 16, Reset: now.Add(3 * time.Hour)}, W7: Window{Level: 43, Reset: now.Add(100 * time.Hour)}}
+			c2 := Account{Key: "acct:c2/oA", Label: "claude-2", Rate: 1.5, Meter: 1.5, LoggedIn: true, Ratio: 8, ReadAt: now, Pins: 1, Reserve5: 10, Reserve7: 5,
+				W5: Window{Level: 34, Reset: now.Add(4 * time.Hour)}, W7: Window{Level: 25, Reset: now.Add(140 * time.Hour)}}
+			ss := []Session{
+				{ID: "a3fc9098", Account: c4.Key, Rate: 2.7, Busy: true, Movable: true, Context: 30_000, Started: old},
+				{ID: "04bd105f", Account: c4.Key, Rate: 16.9, Busy: true, Movable: true, Context: 120_000, Started: old},
+				{ID: "54c4e1e8", Account: c4.Key, Rate: 25.9, Busy: true, Movable: true, Context: 150_000, Started: old},
+				{ID: "c6-own", Account: c6.Key, Rate: 4.7, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old},
+				{ID: "c2-own", Account: c2.Key, Rate: 1.5, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old},
+			}
+			// claude-6 took 20 points/h of moves 10 minutes ago: its account rate limit (40 per
+			// 15 min) would hold 25.9 back.
+			in := Input{Now: now, Params: DefaultParams, Accounts: []Account{c6, c2, c4}, Sessions: ss,
+				Streak: map[string]int{c4.Key + " " + Win5h: 5},
+				Recent: []Record{{Session: "earlier", From: c4.Key, To: c6.Key, At: now.Add(-10 * time.Minute), Rate: 20, RateKnown: true}}}
+			r := Plan(in)
+			got := moved(r)
+			if got["54c4e1e8"] == "" || got["04bd105f"] == "" {
+				t.Fatalf("the burners stayed: %v\n%+v", got, r.Moves)
+			}
+			if got["a3fc9098"] != "" {
+				t.Errorf("the 2.7 points/h session moved too: %v", got)
+			}
+			for _, mv := range r.Moves {
+				if mv.Session == "54c4e1e8" && (!mv.Urgent || !strings.Contains(mv.Reason, "best available: claude-")) {
+					t.Errorf("54c4e1e8: %+v", mv)
+				}
+			}
+			for _, mv := range r.Moves {
+				t.Logf("%s -> %s: %s", mv.Session, mv.To, mv.Reason)
+			}
+			if r.Moves[0].Session != "54c4e1e8" {
+				t.Errorf("first move %s, want the highest burner", r.Moves[0].Session)
+			}
+		})
+	}
+	// Not near (a soft trigger, 100% only in 2 h): no best-available move.
+	c4 := Account{Key: "acct:c4/oA", Label: "claude-4", Rate: 20, Meter: 20, LoggedIn: true, Ratio: 8, ReadAt: now,
+		W5: Window{Level: 50, Reset: now.Add(3 * time.Hour)}, W7: Window{Level: 48, Reset: now.Add(100 * time.Hour)}}
+	c6 := Account{Key: "acct:c6/oB", Label: "claude-6", Rate: 25, Meter: 25, LoggedIn: true, Ratio: 8, ReadAt: now,
+		W5: Window{Level: 16, Reset: now.Add(3 * time.Hour)}, W7: Window{Level: 43, Reset: now.Add(100 * time.Hour)}}
+	in := Input{Now: now, Params: DefaultParams, Accounts: []Account{c6, c4},
+		Sessions: []Session{{ID: "big", Account: c4.Key, Rate: 20, Busy: true, Movable: true, Context: 100_000, Started: old},
+			{ID: "c6", Account: c6.Key, Rate: 25, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old}},
+		Streak: map[string]int{c4.Key + " " + Win5h: 5}}
+	if got := moved(Plan(in)); got["big"] != "" {
+		t.Fatalf("soft trigger took a best-available destination: %v", got)
+	}
+}
+
+// A moved session is not a new one: its burn counts at once on its new account and it is a
+// candidate there (the cooldown still holds it); the small burner left does not move on a soft
+// trigger while the held one burns more (live pre9 10:47: 54c4e1e8 ai-lane-E-r1, moved onto
+// claude-6 at 10:35 at 21.9 points/h, "stays on claude-6: under 15 min old" while claude-6 was
+// at 22%, P5 93% of its cap 85; home-00 at 1.7 points/h was moved off it at 10:37).
+func TestPlanMovedSessionIsNotNew(t *testing.T) {
+	now := time.Date(2026, 11, 25, 5, 17, 0, 0, time.UTC)
+	old := now.Add(-3 * time.Hour)
+	// claude-6 has a pinned session: its caps are 85/93.
+	c6 := Account{Key: "acct:c6/oB", Label: "claude-6", LoggedIn: true, Ratio: 8, ReadAt: now, Pins: 1, Reserve5: 10, Reserve7: 5,
+		W5: Window{Level: 22, Reset: now.Add(3 * time.Hour)}, W7: Window{Level: 45, Reset: now.Add(100 * time.Hour)}}
+	c2 := Account{Key: "acct:c2/oA", Label: "claude-2", Rate: 1.5, Meter: 1.5, LoggedIn: true, Ratio: 8, ReadAt: now,
+		W5: Window{Level: 34, Reset: now.Add(90 * time.Minute)}, W7: Window{Level: 25, Reset: now.Add(140 * time.Hour)}}
+	c4 := Account{Key: "acct:c4/oA", Label: "claude-4", Rate: 3, Meter: 3, LoggedIn: true, Ratio: 8, ReadAt: now,
+		W5: Window{Level: 88, Reset: now.Add(3 * time.Hour)}, W7: Window{Level: 48, Reset: now.Add(100 * time.Hour)}}
+	for _, c := range []struct {
+		name    string
+		movedAt time.Time
+		started time.Time // what the session's lease says: the move's (old code) or its first lease
+		rate    float64   // its measured burn (with the re-read while the move is recent)
+		want    string    // 54c4e1e8's skip ("" : it moves)
+	}{
+		{"12 min after the move, age from the move lease", now.Add(-12 * time.Minute), now.Add(-12 * time.Minute), 28.3, "cooldown"},
+		{"12 min after the move, its real age", now.Add(-12 * time.Minute), old, 28.3, "cooldown"},
+		{"after the cooldown", now.Add(-25 * time.Minute), old, 21.9, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ss := []Session{
+				// Its measured burn since the resume holds the re-read (30 points/h); it counts at
+				// the 21.9 it moved with while the move is under YoungGate.
+				{ID: "54c4e1e8", Account: c6.Key, Rate: c.rate, Busy: true, Movable: true, Context: 150_000, Started: c.started},
+				{ID: "home-00", Account: c6.Key, Rate: 1.7, Busy: true, Movable: true, Context: 40_000, Started: old},
+			}
+			a6 := c6
+			a6.Rate, a6.Meter = c.rate+1.7, c.rate+1.7 // 22 + 23.6 × 3 h ≈ 93 at the burn it moved with
+			in := Input{Now: now, Params: DefaultParams, Accounts: []Account{a6, c2, c4}, Sessions: ss,
+				Streak: map[string]int{c6.Key + " " + Win5h: 5},
+				Recent: []Record{{Session: "54c4e1e8", From: c4.Key, To: c6.Key, At: c.movedAt, Rate: 21.9, RateKnown: true}}}
+			r := Plan(in)
+			got := moved(r)
+			for _, mv := range r.Moves {
+				t.Logf("%s -> %s: %s", mv.Session, mv.To, mv.Reason)
+			}
+			t.Logf("54c4e1e8: %s; home-00: %s", skipWhy(r, "54c4e1e8"), skipWhy(r, "home-00"))
+			if strings.Contains(skipWhy(r, "54c4e1e8"), "min old") {
+				t.Fatalf("a moved session is taken as new: %s", skipWhy(r, "54c4e1e8"))
+			}
+			if c.want == "" {
+				if got["54c4e1e8"] == "" {
+					t.Fatalf("54c4e1e8 stayed: %s", skipWhy(r, "54c4e1e8"))
+				}
+				if got["home-00"] != "" {
+					t.Errorf("home-00 moved too: %v", got)
+				}
+				return
+			}
+			if !strings.Contains(skipWhy(r, "54c4e1e8"), c.want) {
+				t.Errorf("54c4e1e8: %q, want %q", skipWhy(r, "54c4e1e8"), c.want)
+			}
+			if got["home-00"] != "" || !strings.Contains(skipWhy(r, "home-00"), "waiting") {
+				t.Errorf("home-00 at 1.7 points/h moved while 21.9 cooled down: %v %q", got, skipWhy(r, "home-00"))
+			}
+		})
+	}
+}
+
+// The re-check after a step wait (setup.md 8.6, Re-check), from the live pre10 passes:
+// at 11:57:35 claude-2 (85% cap, P5 86.3) planned 441d209b (7.6 points/h) onto protected
+// claude-7: claude-4 projected 59.44 + 7.6 × 4.04 h = 90.2 of its 90, claude-6 was held by a
+// 4-minute-old lane counted at the new-lane burn. The move ran at 11:58:41 after its step
+// wait, when claude-4 burned 9.6 points/h, not 11.3: re-chosen, claude-4 takes it.
+func TestRecheckAfterStepWait(t *testing.T) {
+	t1 := time.Date(2026, 11, 25, 6, 27, 35, 0, time.UTC)
+	old := t1.Add(-3 * time.Hour)
+	c2k, c4k, c6k, c7k := "acct:c2/oA", "acct:c4/oA", "acct:c6/oB", "acct:c7/oB"
+	world := func(now time.Time, c4rate, c2rate54 float64) Input {
+		c2 := Account{Key: c2k, Label: "claude-2", LoggedIn: true, Ratio: 8, ReadAt: now, Pins: 1, Reserve5: 10, Reserve7: 5,
+			W5: Window{Level: 69, Reset: t1.Add(32*time.Minute + 25*time.Second)}, W7: Window{Level: 31, Reset: t1.Add(140 * time.Hour)}}
+		c2.Rate = c2rate54 + 7.6 + 1.07
+		c2.Meter = c2.Rate
+		c4 := Account{Key: c4k, Label: "claude-4", LoggedIn: true, Ratio: 8.57, ReadAt: now, Rate: c4rate, Meter: c4rate,
+			W5: Window{Level: 13.67, Reset: t1.Add(4*time.Hour + 2*time.Minute + 35*time.Second)}, W7: Window{Level: 53.2, Reset: t1.Add(91 * time.Hour)}}
+		c6 := Account{Key: c6k, Label: "claude-6", LoggedIn: true, Ratio: 8, ReadAt: now, Rate: 10.66, Meter: 10.66, Pins: 1, Reserve5: 10, Reserve7: 5,
+			W5: Window{Level: 48.4, Reset: t1.Add(112*time.Minute + 30*time.Second)}, W7: Window{Level: 47, Reset: t1.Add(102 * time.Hour)}}
+		c7 := Account{Key: c7k, Label: "claude-7", Protected: true, LoggedIn: true, Ratio: 8, ReadAt: now, Pins: 2, Reserve5: 20, Reserve7: 10,
+			W5: Window{Level: 12, Reset: t1.Add(132 * time.Minute)}, W7: Window{Level: 32, Reset: t1.Add(50 * time.Hour)}}
+		ss := []Session{
+			{ID: "54c4e1e8", Account: c2k, Rate: c2rate54, Busy: true, Movable: true, Context: 150_000, Started: old},
+			{ID: "441d209b", Account: c2k, Rate: 7.6, Busy: true, Movable: true, Context: 80_000, Started: old},
+			{ID: "40f6a21a", Account: c2k, Rate: 1.07, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old},
+			{ID: "0d2d67fd", Account: c6k, Rate: 3.1, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old},
+			{ID: "ea99cb89", Account: c6k, Rate: 3.25, Busy: true, Movable: true, Started: old},
+			{ID: "1ef81ac8", Account: c6k, Rate: 4.1, Busy: true, Movable: true, Started: t1.Add(-163 * time.Second)},
+			{ID: "3b2611ed", Account: c4k, Rate: c4rate, Busy: true, Movable: true, Started: old},
+		}
+		return Input{Now: now, Params: DefaultParams, Accounts: []Account{c6, c4, c2, c7}, Sessions: ss, LaneRate: 12,
+			Streak: map[string]int{c2k + " " + Win5h: 2},
+			Recent: []Record{{Session: "54c4e1e8", From: c6k, To: c2k, At: t1.Add(-25*time.Minute - 34*time.Second), Rate: 19.2, RateKnown: true}}}
+	}
+	r := Plan(world(t1, 11.32, 23.3))
+	var planned Move
+	for _, m := range r.Moves {
+		t.Logf("11:57:35 %s -> %s: %s", m.Session, m.To, m.Reason)
+		if m.Session == "441d209b" {
+			planned = m
+		}
+	}
+	if planned.To != c7k {
+		t.Fatalf("the 11:57:35 plan: 441d209b to %q, want claude-7 (the case as it happened)", planned.To)
+	}
+	planned.MidTurn = true
+	t2 := t1.Add(66 * time.Second)
+	for _, c := range []struct {
+		name          string
+		at            time.Time
+		c4rate, rate5 float64
+		want          string // "" dropped
+		changed       bool
+	}{
+		{"claude-4 has room now", t2, 9.6, 23.3, c4k, true},
+		// (66 s on, at 11.3 points/h, claude-4's projection is 89.8: under its 90 too.)
+		{"nothing changed", t1, 11.32, 23.3, c7k, false},
+		{"the source no longer needs it", t2, 11.32, 12, "", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, why, ok := Recheck(world(c.at, c.c4rate, c.rate5), planned)
+			t.Logf("%v %s: %q", ok, got.To, why)
+			if c.want == "" {
+				if ok || !strings.Contains(why, "re-checked after its step wait") {
+					t.Fatalf("kept: %+v %q", got, why)
+				}
+				return
+			}
+			if !ok || got.To != c.want {
+				t.Fatalf("to %q (ok %v, %q), want %q", got.To, ok, why, c.want)
+			}
+			if (got.Recheck != "") != c.changed || (c.changed && !strings.Contains(got.Recheck, "claude-4, not claude-7 as planned")) {
+				t.Errorf("recheck note %q", got.Recheck)
+			}
+			if !got.MidTurn {
+				t.Error("lost its mid-turn mark")
+			}
+		})
+	}
+}
+
+// setup.md 8.6, Owner drain (`wy account drain claude-4`, live 2026-11-25): while its 5h
+// projection has room claude-4 pulls the biggest busy burners in (not pinned, not interactive,
+// out of cooldown); nothing moves off it before a 5h hit within 60 min or its cap.
+func TestPlanOwnerDrain(t *testing.T) {
+	now := time.Date(2026, 11, 25, 7, 0, 0, 0, time.UTC)
+	old := now.Add(-2 * time.Hour)
+	until := now.Add(11 * time.Hour)
+	c4k, c2k, c6k := "acct:c4/oA", "acct:c2/oA", "acct:c6/oB"
+	world := func(c4level, c4rate float64, reset5 time.Duration, until time.Time) Input {
+		c4 := Account{Key: c4k, Label: "claude-4", LoggedIn: true, Ratio: 8, ReadAt: now, Rate: c4rate, Meter: c4rate, DrainUntil: until,
+			W5: Window{Level: c4level, Reset: now.Add(reset5)}, W7: Window{Level: 53, Reset: now.Add(91 * time.Hour)}}
+		c2 := Account{Key: c2k, Label: "claude-2", LoggedIn: true, Ratio: 8, ReadAt: now, Rate: 66, Meter: 66,
+			W5: Window{Level: 20, Reset: now.Add(4 * time.Hour)}, W7: Window{Level: 30, Reset: now.Add(140 * time.Hour)}}
+		c6 := Account{Key: c6k, Label: "claude-6", LoggedIn: true, Ratio: 8, ReadAt: now, Rate: 0, Meter: 0,
+			W5: Window{Level: 10, Reset: now.Add(4 * time.Hour)}, W7: Window{Level: 40, Reset: now.Add(100 * time.Hour)}}
+		ss := []Session{
+			{ID: "c4-own", Account: c4k, Rate: c4rate, Busy: true, Movable: true, Context: 60_000, Started: old},
+			{ID: "big", Account: c2k, Rate: 20, Busy: true, Movable: true, Context: 100_000, Started: old},
+			{ID: "small", Account: c2k, Rate: 3, Busy: true, Movable: true, Context: 50_000, Started: old},
+			{ID: "pinned", Account: c2k, Rate: 10, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old},
+			{ID: "human", Account: c2k, Rate: 15, Busy: true, Movable: true, Interactive: true, Started: old},
+			{ID: "cooling", Account: c2k, Rate: 18, Busy: true, Movable: true, Started: old},
+			{ID: "idle", Account: c6k, Rate: 0, Movable: true, Started: old},
+		}
+		return Input{Now: now, Params: DefaultParams, Accounts: []Account{c4, c2, c6}, Sessions: ss,
+			Streak: map[string]int{c4k + " " + Win5h: 5},
+			Recent: []Record{{Session: "cooling", From: c6k, To: c2k, At: now.Add(-5 * time.Minute), Rate: 18, RateKnown: true}}}
+	}
+	t.Run("room: the biggest movable burners come in", func(t *testing.T) {
+		r := Plan(world(14, 9.6, 90*time.Minute, until))
+		got := moved(r)
+		for _, m := range r.Moves {
+			t.Logf("%s %s -> %s: %s", m.Session, m.From, m.To, m.Reason)
+		}
+		if got["big"] != c4k || got["small"] != c4k {
+			t.Fatalf("pulls %v: want big and small onto claude-4", got)
+		}
+		for _, id := range []string{"pinned", "human", "cooling", "idle", "c4-own"} {
+			if got[id] != "" {
+				t.Errorf("%s moved: %v", id, got)
+			}
+		}
+		if r.Moves[0].Session != "big" || r.Moves[0].Pull == "" || !strings.Contains(r.Moves[0].Reason, "claude-4 is draining (owner, until 18:00)") {
+			t.Errorf("first pull %+v", r.Moves[0])
+		}
+		if n := Note("claude-2", "claude-4", now, r.Moves[0]); !strings.Contains(n, "claude-4 is draining (owner, until 18:00) and has room") {
+			t.Errorf("note %q", n)
+		}
+	})
+	t.Run("no room left in its 5h window: nothing pulled", func(t *testing.T) {
+		if got := moved(Plan(world(60, 9.6, 3*time.Hour, until))); got["big"] != "" || got["small"] != "" {
+			t.Fatalf("pulled %v", got)
+		}
+	})
+	t.Run("over its cap, no hit within 60 min: nothing moves off it", func(t *testing.T) {
+		r := Plan(world(60, 15, 3*time.Hour, until)) // 60 + 3 × 15 = 105; 100% in 2h40m
+		if got := moved(r); got["c4-own"] != "" {
+			t.Fatalf("moved off: %v", got)
+		}
+		if w := skipWhy(r, "c4-own"); !strings.Contains(w, "draining (owner, until 18:00): nothing moves off it") {
+			t.Errorf("skip %q", w)
+		}
+	})
+	t.Run("a 5h hit within 60 min: its burners move", func(t *testing.T) {
+		r := Plan(world(85, 30, 3*time.Hour, until)) // 100% in 30 min
+		if got := moved(r); got["c4-own"] == "" {
+			t.Fatalf("stayed: %s", skipWhy(r, "c4-own"))
+		}
+	})
+	t.Run("past until: no pulls", func(t *testing.T) {
+		if got := moved(Plan(world(14, 9.6, 90*time.Minute, now.Add(-time.Minute)))); len(got) != 0 {
+			t.Fatalf("moves %v", got)
+		}
+	})
 }

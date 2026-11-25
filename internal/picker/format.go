@@ -249,6 +249,8 @@ func explainLanes(w io.Writer, res Result) error {
 		if r.Eligible {
 			why = "eligible"
 			switch {
+			case r.Lanes != nil && r.Lanes.Class == ClassDrain && r.Lanes.Drain != nil && r.Lanes.Drain.Owner && r.Lanes.Drain.FinishBy != nil:
+				why += ", " + OwnerDrainText(*r.Lanes.Drain.FinishBy, res.Now)
 			case r.Lanes != nil && r.Lanes.Class == ClassDrain:
 				why += ", drain"
 			case r.Lanes != nil && r.Lanes.Class == ClassAtRisk:
@@ -308,6 +310,9 @@ func explainLanes(w io.Writer, res Result) error {
 			fmt.Fprintln(w, leaseLine(r.Label, lc))
 		}
 	}
+	if res.LaneBurn != "" {
+		fmt.Fprintln(w, res.LaneBurn)
+	}
 	for _, p := range res.Picks {
 		fmt.Fprintln(w, "Pick: "+Line(p.Ranked))
 	}
@@ -337,6 +342,9 @@ func pinLine(label string, v LaneView) string {
 func drainLine(label string, d DrainView, now time.Time) string {
 	s := fmt.Sprintf("Drain %s: room %.1f%% (%.0f pts), need %.1f h at full 5h speed, horizon %.0f h", label, d.RoomPct, d.RoomPts,
 		d.NeedHours, d.HorizonHours)
+	if d.Owner && d.FinishBy != nil {
+		s = fmt.Sprintf("Drain %s, %s: room %.1f%% (%.0f pts), need %.1f h at full 5h speed", label, OwnerDrainText(*d.FinishBy, now), d.RoomPct, d.RoomPts, d.NeedHours)
+	}
 	if d.Capacity != nil {
 		c5 := "not limiting"
 		if d.Capacity5h != nil {

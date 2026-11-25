@@ -59,7 +59,8 @@ func TestMovePinReserve(t *testing.T) {
 		t.Fatalf("auto: %d %q %q", code, out, errOut)
 	}
 	for _, c := range h.calls {
-		if strings.Contains(c, "101") || strings.Contains(c, pin) {
+		// Without the temp dir: its random name can contain "101".
+		if c := strings.ReplaceAll(c, f.home, ""); strings.Contains(c, "101") || strings.Contains(c, pin) {
 			t.Fatalf("the pinned session was touched: %q", c)
 		}
 	}

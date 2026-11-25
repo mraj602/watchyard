@@ -28,6 +28,9 @@ type LiveAccount struct {
 	// FiveMeter), and FiveLeases the lease charges the picker adds on top (its 5-hour level is
 	// FiveHour + FiveLeases: lanes too young for the meter to have seen their cost). Shown only.
 	FiveRead, FiveMeter, FiveLeases float64
+	// DrainUntil: the owner drains it until then (zero: off; setup.md 8.5, Owner drain);
+	// Protected is then false (an aggressive drain account meanwhile).
+	DrainUntil time.Time
 }
 
 // LiveLane is one running lane (a lease whose session runs): its burn over the last
@@ -38,6 +41,9 @@ type LiveLane struct {
 	Rate     float64
 	Measured bool
 	Expect   time.Duration
+	// ExpectEnd: its lease's expected end (zero: unknown): the switch projects its burn to it
+	// while it runs inside it.
+	ExpectEnd time.Time
 }
 
 // Live reads the accounts and the running lanes from the lanes input.
@@ -45,12 +51,12 @@ func (in LaneInput) Live() ([]LiveAccount, []LiveLane) {
 	p, now := in.Params, in.Now
 	var accs []LiveAccount
 	f5 := map[string]float64{}
-	for _, a := range in.Accounts {
+	for _, a := range p.ownerDrainEnds(in.Accounts, in.Mover, now) {
 		c := cleanLaneSample(a.Sample, now)
 		v := laneLive(a, c, now, p, in.Leases)
 		pa := p.account(a)
 		la := LiveAccount{Key: a.Key, Protected: a.Protected, FiveHour: v.hM, Weekly: v.wM, FiveReset: c.fiveRst,
-			Ratio: pa.ratio(), F5: pa.F5, Stale: v.stale || len(v.unknown) > 0}
+			Ratio: pa.ratio(), F5: pa.F5, Stale: v.stale || len(v.unknown) > 0, DrainUntil: a.DrainUntil}
 		if !la.FiveReset.After(now) {
 			la.FiveReset, la.FiveHour = time.Time{}, 0
 		}
@@ -79,7 +85,7 @@ func (in LaneInput) Live() ([]LiveAccount, []LiveLane) {
 		if bw > 0 {
 			r = math.Max(0, L.Recent) * f5[L.Key] / bw
 		}
-		lanes = append(lanes, LiveLane{Key: L.Key, SID: L.SID, T0: L.T0, Rate: r, Measured: L.RecentOK, Expect: L.Expect})
+		lanes = append(lanes, LiveLane{Key: L.Key, SID: L.SID, T0: L.T0, Rate: r, Measured: L.RecentOK, Expect: L.Expect, ExpectEnd: L.ExpectEnd})
 	}
 	return accs, lanes
 }

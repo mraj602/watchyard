@@ -66,10 +66,22 @@ type MoverView struct {
 	WeekSpanH                                float64
 	Units                                    map[string]float64
 	// ExpiringH: within this many hours of a protected account's weekly reset its weekly cap is
-	// Cap7 (expiring room; 0: never). DestHorizonH and DestFloorH: a new lane is projected
-	// over min(its expected time (else DestHorizonH), the 5-hour reset), at least DestFloorH,
-	// as the switch judges a destination (0: to the reset).
-	ExpiringH, DestHorizonH, DestFloorH float64
+	// Cap7 (expiring room; 0: never). ExpectFloorH: a new lane with an expected duration is
+	// projected over max(that, ExpectFloorH), at most to each window's horizon; without one,
+	// to the horizons (mover.ExpectFloor: as the switch's trigger counts it).
+	ExpiringH, ExpectFloorH float64
+	// Hysteresis: a new lane is let in only when the projection stays this many points under
+	// the caps, as a moved session must (the switch's destination check): a placement is a
+	// destination too, and one let in up to the cap is moved off at the next rise.
+	Hysteresis float64
+	// YoungMin: lanes leased on an account in the last YoungMin minutes (this call's earlier
+	// picks included) count at the new-lane burn less what the meter measured of them: their
+	// burn is not in the meter yet, and the switch will count it once they are YoungMin old.
+	YoungMin float64
+	// StaleMin: an account whose sample is older than this many minutes has stale data: its
+	// level neither blocks a lane nor draws one (it is ranked after the accounts with fresh
+	// data, setup.md 8.6, Stale data). 0: off.
+	StaleMin float64
 }
 
 // PinReserve is one account's pin reserve: Pins live pinned sessions keep R5 points of its
@@ -138,6 +150,10 @@ type Pick struct {
 	// estimates); Over: placed past a soft limit because no account was free under them.
 	Expect string
 	Over   bool
+	// SwitchClass, SwitchDur: the lane's class and expected time as the switch counts it
+	// (written to its lease line: expect, expect_min, expect_end).
+	SwitchClass string
+	SwitchDur   time.Duration
 }
 
 // Hint is the one-line instruction for the agent on a drain pick ("" otherwise).
@@ -163,6 +179,8 @@ type Result struct {
 	// NextFree is the earliest time an account that is not eligible now can be used.
 	NextFree *time.Time `json:"next_free"`
 	Warnings []string   `json:"warnings,omitempty"`
+	// LaneBurn: the --explain line of the new lane's burn in the switch-projection check.
+	LaneBurn string `json:"lane_burn,omitempty"`
 }
 
 // Rank projects every candidate and orders them by the strategy.

@@ -199,6 +199,16 @@ type simLane struct {
 	// burned: its burn so far, 5-hour points; endAt the minute it finished (sim_place_test.go).
 	burned float64
 	endAt  int
+	// inBurn: its account's burn right after it was moved there (undone); placed: the picker
+	// placed it (placeUndone).
+	inBurn float64
+	placed bool
+	// othersAt: its account's burn without it when it was placed (diagnostic).
+	othersAt float64
+	// forced: no account had room under the picker's check; it was placed anyway.
+	forced bool
+	// noExp: leased without --expect (simStrat.noExpFrac).
+	noExp bool
 }
 
 // trueRate10 is rate10 without the startup burst's excess.
@@ -226,12 +236,14 @@ type simObs struct {
 }
 
 type simAcc struct {
-	key, org  string
-	protected bool
-	loggedIn  bool
-	l5, l7    float64
-	r5, r7    int // the minute the window resets; r5 -1: not started
-	other     float64
+	// fromReadings: this pass the switch took its burn from the readings' slope (diagnostic).
+	fromReadings bool
+	key, org     string
+	protected    bool
+	loggedIn     bool
+	l5, l7       float64
+	r5, r7       int // the minute the window resets; r5 -1: not started
+	other        float64
 	// otherSeen: the hub measures the other machines' sessions on it (their leases' burn).
 	otherSeen  bool
 	readStreak int     // passes in a row the readings rose over twice the meter
@@ -258,7 +270,22 @@ type simResult struct {
 	Placed, Moved30 float64
 	// LowMoves: moves of running sessions burning under 1 point/h (they free next to nothing).
 	LowMoves float64
-	runs     float64
+	// Undone: trigger moves off an account a session was moved onto under 30 minutes before,
+	// with no new session there and its burn up at most 25% (sim_churn_test.go).
+	Undone float64
+	// PlaceUndone: lanes the switch moved under 30 minutes after the picker placed them, no
+	// new session on that account and their burn at most 50% over the picker's estimate.
+	PlaceUndone float64
+	// PlaceUndoneAtEst: of those, the lane burning at most 10% over the picker's estimate.
+	PlaceUndoneAtEst float64
+	// PlaceUndoneOthers: of those, the account's other sessions burning > 25% more than at the
+	// placement (diagnostic).
+	PlaceUndoneOthers float64
+	// PlaceUndoneReadings: of those, the account's burn taken from the readings' slope (30
+	// minutes here, so it still holds a lane's start-up burst that the 10-minute meter has
+	// dropped; the switch uses one window for both).
+	PlaceUndoneReadings float64
+	runs                float64
 }
 
 func (r *simResult) add(o simResult) {
@@ -289,6 +316,11 @@ func (r *simResult) add(o simResult) {
 	r.Placed += o.Placed
 	r.Moved30 += o.Moved30
 	r.LowMoves += o.LowMoves
+	r.Undone += o.Undone
+	r.PlaceUndone += o.PlaceUndone
+	r.PlaceUndoneAtEst += o.PlaceUndoneAtEst
+	r.PlaceUndoneOthers += o.PlaceUndoneOthers
+	r.PlaceUndoneReadings += o.PlaceUndoneReadings
 	r.Over80Owner += o.Over80Owner
 	r.Over80NoRoom += o.Over80NoRoom
 	r.Over80Other += o.Over80Other
@@ -342,8 +374,24 @@ type simStrat struct {
 	// laneEst its estimate (l.est), laneClass the size class (cost over wall time),
 	// laneMeasured the measured per-model rate of finished and running lanes.
 	rank, capTarget bool
-	laneRate        int
-	rateQ           float64 // laneMeasured: the quantile of the lanes' rates
+	// expectPick: the picker's switch-projection check counts the new lane as the trigger will
+	// (its expected duration, at least ExpectFloor, else to the horizons); oldPick: as pre7 (its
+	// expected duration else 90 minutes, at least an hour, at most to the 5-hour reset, the
+	// weekly part too). Neither: the whole lane to the horizons (the earlier simulator).
+	expectPick, oldPick bool
+	// noExpFrac: this share of the lanes is leased without --expect (the picker counts them as
+	// medium lanes, simMediumMin). switchExpect: what the switch knows of a lane's length:
+	// switchAll (0) the picker's estimate of every lane (the earlier simulator); switchNone
+	// nothing (1.3.3-pre9: the lease line had no expect, every lane to the horizons);
+	// switchLease the lease line's expected end (its estimate, a medium lane's without
+	// --expect), to the horizons once overrun.
+	noExpFrac    float64
+	switchExpect int
+	// pickMargin: the picker's acceptance leaves this much under the caps (the destination's
+	// hysteresis); 0: up to the caps.
+	pickMargin float64
+	laneRate   int
+	rateQ      float64 // laneMeasured: the quantile of the lanes' rates
 }
 
 // The new lane's rate in the picker's switch-projection check (simStrat.laneRate).
@@ -454,6 +502,12 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			byID[c.id] = c
 		}
 	}
+	if st.noExpFrac > 0 { // its own stream: the other draws stay as they were
+		nr := rand.New(rand.NewPCG(seed, 9))
+		for _, l := range lanes {
+			l.noExp = nr.Float64() < st.noExpFrac
+		}
+	}
 	accIdx := map[string]int{}
 	for i, a := range accs {
 		accIdx[a.key] = i
@@ -498,7 +552,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 	var place func(m int, est float64) int
 	// newMF is the model of the lane being placed; newRate its rate in the picker's
 	// switch-projection check (simStrat.laneRate).
-	newMF, newMult := 5.0, 1.0
+	newMF, newMult, newExp := 5.0, 1.0, 0.0 // newExp: the picker's estimate of its length, minutes
 	newRate := func(m int, est float64) float64 {
 		switch st.laneRate {
 		case laneTrue:
@@ -510,7 +564,9 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 		}
 		return est
 	}
+	lastForced := false // placeR's last call fell through to "any account"
 	placeR := func(m int, est float64, useR bool) int {
+		lastForced = false
 		r5, r7 := rsv5, rsv7
 		if !useR {
 			r5, r7 = make([]float64, len(accs)), make([]float64, len(accs))
@@ -525,7 +581,11 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			r := newRate(m, est)
 			for _, l := range lanes {
 				if l.on && !l.done && !l.stopped && l.acc == i {
-					r += l.rate10()
+					if m-l.start < 10 && l.movedFrm < 0 {
+						r += math.Max(l.rate10(), l.est) // just placed: its lease's charge (8.5)
+					} else {
+						r += l.rate10()
+					}
 				}
 			}
 			if a.otherSeen {
@@ -535,6 +595,29 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 				W7: Window{Level: a.l7, Reset: simAt(a.r7)}}
 			if a.r5 > m {
 				acc.W5 = Window{Level: a.l5, Reset: simAt(a.r5)}
+			}
+			lr := newRate(m, est)
+			exp := time.Duration(newExp * float64(time.Minute))
+			switch {
+			case st.expectPick:
+				nl := Session{ID: "new", Account: a.key, Rate: lr, Expected: exp}
+				pr := st.p.Project(acc, []Session{nl}, 0, simAt(m))
+				if st.pickMargin > 0 {
+					h := st.pickMargin
+					return pr.P5 > pr.Cap5-h || pr.P7 > pr.Cap7-h || pr.Level5 >= pr.Cap5-h || pr.Level7 >= pr.Cap7-h
+				}
+				return pr.Window != ""
+			case st.oldPick:
+				acc.Rate = r - lr
+				pr := st.p.Project(acc, nil, 0, simAt(m))
+				h := 90 * time.Minute
+				if exp > 0 {
+					h = exp
+				}
+				h = max(min(h, pr.Reset5), DestFloor)
+				pr.P5 += lr * min(h, pr.Reset5).Hours()
+				pr.P7 += lr / pr.ratio * math.Min(h.Hours(), math.Min(pr.Reset7.Hours(), st.p.WeekSpan.Hours()))
+				return pr.P5 > pr.Cap5 || pr.P7 > pr.Cap7
 			}
 			return st.p.Project(acc, nil, 0, simAt(m)).Window != ""
 		}
@@ -578,6 +661,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 		if best >= 0 {
 			return best
 		}
+		lastForced = true // every account refused it: placed where the switch may move it off
 		for i, a := range accs {
 			if a.loggedIn && !a.protected && (best < 0 || a.l5 < accs[best].l5) {
 				best = i
@@ -590,9 +674,11 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 	}
 	place = func(m int, est float64) int {
 		i := placeR(m, est, true)
+		forced := lastForced
 		if st.pinned && i != placeR(m, est, false) {
 			res.DisplacedPlaces++ // the reserve sent this lane elsewhere
 		}
+		lastForced = forced
 		return i
 	}
 	// expiring: a pile-up lands on the aggressive logged-in account whose 5-hour window resets
@@ -660,9 +746,17 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 					}
 					l.acc = groups[l.group]
 				default:
-					newMF, newMult = l.mf, l.mult
+					newMF, newMult, newExp = l.mf, l.mult, float64(l.work)*l.expMult
+					if l.noExp {
+						newExp = simMediumMin
+					}
+					l.placed = true
 					res.Placed++
 					l.acc = place(m, l.est)
+					l.forced = lastForced
+					if l.acc >= 0 {
+						l.othersAt = accBurn(accs, lanes, l.acc)
+					}
 				}
 				l.on, l.busy = true, 4+l.r.IntN(20)
 				if st.startup && l.coord == nil {
@@ -835,7 +929,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			if l.stopped {
 				res.WaitStopped++ // the limit stopped it while it waited
 			}
-			execMove(&res, l, accs, to, m, burnAcc, false)
+			execMove(&res, l, accs, lanes, to, m, burnAcc, false)
 		}
 		if st.off || m%pass != 0 {
 			continue
@@ -939,6 +1033,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 				}
 			}
 			view[i] = v
+			a.fromReadings = v.fromReadings
 		}
 		if st.m5 {
 			in := m5.Input{Now: simAt(m), Params: m5.M5, Recent: m5recs}
@@ -979,11 +1074,11 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 					continue
 				}
 				m5recs = append(m5recs, m5.Record{Session: mv.Session, From: mv.From, To: mv.To, At: simAt(m)})
-				execMove(&res, byID[mv.Session], accs, accIdx[mv.To], m, burnAcc, false)
+				execMove(&res, byID[mv.Session], accs, lanes, accIdx[mv.To], m, burnAcc, false)
 			}
 			continue
 		}
-		in := Input{Now: simAt(m), Params: st.p, Recent: recs, Streak: streak}
+		in := Input{Now: simAt(m), Params: st.p, Recent: recs, Streak: streak, LaneRate: simLaneRate}
 		for i, a := range accs {
 			v := view[i]
 			acc := Account{Key: a.key, Label: a.key, Protected: a.protected, Ratio: simRatio, Rate: v.rate, RateNote: v.note, LoggedIn: a.loggedIn,
@@ -1001,7 +1096,18 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			s := Session{ID: l.id, Account: accs[l.acc].key, Rate: st.rateOf(l), Busy: l.busy > 0 && l.restart == 0 && !l.stopped,
 				Stopped: l.stopped, Interactive: l.owner, Movable: true, Context: l.ctx, Pinned: l.coord != nil && st.pinned,
 				ModelFactor: l.mf, Started: simAt(l.start)}
-			if l.coord == nil && !l.owner && l.work > l.age {
+			switch {
+			case l.coord != nil || l.owner:
+			case st.switchExpect == switchNone:
+			case st.switchExpect == switchLease:
+				end := float64(l.work) * l.expMult // the lease line's expect_end, from its start
+				if l.noExp {
+					end = simMediumMin
+				}
+				if left := end - float64(m-l.start); left > 0 {
+					s.Expected = time.Duration(left * float64(time.Minute))
+				}
+			case l.work > l.age:
 				s.Expected = time.Duration(float64(l.work-l.age)*l.expMult) * time.Minute // the picker's estimate
 			}
 			if l.typed >= 0 {
@@ -1044,7 +1150,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 			}
 			if to, _ := Destination(in2, id); to != "" {
 				res.OwnerMoves++
-				execMove(&res, byID[id], accs, accIdx[to], m, burnAcc, false)
+				execMove(&res, byID[id], accs, lanes, accIdx[to], m, burnAcc, false)
 			}
 		}
 		if st.pinned {
@@ -1107,7 +1213,7 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 				}
 				repeat = true
 			}
-			execMove(&res, l, accs, accIdx[mv.To], m, burnAcc, repeat)
+			execMove(&res, l, accs, lanes, accIdx[mv.To], m, burnAcc, repeat)
 		}
 		if len(recs) > 400 {
 			recs = recs[len(recs)-200:]
@@ -1126,7 +1232,22 @@ func simulate(st simStrat, pat simPattern, seed uint64, check simCheck) simResul
 //
 // repeat: it was killed inside a tool call: the resumed session repeats that step (its time
 // so far is redone on the destination). Killed between steps, nothing is redone.
-func execMove(res *simResult, l *simLane, accs []*simAcc, to, m int, burnAcc func(*simAcc, float64, int, bool), repeat bool) {
+func execMove(res *simResult, l *simLane, accs []*simAcc, lanes []*simLane, to, m int, burnAcc func(*simAcc, float64, int, bool), repeat bool) {
+	if undone(l, accs, lanes, m) {
+		res.Undone++
+	}
+	if placeUndone(l, lanes, m) {
+		res.PlaceUndone++
+		if l.rate10() <= 1.1*l.est {
+			res.PlaceUndoneAtEst++
+		}
+		if accBurn(accs, lanes, l.acc)-l.rate10() > 1.25*l.othersAt+1 {
+			res.PlaceUndoneOthers++
+		}
+		if accs[l.acc].fromReadings {
+			res.PlaceUndoneReadings++
+		}
+	}
 	if l.owner {
 		res.IntMoved++
 		defer func() {
@@ -1168,7 +1289,63 @@ func execMove(res *simResult, l *simLane, accs []*simAcc, to, m int, burnAcc fun
 	l.movedFrm, l.movedAt = l.acc, m
 	burnAcc(accs[to], cost, m, true)
 	l.acc, l.stopped, l.restart = to, false, 1
+	l.inBurn = accBurn(accs, lanes, to)
 	res.Moves++
+}
+
+// accBurn is account i's burn now: its running lanes' measured burn and the other machines'.
+func accBurn(accs []*simAcc, lanes []*simLane, i int) float64 {
+	b := accs[i].other
+	for _, x := range lanes {
+		if x.on && !x.done && !x.stopped && x.acc == i {
+			b += x.rate10()
+		}
+	}
+	return b
+}
+
+// placeUndone: the switch moves l, placed by the picker, under 30 minutes after its placement,
+// with no session arrived on its account since and its burn at most 50% over the picker's
+// estimate, and no account had room for it (forced): the placement was waste (the picker's check let in what the trigger undid).
+func placeUndone(l *simLane, lanes []*simLane, m int) bool {
+	if !l.placed || l.forced || l.stopped || l.movedFrm >= 0 || m-l.start >= 30 || l.rate10() > 1.5*l.est {
+		return false
+	}
+	for _, x := range lanes {
+		if x == l || !x.on || x.done || x.acc != l.acc {
+			continue
+		}
+		arrived := x.start
+		if x.movedFrm >= 0 {
+			arrived = x.movedAt
+		}
+		if arrived > l.start {
+			return false
+		}
+	}
+	return true
+}
+
+// undone: the trigger moves l off the account it was moved onto less than 30 minutes ago,
+// with no session arrived there since and its burn not up more than 25%: the move onto it
+// was waste (the destination check let in what the trigger then undid).
+func undone(l *simLane, accs []*simAcc, lanes []*simLane, m int) bool {
+	if l.stopped || l.movedFrm < 0 || m-l.movedAt >= 30 {
+		return false
+	}
+	for _, x := range lanes {
+		if x == l || !x.on || x.done || x.acc != l.acc {
+			continue
+		}
+		arrived := x.start
+		if x.movedFrm >= 0 {
+			arrived = x.movedAt
+		}
+		if arrived > l.movedAt {
+			return false
+		}
+	}
+	return accBurn(accs, lanes, l.acc) <= 1.25*l.inBurn
 }
 
 func clamp(x float64) float64 { return math.Min(100, math.Max(0, x)) }
@@ -1361,6 +1538,7 @@ func invariantRun(st simStrat, pat simPattern, i int) []string {
 		}
 		delta := map[string]float64{}
 		horizon := map[string]bool{} // judged on the horizon rule (above)
+		ends := map[string][]Session{}
 		into := map[string]int{}
 		last := map[string]Record{}
 		for _, rc := range in.Recent {
@@ -1399,10 +1577,20 @@ func invariantRun(st simStrat, pat simPattern, i int) []string {
 			}
 			// The move limit holds for protected accounts; an aggressive one with room takes a
 			// move over it rather than a protected one (the anti-churn limits are soft there).
-			if into[mv.To] > p.AccountMoves && (a.Protected || p.oldChurn) {
+			// An urgent source (a hit within UrgentWithin, or a stopped session) is not held back.
+			urgent := mv.Urgent
+			if mv.BestFit > 0 {
+				// No account had room to its reset: the one that fits longest, aggressive, for an
+				// urgent source only; it is not held to the full projection below.
+				if !urgent || a.Protected || mv.BestFit < ExpectFloor {
+					fail(in, "best-available move of %s to %s: urgent %v, protected %v, fits %s", s.ID, mv.To, urgent, a.Protected, mv.BestFit)
+				}
+				horizon[mv.To] = true
+			}
+			if into[mv.To] > p.AccountMoves && (a.Protected || p.oldChurn) && !urgent {
 				fail(in, "%d moves into %s within %s", into[mv.To], mv.To, p.AccountWindow)
 			}
-			if p.DestHorizon > 0 && !a.Protected {
+			if p.DestHorizon > 0 && p.oldDest && !a.Protected {
 				// The horizon rule: its own projection (with the moves planned before) plus
 				// this session for the horizon.
 				pr := p.Project(a, byAcc[mv.To], delta[mv.To], in.Now)
@@ -1419,6 +1607,10 @@ func invariantRun(st simStrat, pat simPattern, i int) []string {
 				horizon[mv.To] = true
 			}
 			delta[mv.To] += s.Rate
+			if s.Expected > 0 && s.Rate > 0 && p.MinBurn >= 0 && !p.IdleMoves {
+				// The trigger counts it on the destination only until its expected end.
+				ends[mv.To] = append(ends[mv.To], s)
+			}
 			if !s.Stopped {
 				delta[mv.From] -= s.Rate
 			}
@@ -1428,6 +1620,11 @@ func invariantRun(st simStrat, pat simPattern, i int) []string {
 				continue
 			}
 			pr := p.Project(accs[key], byAcc[key], d, in.Now)
+			for _, s := range ends[key] {
+				e := s.Expected.Hours()
+				pr.P5 -= s.Rate * math.Max(0, pr.Reset5.Hours()-e)
+				pr.P7 -= s.Rate / pr.ratio * math.Max(0, math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())-e)
+			}
 			if pr.P5 > pr.Cap5-p.Hysteresis+1e-9 || pr.P7 > pr.Cap7-p.Hysteresis+1e-9 {
 				fail(in, "destination %s projects 5h %.1f / 7d %.1f with the moved burn (caps %v/%v)", key, pr.P5, pr.P7, pr.Cap5, pr.Cap7)
 			}
@@ -1487,3 +1684,15 @@ func (l *simLane) steps(secs float64) {
 		secs -= d
 	}
 }
+
+// simStrat.switchExpect values; simMediumMin: the medium class's minutes (a lane without --expect).
+const (
+	switchAll = iota
+	switchNone
+	switchLease
+	simMediumMin = 48.0
+)
+
+// simLaneRate: the picker's new-lane burn the switch's destination counts young lanes at (3×
+// the medium class's 4 points/h, the clamp's top; live Opus lanes measure ~14).
+const simLaneRate = 12.0

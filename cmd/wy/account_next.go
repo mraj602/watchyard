@@ -499,6 +499,11 @@ func leaseLines(res picker.Result, model string, now time.Time) []leases.Line {
 			fb := p.FinishBy.UTC()
 			out[len(out)-1].Drain, out[len(out)-1].FinishBy = true, &fb
 		}
+		if p.SwitchDur > 0 {
+			end := now.Add(p.SwitchDur).UTC()
+			l := &out[len(out)-1]
+			l.Expect, l.ExpectMin, l.ExpectEnd = p.SwitchClass, math.Round(p.SwitchDur.Minutes()*10)/10, &end
+		}
 	}
 	return out
 }
