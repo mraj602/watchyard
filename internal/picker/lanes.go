@@ -275,9 +275,11 @@ type LaneLease struct {
 	SID      string
 	C5, CF   *float64 // nil: the current price
 	Launched bool
-	Ended    bool    // its session ended
-	Burned   float64 // weighted units its session used since T0
-	Seen     bool    // the meter saw its session
+	Ended    bool // its session ended
+	// Moved: a move wrote it (a session moved here, not a new lane): never a fresh lane.
+	Moved  bool
+	Burned float64 // weighted units its session used since T0
+	Seen   bool    // the meter saw its session
 	// Remote: another machine's lease. Settle: nothing measures its session (no hub burn and
 	// no local session), so a reading at least Settle after T0 ends it: that reading holds
 	// the lane's use so far (setup.md 8.5, effective state 3).
@@ -1511,7 +1513,9 @@ func freshLanes(m *MoverView, ls []LaneLease, acc LaneAccount, rate float64, p L
 	f5, bw := p.account(acc).F5, p.BurnWindow.Hours()
 	var out []freshLane
 	for _, L := range ls {
-		if L.Key != acc.Key || L.Ended || L.Remote || now.Sub(L.T0) >= time.Duration(m.YoungMin*float64(time.Minute)) {
+		// A moved session is not a new lane: its burn is measured (the switch counts it at the
+		// burn it moved with).
+		if L.Key != acc.Key || L.Ended || L.Remote || L.Moved || now.Sub(L.T0) >= time.Duration(m.YoungMin*float64(time.Minute)) {
 			continue
 		}
 		measured := 0.0

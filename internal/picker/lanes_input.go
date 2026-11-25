@@ -540,7 +540,7 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 	var ls []LaneLease
 	for _, l := range in.Leases {
 		ll := LaneLease{Key: l.Key, T0: l.At, SID: l.SessionID, C5: l.C5, CF: l.CF,
-			Launched: !l.Launched.IsZero(), Ended: !l.Ended.IsZero(), From: burnNone}
+			Launched: !l.Launched.IsZero(), Ended: !l.Ended.IsZero(), From: burnNone, Moved: moveLease(l)}
 		if l.ExpectEnd != nil {
 			ll.ExpectEnd = *l.ExpectEnd
 		}

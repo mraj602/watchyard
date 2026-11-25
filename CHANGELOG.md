@@ -8,6 +8,13 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Added
 
+- **Near-hit moves** (setup.md 8.6, Near hit). When a source will reach 100% within 60 min
+  (or is hard now), the account rate limit no longer holds its moves back, the highest burner
+  goes first, and when no destination fits until its reset the aggressive account that stays
+  under its caps the longest takes it, if that is at least as long as the source has left
+  ("best available: claude-6 fits for 2h15m"). Live 2026-11-25: claude-4 at 78% moved only a
+  2.7 points/h session while 25.9 and 16.9 points/h stayed. A soft trigger whose burn is
+  mostly a session in its cooldown waits for it instead of moving small burners.
 - **The picker uses the switch's projection** (setup.md 8.6, The picker and the switch). While
   the switch is on, `wy account next` places no new lane where the switch's projection (one
   shared function, `internal/projection`) of the account's measured burn plus the new lane would
@@ -126,6 +133,11 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **A moved session is not a new one** (setup.md 8.6, Young sessions). Its age is its first
+  lease in the ledger, not its last move's, and its burn counts on its new account at once:
+  live 54c4e1e8, moved onto claude-6 at 10:35, stayed "under 15 min old" while claude-6 was
+  over its cap. The picker no longer charges a moved session as a fresh lane.
+- `TestMovePinReserve` failed when the random temp folder name held "101".
 - **Lane burn measured from move leases** (live pre8: `wy account next` refused every account,
   "at 56-59 points/h with this lane the switch's projection is 131-262%", lanes burning ~9-14).
   A lane is now a picker lease's session over its whole life across moves; move and handoff

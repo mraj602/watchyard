@@ -134,3 +134,21 @@ func TestLanesFreshLanesCount(t *testing.T) {
 		t.Fatalf("without the rule: %d lanes on claude-2, want more (each checked against the idle meter)", n)
 	}
 }
+
+// A session moved here is not a fresh lane: its move lease is never charged at the new-lane
+// burn (the switch counts it at the burn it moved with).
+func TestFreshLanesSkipMoved(t *testing.T) {
+	now := time.Date(2026, 11, 25, 5, 0, 0, 0, time.UTC)
+	m := &MoverView{YoungMin: 15}
+	acc := LaneAccount{Key: "claude-6"}
+	ls := []LaneLease{{Key: "claude-6", T0: now.Add(-5 * time.Minute), SID: "new"},
+		{Key: "claude-6", T0: now.Add(-5 * time.Minute), SID: "moved", Moved: true}}
+	if f := freshLanes(m, ls, acc, 12, DefaultLaneParams, now); len(f) != 1 {
+		t.Fatalf("fresh lanes %+v, want only the new one", f)
+	}
+	var mv leases.Lease
+	mv.Strategy = "move"
+	if !moveLease(mv) {
+		t.Fatal("a move lease is not one")
+	}
+}

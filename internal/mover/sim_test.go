@@ -1577,7 +1577,17 @@ func invariantRun(st simStrat, pat simPattern, i int) []string {
 			}
 			// The move limit holds for protected accounts; an aggressive one with room takes a
 			// move over it rather than a protected one (the anti-churn limits are soft there).
-			if into[mv.To] > p.AccountMoves && (a.Protected || p.oldChurn) {
+			// An urgent source (a hit within UrgentWithin, or a stopped session) is not held back.
+			urgent := mv.Urgent
+			if mv.BestFit > 0 {
+				// No account had room to its reset: the one that fits longest, aggressive, for an
+				// urgent source only; it is not held to the full projection below.
+				if !urgent || a.Protected || mv.BestFit < ExpectFloor {
+					fail(in, "best-available move of %s to %s: urgent %v, protected %v, fits %s", s.ID, mv.To, urgent, a.Protected, mv.BestFit)
+				}
+				horizon[mv.To] = true
+			}
+			if into[mv.To] > p.AccountMoves && (a.Protected || p.oldChurn) && !urgent {
 				fail(in, "%d moves into %s within %s", into[mv.To], mv.To, p.AccountWindow)
 			}
 			if p.DestHorizon > 0 && p.oldDest && !a.Protected {

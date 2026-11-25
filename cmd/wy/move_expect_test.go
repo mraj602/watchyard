@@ -80,3 +80,18 @@ func TestLaneExpect(t *testing.T) {
 		}
 	}
 }
+
+// A moved lane's age is its session's first lease, not its move lease's.
+func TestFirstLeases(t *testing.T) {
+	t0 := time.Date(2026, 11, 25, 4, 0, 0, 0, time.UTC)
+	moved := t0.Add(95 * time.Minute)
+	started := map[string]time.Time{"54c4e1e8": moved, "fresh": moved}
+	var l1, l2, l3 leases.Lease
+	l1.SessionID, l1.At = "54c4e1e8", t0
+	l2.SessionID, l2.At, l2.Strategy = "54c4e1e8", moved, "move"
+	l3.SessionID, l3.At = "other", t0.Add(-time.Hour)
+	firstLeases(started, []leases.Lease{l1, l2, l3})
+	if !started["54c4e1e8"].Equal(t0) || !started["fresh"].Equal(moved) || !started["other"].IsZero() {
+		t.Fatalf("%v", started)
+	}
+}

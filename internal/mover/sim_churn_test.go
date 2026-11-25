@@ -49,7 +49,12 @@ func TestSimulateChurn(t *testing.T) {
 			s.p.noYoungDest = true
 			return s
 		}(),
-		lease("after: the switch reads the lease's expected end, young lanes at the lane burn in the destination", switchLease))
+		func() simStrat {
+			s := lease("ba9446f7: no urgent moves (the rate limit holds, no best-available destination, small burners move while a big one cools down)", switchLease)
+			s.p.UrgentWithin = 0
+			return s
+		}(),
+		lease("after: a hit within 60 min lifts the rate limit, highest burner first, best-available destination; a soft trigger waits for a cooling burner", switchLease))
 	runs, par := envInt("WY_SIM_RUNS", 1), envInt("WY_SIM_PAR", 2)
 	pats := simPatterns
 	if os.Getenv("WY_SIM_RUNS") == "" {

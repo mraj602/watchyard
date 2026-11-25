@@ -552,6 +552,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 			leased[l.SessionID] = true
 		}
 	}
+	firstLeases(started, ls2)
 	expect := laneExpect(lanes, ls2, now)
 	log := st.Log(now.Add(-6 * time.Hour))
 	last := map[string]mover.LogEntry{}
@@ -1321,6 +1322,17 @@ func peersTags() (map[string][]string, map[string]string) {
 		tags[x.Session], handles[x.Session] = x.Tags, x.Handle
 	}
 	return tags, handles
+}
+
+// firstLeases sets each running lane's start to its session's first lease in the ledger: its
+// real age, not its last move's lease (a moved session is not a new one; setup.md 8.6, Young
+// sessions; live pre9: 54c4e1e8 "under 15 min old" on claude-6 12 minutes after its move).
+func firstLeases(started map[string]time.Time, ledger []leases.Lease) {
+	for _, l := range ledger {
+		if t, ok := started[l.SessionID]; ok && l.SessionID != "" && !l.At.IsZero() && l.At.Before(t) {
+			started[l.SessionID] = l.At
+		}
+	}
 }
 
 // laneExpect is each running lane's expected time left for the switch (setup.md 8.6, one
