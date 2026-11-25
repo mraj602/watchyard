@@ -78,8 +78,8 @@ func TestPlanLiveClaude5(t *testing.T) {
 		W5: Window{Level: 34.1, Reset: now.Add(4 * time.Hour)}, W7: Window{Level: 19, Reset: now.Add(532693 * time.Second)}}
 	ss := []Session{
 		{ID: "78f476e8", Account: c5.Key, Rate: 0, Busy: true, Movable: true, Context: 120_000, Started: old},
-		{ID: "hot", Account: c5.Key, Rate: 40, Busy: true, Movable: true, Context: 80_000, Started: old},
-		{ID: "warm", Account: c5.Key, Rate: 21.3, Busy: true, Movable: true, Context: 80_000, Started: old},
+		{ID: "hot", Account: c5.Key, Rate: 8, Busy: true, Movable: true, Context: 80_000, Started: old},
+		{ID: "warm", Account: c5.Key, Rate: 6, Busy: true, Movable: true, Context: 80_000, Started: old},
 	}
 	in := Input{Now: now, Params: DefaultParams, Accounts: []Account{c5, c2}, Sessions: ss,
 		Streak: map[string]int{c5.Key + " " + Win5h: 5}}

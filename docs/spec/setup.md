@@ -1934,7 +1934,7 @@ weekly cap; **hard now** when its 5-hour or weekly level already is at its cap.
 | Stopped by a limit | a session whose last turn a limit ended (`StopFailure` `rate_limit`) is a candidate too, whatever its burn (it wants to burn): moved when that window resets `move_stopped_wait_min` = 20 min or more from now, else it waits for the reset | a move takes a minute or two and re-reads the context; a near reset is cheaper |
 | Choice | greedy, recomputed after each pick: first a session whose move alone brings both projections under cap − hysteresis (the fewest moves); among those, the most points freed per re-read (burn ÷ (context, at least 20k tokens, × model factor: opus 5, sonnet 3, haiku 1, else 3)), then the highest burn, then the youngest; among the others the highest burn, then the smaller context, then the longest expected remaining time | the highest burner frees the most; when several would each do, the cheapest re-read (simulator: small gain, below) |
 | Enough | stop when P5 and P7 of the source are at most cap − `move_hysteresis` (5); for a window whose level now is already at or over cap − 5, at most the cap (no move takes a projection under the level now; live: claude-3 at 84.1 of cap 88 had every unpinned session moved off, down to 0.2 points/h). Still over with nothing left a move would lower: `--plan` says "only pinned burn left (x points/h pinned, y unpinned)" | hysteresis: no move back and forth around the cap; a target that can be met |
-| Destination | logged in on this machine (never an account only another machine has); not its own, not stale, not excluded; organisation per `move_orgs`; an aggressive account: its P5 and P7 (with the moves already planned in this pass) plus this session's burn for h stay at most its caps − 5, h = min(the session's expected remaining time, else `move_dest_horizon_min` = 90 min; the time to that account's 5-hour reset), at least 60 min; a protected account: the full rule, its P5 and P7 with this session's burn added until its resets at most its caps − 5, and only when no aggressive account fits; order: aggressive accounts first, draining ones (the picker's `drain` class: room that expires unused) first, then the soonest 5-hour reset, then the most room; protected accounts last and only within their 80/80 caps | the session must be able to run there; room that expires is worth most |
+| Destination | logged in on this machine (never an account only another machine has); not its own, not stale, not excluded; organisation per `move_orgs`; its P5 and P7 as the trigger will project them after the move (to its resets, with the moves already planned in this pass, this session's burn until its expected end when known, else to the resets) at most its caps − 5, so the next trigger does not undo the move (live pre7: 3b2611ed moved onto claude-6 at 06:12 on a 90-minute horizon, 39 + 27 × 1.5 ≈ 80, and off it at 06:35, "5h projected 111%"; `move_dest_horizon_min` is retired and ignored); a protected account only when no aggressive account fits; a session moved onto an account within `move_young_min` counts there at the burn it moved with (its re-read is left out), not 0; order: aggressive accounts first, draining ones (the picker's `drain` class: room that expires unused) first, then the soonest 5-hour reset, then the most room; protected accounts last and only within their 80/80 caps | the session must be able to run there; room that expires is worth most |
 | No account fits | no move; `--plan` says why ("no logged-in account on this machine has room for its burn", "no account of its organisation has room (account.move_orgs = same)", "account rate limit") | |
 | Cooldown | `move_cooldown_min` 20 min per session | |
 | No return | never back to the account it left within `move_no_return_min` 60 min, unless that account's 5-hour window reset since | no ping-pong |
@@ -2020,11 +2020,23 @@ the new lane's burn, against the switch's caps less the pin reserve. The new lan
 larger of its estimate's (cost over wall time, or `r`) and the measured lane burn `R` (8.5 Lane
 statistics): a size class sets how long a lane runs, not how fast it burns (live: a "medium"
 lane counted as 4 points per hour while Opus lanes here burn 12-26). The account's own burn is
-projected to the resets; the new lane only over its expected time (`--expect`; else
-`move_dest_horizon_min`, 90 min), at most to the 5-hour reset, at least an hour, as the switch
-judges a destination: a short lane cannot burn 5 hours (live: an idle account refused a 25-minute
-lane at 23 points/h, "projection 115%"). The switch projects a running session with an expected
-end (its lease's) the same way: only until then; unknown or overrun, to the resets. The switch reads the
+projected to the resets. One rule counts a session's burn on all three sides (the picker's
+acceptance, the switch's trigger, the switch's destination check): inside its lease's expected
+duration (`--expect`) it burns for max(expected remaining, 30 minutes), at most to each
+window's horizon; unknown or overrun, to the horizons (the 5-hour reset, and min(weekly reset,
+5 hours)). A short lane cannot burn 5 hours (live: an idle account refused a 25-minute lane at
+23 points/h, "projection 115%"), and a lane without `--expect` is counted to the horizons by the
+picker as the trigger will count it (live, pre7: 2de58a08, no `--expect`, was placed on claude-3
+at 7d 85% and moved off 17 minutes later, "7d projected 95% (cap 88%) at 16.4 points/h").
+A placement is a destination too: the picker lets a lane in only while the projection stays
+`move_hysteresis` (5) points under the caps less the pin reserve, as a moved session must.
+Simulator (`internal/mover/sim_churn_test.go`, 30 runs × 10 patterns, per run-day): moves the
+trigger undid within 30 minutes (no new session there, burn not up 25%) 3.92 → 1.81; placements
+the switch undid within 30 minutes (not forced, no new session, burn within 50% of the
+estimate) 1.02 → 0.79; moves 41.8 → 34.9, all stopped minutes 1438 → 1396, pinned stopped
+413 → 408, protected minutes over 80 619 → 628. Of the placements still undone, 0.48 a day are
+the simulator's readings slope (30 minutes) holding a lane's start-up burst its 10-minute meter
+has dropped; `wy move` takes both over the one burn window. The switch reads the
 accounts from the same readings and effective state as the picker (8.5, Effective state; the
 picker's measured level, without lease charges, is `--json` `weekly_measured_pct`), and each
 pass logs the weekly reading and what the meter adds to it in `passes.jsonl` (`l7_read`,
@@ -2057,8 +2069,9 @@ only matters when several sessions would each fix an account. The destination ho
 protected accounts lower (minutes over 80 -4%, highest 5-hour level 84.6 → 82.0) and stops the
 pinned sessions as long as before (-0.7% pinned stopped minutes, +0.3% all stopped minutes,
 inside the 5% the owner allowed), but moves 32% more (aggressive accounts with a little room
-now take a short session), so 34% more re-read; it is on by default (`move_dest_horizon_min 0`
-turns it off).
+now take a short session), so 34% more re-read. It is retired: the trigger projects to the
+resets, so a destination let in on 90 minutes was moved off again within the cooldown (live
+pre7, 3b2611ed).
 
 **Interactive sessions.** A session is *interactive* (a person uses it) when it is: a plain
 terminal session; a `wy run` session; a tmux pane with Remote Control on; or a tmux pane that got
@@ -2426,7 +2439,7 @@ move_cap_7d = 98            #   move_cap_5h_protected 80, move_cap_7d_protected 
                             #   move_account_moves 5, move_account_burn 40, move_account_window_min 15,
                             #   move_stopped_wait_min 20, move_owner_grace_min 0,
                             #   move_step_wait_min 3, move_pass_wait_s 90
-move_dest_horizon_min = 90  # an aggressive destination must fit the session this long (its expected time first); 0: until the resets
+move_dest_horizon_min = 0   # retired, ignored: a destination must fit as the trigger projects it (to the resets)
 move_expiring_h = 3         # within this many hours of a protected account's weekly reset its weekly cap is move_cap_7d (expiring room); 0: never
 move_stale_min = 10         # an account whose reading is older is neither a source nor a destination; the picker ranks it last (stale data); 0: off
 move_young_min = 15         # a session's burn counts for the switch once it is this old (its first minutes burn hot); 0: at once

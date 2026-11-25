@@ -94,8 +94,10 @@ func TestLanesMoverMeasuredLaneRate(t *testing.T) {
 	if r := rank(t, in); r.Picks[0].Key != first {
 		t.Fatalf("quiet account skipped: %+v", rowOf(r, first))
 	}
-	// Lanes here burn 30 points/h: 10 + 32 × 3 h = 106, over 95.
+	// Lanes here burn 30 points/h; one of unknown length counts to the reset, as the switch's
+	// trigger counts it: 10 + 32 × 3 h = 106, over 95.
 	in.Stats = LaneStats{Rate: 30, NRate: 20}
+	in.Expects = nil
 	r := rank(t, in)
 	row := rowOf(r, first)
 	if !row.Skip || !strings.Contains(row.Reason, "at 32 points/h") {

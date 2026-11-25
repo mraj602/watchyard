@@ -206,11 +206,11 @@ func TestPlanExpiringRoomAndShortSessions(t *testing.T) {
 	if r := Plan(in); len(r.Moves) != 1 || r.Moves[0].To != "" {
 		t.Fatalf("without expiring room: %+v", r.Moves)
 	}
-	// The same lane expected to end in 20 minutes: 80 + 12 × 1/3 = 84, under the cap (to the
-	// reset it is 104). claude-5 keeps its 5-hour cap: 12 points/h for its 5 hours fits 80.
+	// The same lane expected to end in 20 minutes, counted for ExpectFloor (30): 80 + 12 × 0.5
+	// = 86, under the cap (to the reset it is 104).
 	in.Params = DefaultParams
 	in.Sessions[0].Expected = 20 * time.Minute
-	if r := Plan(in); len(r.Moves) != 0 || r.Accounts[0].P5 > 84.1 {
+	if r := Plan(in); len(r.Moves) != 0 || r.Accounts[0].P5 > 86.1 {
 		t.Fatalf("short session: %+v %+v", r.Moves, r.Accounts[0])
 	}
 }

@@ -77,12 +77,14 @@ type Params struct {
 	Orgs string
 	// IdleMoves: idle sessions with no burn are candidates too (a simulator variant only).
 	IdleMoves bool
-	// DestHorizon: an aggressive destination qualifies when the moved session fits under its
-	// caps less Hysteresis for min(its expected remaining time (DestHorizon when unknown), the
-	// time to the destination's 5-hour reset), at least DestFloor, on top of the
-	// destination's own projection; a protected one only with room to its resets, and only
-	// when no aggressive one fits. 0: every destination needs room to its resets.
+	// DestHorizon: the simulator's comparison row only (oldDest): an aggressive destination
+	// qualified when the moved session fit under its caps less Hysteresis for min(its expected
+	// remaining time (DestHorizon when unknown), the 5-hour reset), at least DestFloor. The
+	// switch itself judges a destination with the trigger's projection (to the resets), so a
+	// move is not undone by the next trigger (live: 3b2611ed moved onto claude-6 at 06:12 and
+	// off it at 06:35, "5h projected 111%").
 	DestHorizon time.Duration
+	oldDest     bool
 	// CheapMoves: among the sessions whose move alone fixes the overload, the most points
 	// freed per re-read cost (context × ModelFactor) first, then the highest burn, then the
 	// youngest.
@@ -130,7 +132,7 @@ var DefaultParams = Params{
 	Cooldown: 20 * time.Minute, NoReturn: time.Hour, AccountMoves: 5, AccountBurn: 40, AccountWindow: 15 * time.Minute,
 	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, PassWait: 90 * time.Second, Orgs: OrgsAny,
 	PinReserve5: 10, PinReserve7: 5, PinAlertWithin: 2 * time.Hour,
-	DestHorizon: 90 * time.Minute, CheapMoves: true, YoungGate: 15 * time.Minute, MinBurn: 1,
+	CheapMoves: true, YoungGate: 15 * time.Minute, MinBurn: 1,
 }
 
 // PinIdle: a pinned session idle this long holds no reserve (the caller counts the live pins).
@@ -370,14 +372,35 @@ func GateYoung(in Input) Input {
 	if p.YoungGate <= 0 {
 		return in
 	}
-	sub := map[string]float64{}
+	// A session moved here within YoungGate is young by its new lease, but its burn is known:
+	// the rate it moved with counts (else the account looked empty for 15 minutes and took
+	// more moves the trigger then undid; live: ai-lane-C2 moved onto claude-6 at 06:10, then
+	// 3b2611ed at 06:12, both off again at 06:35).
+	movedIn := map[string]float64{}
+	for _, r := range in.Recent {
+		if r.RateKnown && r.To != "" && in.Now.Sub(r.At) < p.YoungGate {
+			movedIn[r.Session+" "+r.To] = r.Rate
+		}
+	}
+	sub, add := map[string]float64{}, map[string]float64{}
 	var ss []Session
 	for i, s := range in.Sessions {
-		if !p.young(s, in.Now) || s.Rate <= 0 {
+		known, moved := movedIn[s.ID+" "+s.Account]
+		if !p.young(s, in.Now) || (s.Rate <= 0 && !moved) {
 			continue
 		}
 		if ss == nil {
 			ss = append([]Session(nil), in.Sessions...)
+		}
+		if moved {
+			// Its measured burn since the resume (the re-read) is left out; the burn it moved
+			// with is counted in its place.
+			if !s.Stopped {
+				sub[s.Account] += s.Rate
+				add[s.Account] += known
+			}
+			ss[i].YoungRate, ss[i].Rate = s.Rate, known
+			continue
 		}
 		if !s.Stopped {
 			sub[s.Account] += s.Rate
@@ -390,13 +413,22 @@ func GateYoung(in Input) Input {
 	in.Sessions = ss
 	as := append([]Account(nil), in.Accounts...)
 	for i, a := range as {
-		x := sub[a.Key]
-		if x <= 0 || a.FromReadings {
+		x, y := sub[a.Key], add[a.Key]
+		if (x <= 0 && y <= 0) || a.FromReadings {
 			continue
 		}
-		as[i].Rate, as[i].Meter = math.Max(0, a.Rate-x), math.Max(0, a.Meter-x)
-		note := fmt.Sprintf("%.1f points/h of sessions under %d min left out (a session's first minutes burn far above its steady rate)",
-			x, int(p.YoungGate.Minutes()))
+		as[i].Rate, as[i].Meter = math.Max(0, a.Rate-x+y), math.Max(0, a.Meter-x+y)
+		var note string
+		if x-y > 0 || y <= 0 {
+			note = fmt.Sprintf("%.1f points/h of sessions under %d min left out (a session's first minutes burn far above its steady rate)",
+				x, int(p.YoungGate.Minutes()))
+		}
+		if y > 0 {
+			if note != "" {
+				note += "; "
+			}
+			note += fmt.Sprintf("%.1f points/h of sessions moved here in the last %d min counted at the burn they moved with", y, int(p.YoungGate.Minutes()))
+		}
 		if a.RateNote != "" {
 			note = a.RateNote + "; " + note
 		}
@@ -881,7 +913,7 @@ func (p Params) Project(a Account, ss []Session, extra float64, now time.Time) P
 			if s.Stopped || s.Expected <= 0 || s.Rate <= 0 {
 				continue
 			}
-			e := s.Expected.Hours()
+			e := max(s.Expected, ExpectFloor).Hours()
 			pr.P5 -= s.Rate * math.Max(0, pr.Reset5.Hours()-e)
 			pr.P7 -= s.Rate / pr.ratio * math.Max(0, math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())-e)
 		}
@@ -936,12 +968,22 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 	for _, x := range in.Sessions {
 		byAcc[x.Account] = append(byAcc[x.Account], x)
 	}
+	// The trigger's projection of the account after the move (Project: to the resets, the
+	// moves planned this pass in delta), the moved session at its burn until its expected end
+	// as the trigger counts it there, Hysteresis under the caps: the next pass's trigger does
+	// not fire on it for this move.
 	room := func(a Account) (Projection, bool) {
-		pr := p.Project(a, byAcc[a.Key], delta[a.Key]+math.Max(0, s.Rate), now)
+		r := math.Max(0, s.Rate)
+		pr := p.Project(a, byAcc[a.Key], delta[a.Key]+r, now)
+		if p.MinBurn >= 0 && !p.IdleMoves && s.Expected > 0 && r > 0 {
+			e := max(s.Expected, ExpectFloor).Hours()
+			pr.P5 -= r * math.Max(0, pr.Reset5.Hours()-e)
+			pr.P7 -= r / pr.ratio * math.Max(0, math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())-e)
+		}
 		return pr, pr.P5 <= pr.Cap5-p.Hysteresis && pr.P7 <= pr.Cap7-p.Hysteresis && pr.Level5 < pr.Cap5-p.Hysteresis &&
 			pr.Level7 < pr.Cap7-p.Hysteresis
 	}
-	if p.DestHorizon > 0 {
+	if p.DestHorizon > 0 && p.oldDest {
 		full := room
 		room = func(a Account) (Projection, bool) {
 			if a.Protected {
@@ -1161,8 +1203,18 @@ func Destination(in Input, id string) (string, string) {
 	return "", "the session is not known"
 }
 
-// DestFloor is the shortest horizon a destination is judged on (Params.DestHorizon).
+// DestFloor is the shortest horizon a destination was judged on (Params.DestHorizon, the
+// simulator's comparison row).
 const DestFloor = time.Hour
+
+// ExpectFloor: a session inside its expected duration (its lease's --expect) burns, as the
+// switch's trigger and destination check and the picker's switch-projection check all count
+// it, for max(its expected remaining time, ExpectFloor), at most to each window's horizon
+// (the 5-hour reset; min(the weekly reset, WeekSpan)); once it overruns (or with none
+// expected), to the full horizon. One rule, so the switch never undoes what the picker or the
+// switch itself just did (live pre7: 2de58a08 leased on claude-3 at 07:36, moved off at
+// 07:53).
+const ExpectFloor = 30 * time.Minute
 
 // reRead is s's re-read cost: its context (at least 20,000 tokens) × its model factor.
 func reRead(s Session) float64 {

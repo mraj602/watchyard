@@ -431,42 +431,76 @@ func TestPlanDestinationAddsPlanned(t *testing.T) {
 	}
 }
 
-// Params.DestHorizon: an aggressive destination needs room for the moved session's burn for
-// min(its expected remaining (else DestHorizon), the destination's 5-hour reset), at least
-// DestFloor; a protected one room to its resets, and only when no aggressive one fits.
-func TestPlanDestinationHorizon(t *testing.T) {
+// A destination is judged with the trigger's own projection (to its resets, Hysteresis
+// under the caps), the moved session until its expected end as the trigger counts it there;
+// a protected one only when no aggressive one fits. The old 90-minute horizon (oldDest, the
+// simulator's comparison) let in moves the next trigger undid.
+func TestPlanDestinationAsTrigger(t *testing.T) {
 	// b resets in 4 h: 26.5 points/h to the reset is 106, over 90; for 90 minutes it is 40.
 	mk := func() Input {
-		return Input{Accounts: []Account{acc("a", 90, 3*time.Hour, 30), acc("b", 0, 4*time.Hour, 10), prot("p", 0, 30*time.Minute, 10)},
+		in := Input{Accounts: []Account{acc("a", 90, 3*time.Hour, 30), acc("b", 0, 4*time.Hour, 10), prot("p", 0, 30*time.Minute, 10)},
 			Sessions: []Session{lane("s", "a", 26.5, true)}}
+		in.Params = DefaultParams
+		return in
 	}
-	in := mk()
-	in.Params = DefaultParams
-	in.Params.DestHorizon = 0
-	if got := moved(plan(in)); got["s"] != "p" {
+	if got := moved(plan(mk())); got["s"] != "p" {
 		t.Fatalf("room to the resets: %v", got)
 	}
-	in = mk()
-	in.Params = DefaultParams
+	in := mk()
+	in.Params.DestHorizon, in.Params.oldDest = 90*time.Minute, true
 	if got := moved(plan(in)); got["s"] != "b" {
-		t.Fatalf("horizon: %v", got)
+		t.Fatalf("old horizon: %v", got)
 	}
-	// Expected to run 4 more hours: its burn to b's reset does not fit; the protected one
-	// (room to its reset in 30 min) takes it.
+	// Expected to end in an hour: the trigger counts its burn on b for that hour (26.5).
 	in = mk()
-	in.Params = DefaultParams
+	in.Sessions[0].Expected = time.Hour
+	if got := moved(plan(in)); got["s"] != "b" {
+		t.Fatalf("short session: %v", got)
+	}
+	// Expected to run 4 more hours: to b's reset, over; the protected one takes it.
+	in = mk()
 	in.Sessions[0].Expected = 4 * time.Hour
 	if got := moved(plan(in)); got["s"] != "p" {
 		t.Fatalf("long session: %v", got)
 	}
-	// The floor: a session about to end is still judged on an hour.
-	in = mk()
+}
+
+// Live (pre7 1082fe05): 3b2611ed (21 points/h) moved claude-2 -> claude-6 at 06:12 and
+// claude-6 -> claude-4 at 06:35 ("5h projected 111% (cap 85%)"). At 06:12 claude-6 was at 39%
+// with 2 points/h of its own, ai-lane-C2 (4.1) moved in at 06:10 (young by its new lease, so
+// its burn was left out), its 5-hour reset 2.5 h away, cap 85 (95 less a pin's 10).
+func TestPlanNoMoveTheTriggerUndoes(t *testing.T) {
+	now := time.Date(2026, 11, 25, 0, 42, 0, 0, time.UTC)
+	old := now.Add(-2 * time.Hour)
+	c2 := Account{Key: "acct:c2/oA", Label: "claude-2", Rate: 30, Meter: 30, LoggedIn: true, Ratio: 8, ReadAt: now,
+		W5: Window{Level: 70, Reset: now.Add(3 * time.Hour)}, W7: Window{Level: 21, Reset: now.Add(100 * time.Hour)}}
+	c6 := Account{Key: "acct:c6/oB", Label: "claude-6", Rate: 2 + 4.1, Meter: 2 + 4.1, LoggedIn: true, Ratio: 8, ReadAt: now, Pins: 1, Reserve5: 10, Reserve7: 5,
+		W5: Window{Level: 39, Reset: now.Add(150 * time.Minute)}, W7: Window{Level: 39, Reset: now.Add(100 * time.Hour)}}
+	ss := []Session{
+		{ID: "3b2611ed", Account: c2.Key, Rate: 21, Busy: true, Movable: true, Context: 80_000, Started: old},
+		{ID: "other", Account: c2.Key, Rate: 9, Busy: true, Movable: true, Context: 80_000, Started: old},
+		{ID: "c2-lane", Account: c6.Key, Rate: 4.1, Busy: true, Movable: true, Context: 80_000, Started: now.Add(-2 * time.Minute)},
+		{ID: "own", Account: c6.Key, Rate: 2, Busy: true, Movable: true, Pinned: true, PinFrom: "in Claude Code", Started: old},
+	}
+	in := Input{Now: now, Params: DefaultParams, Accounts: []Account{c2, c6}, Sessions: ss,
+		Streak: map[string]int{c2.Key + " " + Win5h: 5},
+		Recent: []Record{{Session: "c2-lane", From: "acct:c5/oA", To: c6.Key, At: now.Add(-2 * time.Minute), Rate: 4.1, RateKnown: true}}}
+	r := Plan(in)
+	if got := moved(r); got["3b2611ed"] == c6.Key {
+		t.Fatalf("3b2611ed moved onto claude-6 (39 + (6.1 + 21) x 2.5 = 107 > 80): %+v", r.Moves)
+	}
+	// The old rule took it: C2's burn left out (young) and 3b2611ed for 90 minutes only,
+	// 39 + 2 x 2.5 + 21 x 1.5 = 75.5 <= 80.
+	in.Params.DestHorizon, in.Params.oldDest = 90*time.Minute, true
+	in.Recent = nil
+	if got := moved(Plan(in)); got["3b2611ed"] != c6.Key {
+		t.Fatalf("old rule: %v", got)
+	}
+	// What the trigger then saw on claude-6 (06:35, C2 and 3b2611ed counted): over its cap.
 	in.Params = DefaultParams
-	in.Accounts[1].W5.Level = 60 // 60 + 26.5 × 1 h = 86.5 fits under 90; 60 + 26.5 × 1.5 h would not
-	in.Sessions[0].Expected = 5 * time.Minute
-	in.Accounts[0].W5.Level = 94 // its 5 minutes left still take a over its cap (94 + 2.2)
-	if got := moved(plan(in)); got["s"] != "b" {
-		t.Fatalf("floor: %v", got)
+	pr := in.Params.Project(c6, []Session{ss[2], ss[3], {ID: "3b2611ed", Account: c6.Key, Rate: 20.1, Started: old}}, 0, now.Add(23*time.Minute))
+	if pr.Window != Win5h {
+		t.Fatalf("trigger at 06:35: %+v", pr)
 	}
 }
 

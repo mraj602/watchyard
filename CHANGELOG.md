@@ -126,6 +126,18 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **Moves the trigger undoes** (live, pre7: 3b2611ed moved claude-2 → claude-6 at 06:12 and
+  claude-6 → claude-4 at 06:35). The destination check now projects with the trigger's own
+  formula and horizon on that account after the move (to its resets, moves already planned this
+  pass included), minus the hysteresis; the 90-minute destination horizon
+  (`account.move_dest_horizon_min`) is retired and ignored. Sessions moved onto an account in the
+  last 15 minutes count there at the burn they moved with.
+- **Placements the switch undoes** (live, pre7: 2de58a08 placed on claude-3 at 07:36, moved off
+  at 07:53). One rule for a session's burn in the picker's acceptance, the switch's trigger and
+  its destination check: inside its lease's expected duration, max(expected remaining, 30 min);
+  without `--expect` or overrun, to the horizons. The picker also leaves the destination's
+  5-point margin under the caps (a placement is a destination). Simulator per run-day: undone
+  moves 3.92 → 1.81, undone placements 1.02 → 0.79, moves −17%, stopped minutes −3%.
 - **Moves on stale data** (live, pre6 05:37, the hub migrating: `wy move --plan` said "claude-4
   5h 100%: 5h cap reached now: moving its burners" from a reading 3 h 37 min old; the account was
   at ~68%). An account whose reading is older than `account.move_stale_min` (new, default 10) is

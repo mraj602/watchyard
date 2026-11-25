@@ -20,7 +20,7 @@ func TestLanesExpiringProtectedRoom(t *testing.T) {
 	in := laneIn(s, 1)
 	in.Params = DefaultLaneParams
 	mv := &MoverView{Cap5: 95, Cap7: 98, Cap5Protected: 80, Cap7Protected: 80, WeekSpanH: 5, Units: map[string]float64{}, ExpiringH: 3,
-		DestHorizonH: 1.5, DestFloorH: 1}
+		ExpectFloorH: 0.5}
 	in.Mover = mv
 	r := rank(t, in)
 	row := rowOf(r, "claude-5")
@@ -47,22 +47,22 @@ func TestLanesMoverShortLane(t *testing.T) {
 	in.Stats.Rate = 23
 	in.Expects = []LaneExpect{{Class: "short"}}
 	mv := &MoverView{Cap5: 95, Cap7: 98, Cap5Protected: 80, Cap7Protected: 80, WeekSpanH: 5, Units: map[string]float64{},
-		DestHorizonH: 1.5, DestFloorH: 1}
+		ExpectFloorH: 0.5}
 	in.Mover = mv
 	row := rowOf(rank(t, in), "claude-2")
 	if strings.Contains(row.Reason, "switch's projection") {
 		t.Fatalf("short lane refused: %+v", row)
 	}
-	// Projected to the 5-hour reset as before (horizon off): 23 × 5 = 115, refused.
-	mv.DestHorizonH = 0
+	// No expected duration: to the 5-hour reset, as the switch's trigger counts a lane of
+	// unknown length: 23 × 5 = 115, refused.
+	in.Expects = nil
 	row = rowOf(rank(t, in), "claude-2")
 	if !strings.Contains(row.Reason, "the switch's projection is 115%") {
 		t.Fatalf("to the reset: %+v", row)
 	}
-	// A lane burning hot for its hour, on an account already at 30: 30 + 23 × 1 h = 53, fine;
-	// at 75 it is 98, over 95.
-	mv.DestHorizonH = 1.5
-	s["claude-2"] = LaneSample{TS: hrs(-5.0 / 60), Weekly: fp(40), FiveHour: fp(75), FiveHourReset: hrs(4), WeeklyReset: hrs(72)}
+	// A short lane (under 30 minutes: counted for 30) on an account at 85: 85 + 23 × 0.5 =
+	// 96.5, over 95.
+	s["claude-2"] = LaneSample{TS: hrs(-5.0 / 60), Weekly: fp(40), FiveHour: fp(85), FiveHourReset: hrs(4), WeeklyReset: hrs(72)}
 	in = laneIn(s, 1)
 	in.Params, in.Stats.Rate, in.Expects, in.Mover = DefaultLaneParams, 23, []LaneExpect{{Class: "short"}}, mv
 	row = rowOf(rank(t, in), "claude-2")

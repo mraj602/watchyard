@@ -733,7 +733,7 @@ func moveParams(cfg config.Config) mover.Params {
 		p.BurnWindow = mins(a.MoveBurnMin)
 	}
 	p.WeekSpan = mins(60 * a.MoveWeekSpanH)
-	p.DestHorizon = mins(a.MoveDestHorizonMin)
+	p.DestHorizon = 0 // retired: a destination is judged as the trigger projects it (move_dest_horizon_min ignored)
 	p.YoungGate = mins(a.MoveYoungMin)
 	p.MinBurn = math.Max(0, a.MoveMinBurn)
 	p.SpikePasses, p.SpikeNear = int(a.MoveSpikePasses), mins(a.MoveSpikeNearMin)

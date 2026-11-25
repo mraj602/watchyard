@@ -1325,30 +1325,36 @@ func moverOver(m *MoverView, acc LaneAccount, v laneState, lr float64, expect ti
 	if !v.fiveRst.IsZero() && v.fiveRst.After(now) {
 		h5 = v.fiveRst.Sub(now).Hours()
 	}
-	// The account's own burn to the resets, as the switch projects it; the new lane only for
-	// as long as it is expected to run (else DestHorizonH), at most to the 5-hour reset, at
-	// least DestFloorH, as the switch judges a destination: a short lane cannot burn 5 hours.
+	// The account's own burn to the resets, as the switch projects it; the new lane as the
+	// switch's trigger will count it once it runs (mover.ExpectFloor): with an expected
+	// duration (--expect) for max(that, ExpectFloorH), at most to each window's horizon; else
+	// to the horizons (the 5-hour reset; min(the weekly reset, WeekSpanH)). A short lane cannot
+	// burn 5 hours, and a lane of unknown length is not let in on a shorter horizon than the
+	// trigger's (live pre7: 2de58a08 placed on claude-3 at 07:36 on a 90-minute horizon, moved
+	// off at 07:53, "7d projected 95% (cap 88%)").
 	r := acc.MoveUnits*pa.F5 + math.Max(0, lr)
 	p5, p7 := projection.Levels(v.hM, v.wM, acc.MoveUnits*pa.F5, pa.ratio(), h5, v.hrs, m.WeekSpanH)
-	hl := h5
-	if m.DestHorizonH > 0 {
-		hl = m.DestHorizonH
-		if expect > 0 {
-			hl = expect.Hours()
-		}
-		hl = math.Max(math.Min(hl, h5), m.DestFloorH)
+	hl := math.Inf(1)
+	if expect > 0 {
+		hl = math.Max(expect.Hours(), m.ExpectFloorH)
 	}
-	l5, l7 := projection.Levels(0, 0, math.Max(0, lr), pa.ratio(), math.Min(hl, h5), math.Min(hl, v.hrs), m.WeekSpanH)
+	l5, l7 := projection.Levels(0, 0, math.Max(0, lr), pa.ratio(), math.Min(hl, h5), math.Min(hl, v.hrs), math.Min(hl, m.WeekSpanH))
 	p5, p7 = p5+l5, p7+l7
-	if !projection.Over(p5, p7, c5, c7, acc.PinReserve5, acc.PinReserve7, 0) {
+	// Under the caps less the destination's margin, as a moved session must be (a placement
+	// is a destination too).
+	if !projection.Over(p5, p7, c5, c7, acc.PinReserve5, acc.PinReserve7, m.Hysteresis) {
 		return ""
 	}
-	if p5-pinLess(c5, acc.PinReserve5) >= p7-pinLess(c7, acc.PinReserve7) {
-		return fmt.Sprintf("5h %s%%: at %s points/h with this lane the switch's projection is %s%%, over its cap %s%% (it would move a session off)",
-			f0(v.hM), f0(pyRound(r, 1)), f0(p5), f0(pinLess(c5, acc.PinReserve5)))
+	marg := ""
+	if m.Hysteresis > 0 {
+		marg = fmt.Sprintf(" less the switch's %s-point margin", f0(m.Hysteresis))
 	}
-	return fmt.Sprintf("7d %s%%: at %s points/h with this lane the switch's projection is %s%%, over its cap %s%% (it would move a session off)",
-		f0(v.wM), f0(pyRound(r, 1)), f0(p7), f0(pinLess(c7, acc.PinReserve7)))
+	if p5-pinLess(c5, acc.PinReserve5) >= p7-pinLess(c7, acc.PinReserve7) {
+		return fmt.Sprintf("5h %s%%: at %s points/h with this lane the switch's projection is %s%%, over its cap %s%%%s (it would move a session off)",
+			f0(v.hM), f0(pyRound(r, 1)), f0(p5), f0(pinLess(c5, acc.PinReserve5)), marg)
+	}
+	return fmt.Sprintf("7d %s%%: at %s points/h with this lane the switch's projection is %s%%, over its cap %s%%%s (it would move a session off)",
+		f0(v.wM), f0(pyRound(r, 1)), f0(p7), f0(pinLess(c7, acc.PinReserve7)), marg)
 }
 
 // expiringCap is the weekly level a protected account near its reset may be drained to (0: not
