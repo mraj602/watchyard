@@ -6,6 +6,15 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Smart Account Switch: in/out churn on a draining account** (setup.md 8.6). A move into an
+  owner-drained account now leaves it `account.move_drain_dest_margin` (default 2) points under
+  its caps, so a filled drain no longer re-triggers on the next pass's drift (the source side
+  keeps no margin). A 5-hour move is skipped when the projected hit is within
+  `account.move_reset_skip_min` (default 10) minutes of that window's reset: a stall costs at
+  most that, a mid-turn move a kill and an uncached re-read. A limit reached now is unchanged.
+
 ### Added
 
 - **Hub schema change: v23 → v25** (migrations `0024_switch_move.sql`, the same file as the
