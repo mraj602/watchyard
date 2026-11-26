@@ -510,7 +510,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 		t, loggedIn := w.targets[a.Key]
 		ma := mover.Account{Key: a.Key, Label: t.Label, Protected: a.Protected, Ratio: a.Ratio, Stale: a.Stale, LoggedIn: loggedIn,
 			Drain: drain[a.Key], W5: mover.Window{Level: a.FiveHour, Reset: a.FiveReset}, W7: mover.Window{Level: a.Weekly, Reset: a.WeeklyReset},
-			ReadAt: a.ReadingAt, Quiet: a.Quiet, DrainUntil: a.DrainUntil, Off: a.Off}
+			ReadAt: a.ReadingAt, Quiet: a.Quiet, DrainUntil: a.DrainUntil, Ign5h: a.Ign5h, Off: a.Off}
 		if ma.Label == "" {
 			ma.Label = a.Key
 		}
@@ -963,6 +963,9 @@ func (w *moveWorld) printPlan(out io.Writer, r mover.Result, cfg config.Config) 
 		}
 		if u, ok := drainUntil[pr.Key]; ok {
 			state = mover.OwnerDrainText(u, w.input.Now) + "; " + state
+			if pr.Ign5 {
+				state = mover.Ignored5hText + "; " + state
+			}
 		}
 		if off[pr.Key] {
 			state = "off (owner): never picked, nothing moves in or out; " + state

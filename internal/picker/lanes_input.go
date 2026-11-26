@@ -88,6 +88,7 @@ type DrainView struct {
 	NeedHours      float64    `json:"need_hours"`
 	HorizonHours   float64    `json:"horizon_hours"`
 	SlackX         float64    `json:"entry_slack,omitempty"`
+	Ignore5h       bool       `json:"ignore_5h,omitempty"`
 	Capacity       *int       `json:"capacity"`
 	CapacityWeekly *int       `json:"capacity_weekly"`
 	Capacity5h     *int       `json:"capacity_5h"`
@@ -108,7 +109,7 @@ type DrainView struct {
 
 func drainView(d DrainInfo) *DrainView {
 	v := &DrainView{On: d.On, RoomPct: pyRound(d.RoomPct, 1), RoomPts: pyRound(d.RoomPts, 1), NeedHours: pyRound(d.NeedH, 2),
-		HorizonHours: pyRound(d.HorizonH, 2), SlackX: d.SlackX, Running: d.Running, ForwardBurn: pyRound(d.ForwardBurn, 1), Owner: d.Owner}
+		HorizonHours: pyRound(d.HorizonH, 2), SlackX: d.SlackX, Ignore5h: d.Ign5h, Running: d.Running, ForwardBurn: pyRound(d.ForwardBurn, 1), Owner: d.Owner}
 	if !d.On {
 		return v
 	}
@@ -707,6 +708,7 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		if u := rs[g.rep].policy.DrainUntil; u.After(now) && !acc.Off {
 			// The owner drains it: an aggressive drain account until then (setup.md 8.5, Owner drain).
 			acc.DrainUntil = u
+			acc.Ign5h = rs[g.rep].policy.DrainIgnore5h
 			if acc.Protected {
 				acc.OwnerProtected, acc.Protected = true, false
 			}

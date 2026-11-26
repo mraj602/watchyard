@@ -200,6 +200,9 @@ func (p LaneParams) hard(acc LaneAccount) (h7, h5 float64) {
 	if full <= 0 {
 		full = full98
 	}
+	if acc.Ignores5h() {
+		return pinLess(switchMin(full, acc.SwitchCap7), acc.PinReserve7), noLimit5
+	}
 	return pinLess(switchMin(full, acc.SwitchCap7), acc.PinReserve7), pinLess(switchMin(full, acc.SwitchCap5), acc.PinReserve5)
 }
 
@@ -281,10 +284,23 @@ type LaneAccount struct {
 	DrainUntil time.Time
 	// OwnerProtected: its mode is protected; the owner drain makes it aggressive meanwhile.
 	OwnerProtected bool
+	// Ign5h: next.accounts.<key>.drain_ignore_5h; in effect only while the owner drain is on
+	// (Ignores5h): no 5-hour limit, projection, capacity or burst cap for the account.
+	Ign5h bool
 	// Off: the owner keeps it out (mode off; setup.md 8.5, Kind): never picked, not even with
 	// --urgent or when nothing else fits.
 	Off bool
 }
+
+// Ignores5h reports whether the 5-hour window is ignored for acc: drain_ignore_5h while its
+// owner drain is on (the drain is cleared once over, ownerDrainEnds).
+func (a LaneAccount) Ignores5h() bool { return a.Ign5h && !a.DrainUntil.IsZero() }
+
+// Ignored5hText is the --explain / --plan note of an account whose 5-hour window is ignored.
+const Ignored5hText = "5-hour window ignored (drain_ignore_5h)"
+
+// noLimit5 stands for "no 5-hour limit".
+const noLimit5 = 1e9
 
 // OffText is the --explain reason of an account that is off.
 const OffText = "off (owner): never picked and nothing is moved into it; sessions already there stay"
@@ -672,6 +688,9 @@ func (p LaneParams) limits(acc LaneAccount) (lim7, lim5 float64) {
 		lim5 = acc.Limit5h
 	}
 	lim7, lim5 = switchMin(lim7, acc.SwitchCap7), switchMin(lim5, acc.SwitchCap5)
+	if acc.Ignores5h() {
+		return pinLess(lim7, acc.PinReserve7), noLimit5
+	}
 	return pinLess(lim7, acc.PinReserve7), pinLess(lim5, acc.PinReserve5)
 }
 
@@ -694,6 +713,13 @@ func (p LaneParams) caps(acc LaneAccount, hrs float64) (cap7, cap5 float64) {
 	}
 	frac := 1 - math.Min(hrs, weekH)/weekH
 	return math.Min(lim7, lim7*frac+p.Headstart), lim5
+}
+
+func (p LaneParams) burstCapOf(acc LaneAccount) int {
+	if acc.Ignores5h() {
+		return 0 // unlimited
+	}
+	return p.burstCap(acc.Protected)
 }
 
 func (p LaneParams) burstCap(protected bool) int {
@@ -739,7 +765,7 @@ func laneETA(acc LaneAccount, v laneState, p LaneParams, now time.Time, leases [
 		return nil
 	}
 	t := now
-	if cp := p.burstCap(acc.Protected); cp > 0 {
+	if cp := p.burstCapOf(acc); cp > 0 {
 		var t0s []time.Time
 		for _, L := range leases {
 			if L.Key == acc.Key && now.Sub(L.T0) < p.BurstWindow {
@@ -905,7 +931,7 @@ func RankLanes(in LaneInput) (LaneResult, error) {
 				}
 				skip, level = true, 1
 			}
-			cp := p.burstCap(prot)
+			cp := p.burstCapOf(acc)
 			capped := cp > 0 && v.capN >= cp
 			if !skip && capped {
 				skip, why, level = true, fmt.Sprintf("%d new lanes in %s min >= cap %d", v.capN, f0(p.BurstWindow.Minutes()), cp), 0
@@ -1371,6 +1397,9 @@ func moverOver(m *MoverView, acc LaneAccount, v laneState, sl switchLaneEst, p L
 	}
 	if drain && !acc.Protected {
 		c5, c7 = projection.DrainCapsWith(c5, c7, h5, v.hrs, m.DrainAim7, m.DrainCapMax7) // the switch's caps for a draining account
+	}
+	if acc.Ignores5h() {
+		c5 = noLimit5
 	}
 	// The account's own burn to the resets, as the switch projects it; the new lane as the
 	// switch's trigger will count it once it runs (mover.ExpectFloor): with an expected

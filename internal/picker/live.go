@@ -31,6 +31,8 @@ type LiveAccount struct {
 	// DrainUntil: the owner drains it until then (zero: off; setup.md 8.5, Owner drain);
 	// Protected is then false (an aggressive drain account meanwhile).
 	DrainUntil time.Time
+	// Ign5h: drain_ignore_5h (with DrainUntil on): its 5-hour window is ignored.
+	Ign5h bool
 	// Off: the owner keeps it out (setup.md 8.5, Kind): the switch moves nothing in or out.
 	Off bool
 	// Quiet: the hub was read and nothing ran on it since its reading (no live session on any
@@ -65,7 +67,7 @@ func (in LaneInput) Live() ([]LiveAccount, []LiveLane) {
 		v := laneLive(a, c, now, p, in.Leases)
 		pa := p.account(a)
 		la := LiveAccount{Key: a.Key, Protected: a.Protected, FiveHour: v.hM, Weekly: v.wM, FiveReset: c.fiveRst,
-			Ratio: pa.ratio(), F5: pa.F5, Stale: v.stale || len(v.unknown) > 0, DrainUntil: a.DrainUntil, Off: a.Off,
+			Ratio: pa.ratio(), F5: pa.F5, Stale: v.stale || len(v.unknown) > 0, DrainUntil: a.DrainUntil, Ign5h: a.Ign5h, Off: a.Off,
 			PinReserve5: a.PinReserve5, PinReserve7: a.PinReserve7}
 		if !la.FiveReset.After(now) {
 			la.FiveReset, la.FiveHour = time.Time{}, 0

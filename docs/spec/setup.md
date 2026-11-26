@@ -1297,6 +1297,12 @@ account out of the drain; they only limit how many more it takes).
   even at 1.5 × full speed). `--explain` shows the slack used ("entry 1.5 × need"). It leaves the drain as soon as one fails (no state is kept between calls). A protected
   account in drain may use its room up to `W − M` (not its target or pace line), with its 5-hour
   floor kept.
+- *Ignoring the 5-hour window* (owner 2026-11-26). `next.accounts.<key>.drain_ignore_5h = true`,
+  only while that account's owner drain is on: the picker has no 5-hour limit, projection
+  refusal, capacity or burst cap for it (the weekly room still limits), the mover never moves a
+  session off it for a 5-hour trigger (a session stopped by an actual limit follows the stopped
+  rule; weekly triggers are unchanged) and a pull into it ignores its 5-hour room and margin.
+  `--explain` and `--plan` say "5-hour window ignored (drain_ignore_5h)".
 - *Owner drain* (owner 2026-11-25). `wy account drain <label> [--until <time>]` sets
   `next.accounts.<label>.drain_until` (RFC 3339; `--until` takes `15:04` today, `2006-01-02 15:04`
   or RFC 3339; none is 23:59 today) in this machine's config; `wy account drain <label> off`
