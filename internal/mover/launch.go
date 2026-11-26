@@ -227,6 +227,11 @@ func HasPrompt(argv []string) bool {
 func ResumeArgs(l Launch, note string) []string {
 	args := KeptArgs(l.Argv)
 	args = append(args, "--resume", l.SessionID)
+	// The resumed session opens a new Remote Control session under the new account, titled
+	// from its first prompt (the move note) unless it has a name: pass the session's own.
+	if n := strings.TrimSpace(l.Name); n != "" && !hasFlag(args, "--name", "-n") {
+		args = append(args, "--name", n)
+	}
 	prompt := note + PromptTail
 	if l.MidTurn {
 		prompt = note // the mid-turn note ends "Carry on with your task."

@@ -77,6 +77,25 @@ func TestResumeArgsByKind(t *testing.T) {
 	}
 }
 
+// The resumed session keeps its name (its Remote Control session is titled from it, not from
+// the move note), unless the session's own flags already name it.
+func TestResumeArgsKeepsName(t *testing.T) {
+	l := Launch{SessionID: "s1", Name: "my task", Kind: KindTmux, Argv: strings.Fields("--model opus first")}
+	if got, want := ResumeArgs(l, "n"), []string{"--model", "opus", "--resume", "s1", "--name", "my task"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("named: %q, want %q", got, want)
+	}
+	for _, argv := range []string{"--name mine", "-n mine", "--name=mine"} {
+		l.Argv = strings.Fields(argv)
+		if got := ResumeArgs(l, "n"); strings.Contains(strings.Join(got, " "), "my task") {
+			t.Errorf("%s: name added again: %q", argv, got)
+		}
+	}
+	l.Argv, l.Name = nil, " "
+	if got := ResumeArgs(l, "n"); !reflect.DeepEqual(got, []string{"--resume", "s1"}) {
+		t.Errorf("unnamed: %q", got)
+	}
+}
+
 func TestCommandTemplate(t *testing.T) {
 	tg := Target{Dir: "/home/u/.claude-2", Label: "claude-2"}
 	if got := strings.Join(Command("", tg, []string{"--resume", "s"}), " "); got != "env CLAUDE_CONFIG_DIR=/home/u/.claude-2 claude --resume s" {

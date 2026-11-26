@@ -150,7 +150,7 @@ func TestMoveByHand(t *testing.T) {
 		t.Fatalf("move: %d %q %q", code, out, errOut)
 	}
 	dir2 := filepath.Join(f.home, ".claude-2")
-	cmd := "env CLAUDE_CONFIG_DIR=" + dir2 + " claude --model opus --resume 5e55a0a0-0000-4000-8000-000000000001"
+	cmd := "env CLAUDE_CONFIG_DIR=" + dir2 + " claude --model opus --resume 5e55a0a0-0000-4000-8000-000000000001 --name lane-a"
 	msg := "[Watchyard] This session was moved by hand by the owner from claude to claude-2 at " + nextNow.Local().Format("15:04") + ". It continues here under claude-2."
 	want := []string{"tmux set-option -p -t %7 remain-on-exit on", "kill 100", "carry 5e55a0a0-0000-4000-8000-000000000001",
 		"tmux respawn-pane -k -t %7 -c /work bash -ic " + mover.Shell([]string{"printf '\\n%s\\n\\n' " + mover.Shell([]string{msg}) + "; sleep 4; " + cmd}),
