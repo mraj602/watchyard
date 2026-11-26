@@ -42,6 +42,8 @@ type LiveAccount struct {
 	// PinReserve5 and PinReserve7: the points kept free for its live pinned sessions, scaled to
 	// the time left in each window (LaneAccount.PinReserve5/7; 0: no pins).
 	PinReserve5, PinReserve7 float64
+	// SetCap5 and SetCap7: its own cap_5h and cap_7d when set (LaneAccount.SetCap5/7).
+	SetCap5, SetCap7 float64
 }
 
 // LiveLane is one running lane (a lease whose session runs): its burn over the last
@@ -68,7 +70,7 @@ func (in LaneInput) Live() ([]LiveAccount, []LiveLane) {
 		pa := p.account(a)
 		la := LiveAccount{Key: a.Key, Protected: a.Protected, FiveHour: v.hM, Weekly: v.wM, FiveReset: c.fiveRst,
 			Ratio: pa.ratio(), F5: pa.F5, Stale: v.stale || len(v.unknown) > 0, DrainUntil: a.DrainUntil, Ign5h: a.Ign5h, Off: a.Off,
-			PinReserve5: a.PinReserve5, PinReserve7: a.PinReserve7}
+			PinReserve5: a.PinReserve5, PinReserve7: a.PinReserve7, SetCap5: a.SetCap5, SetCap7: a.SetCap7}
 		if !la.FiveReset.After(now) {
 			la.FiveReset, la.FiveHour = time.Time{}, 0
 		}
