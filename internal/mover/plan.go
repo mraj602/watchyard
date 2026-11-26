@@ -316,6 +316,9 @@ type Record struct {
 	// at the floor and over).
 	Rate      float64
 	RateKnown bool
+	// Alias: the copy of a move under the session id Claude Code resumed it as (a fork): it
+	// carries the session's cooldown, no-return and young state, and is not another move.
+	Alias bool
 }
 
 // Input is one planning pass.
@@ -1034,7 +1037,7 @@ func (p Params) movedOff(key string, in Input, res *Result, now time.Time) bool 
 		}
 	}
 	for _, r := range in.Recent {
-		if r.From == key && now.Sub(r.At) < p.PullQuiet {
+		if !r.Alias && r.From == key && now.Sub(r.At) < p.PullQuiet {
 			return true
 		}
 	}
@@ -1274,7 +1277,7 @@ type moveState struct {
 func (p Params) newMoveState(in Input) *moveState {
 	st := &moveState{last: map[string]Record{}, movedIn: map[string]int{}, burnIn: map[string]float64{}}
 	for _, r := range in.Recent {
-		if p.AccountWindow > 0 && in.Now.Sub(r.At) < p.AccountWindow {
+		if p.AccountWindow > 0 && !r.Alias && in.Now.Sub(r.At) < p.AccountWindow {
 			if !r.RateKnown || p.countsAsMove(r.Rate) {
 				st.movedIn[r.To]++
 			}
