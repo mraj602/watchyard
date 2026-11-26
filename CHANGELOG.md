@@ -6,6 +6,14 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Drain aim keys** (setup.md 8.5, Drain aim). `account.drain_aim_7d` (default 96) and
+  `account.drain_cap_max_7d` (default 99), each up to 100, set a draining account's far
+  weekly aim and the ceiling of the switch's weekly cap for it; the picker's weekly aim, the
+  owner-drain end check and the switch's caps all follow them, so an owner drain can fill the
+  week to 100 now instead of only in the last 6 hours. The defaults keep today's behaviour.
+
 ### Fixed
 
 - **Smart Account Switch: a background move records what its launch did** (setup.md 8.6).

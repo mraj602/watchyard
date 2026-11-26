@@ -124,7 +124,7 @@ func moverView(cfg config.Config, launches []mover.Launch, keyOfDir map[string]s
 	v := &picker.MoverView{Cap5: p.Cap5, Cap7: p.Cap7, Cap5Protected: p.Cap5Protected, Cap7Protected: p.Cap7Protected,
 		WeekSpanH: p.WeekSpan.Hours(), Units: map[string]float64{},
 		ExpiringH: p.ExpiringRoom.Hours(), ExpectFloorH: mover.ExpectFloor.Hours(), Hysteresis: p.Hysteresis, YoungMin: p.YoungGate.Minutes(),
-		StaleMin: p.StaleAfter.Minutes()}
+		StaleMin: p.StaleAfter.Minutes(), DrainAim7: p.DrainAim7, DrainCapMax7: p.DrainCapMax7}
 	keyOf := map[string]string{}
 	for _, l := range launches {
 		if k := keyOfDir[l.Slot]; k != "" {

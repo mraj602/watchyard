@@ -295,7 +295,7 @@ func accountNext(e nextEnv, args []string) error {
 	}
 	src.Local = ob.Samples
 	in := picker.Input{Now: now, Strategy: strat, Model: *model, Settings: settings, Candidates: picker.Candidates(slots, src),
-		Outbox: ob, N: k, SIDs: sids, Urgent: *urgent, Expect: x.Dur, HubDown: hubErr != ""}
+		Params: laneParams(cfg), Outbox: ob, N: k, SIDs: sids, Urgent: *urgent, Expect: x.Dur, HubDown: hubErr != ""}
 	if x != (picker.LaneExpect{}) {
 		in.Expects = []picker.LaneExpect{x}
 	}

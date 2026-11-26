@@ -69,6 +69,8 @@ type LaneParams struct {
 	ProtDrainSlack float64       // a protected account drains only within this × need (owner Q3: 1)
 	RiskSlack      float64       // at risk (ordering only): hours to reset <= RiskSlack × need
 	Guard          time.Duration // finish_by = weekly reset − Guard; no drain closer to the reset
+	DrainAim7d     float64       // far weekly drain aim (account.drain_aim_7d; 0: projection.DrainAimFar)
+	DrainCapMax7d  float64       // ceiling of the switch's weekly drain cap (account.drain_cap_max_7d; 0: default)
 	DrainMargin    float64       // weekly points kept under the limit (doubled when stale or hub down)
 	DrainMargin5h  float64       // 5-hour points kept under the 5-hour limit by a drain's capacity
 	LaneCost       float64       // E fallback: a lane's first-5h cost, 5-hour points
@@ -1368,7 +1370,7 @@ func moverOver(m *MoverView, acc LaneAccount, v laneState, sl switchLaneEst, p L
 		h5 = v.fiveRst.Sub(now).Hours()
 	}
 	if drain && !acc.Protected {
-		c5, c7 = projection.DrainCaps(c5, c7, h5, v.hrs) // the switch's caps for a draining account
+		c5, c7 = projection.DrainCapsWith(c5, c7, h5, v.hrs, m.DrainAim7, m.DrainCapMax7) // the switch's caps for a draining account
 	}
 	// The account's own burn to the resets, as the switch projects it; the new lane as the
 	// switch's trigger will count it once it runs (mover.ExpectFloor): with an expected

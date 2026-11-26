@@ -47,7 +47,17 @@ const (
 // DrainAim7 is the weekly level a draining account aims at with h hours to its weekly reset
 // (h < 0: unknown, the far aim).
 func DrainAim7(h float64) float64 {
-	return ramp(DrainAimFar, 100, DrainRampH, h)
+	return DrainAim7With(DrainAimFar, h)
+}
+
+// DrainAim7With is DrainAim7 with the far aim set by the owner (account.drain_aim_7d; 0 or
+// less: DrainAimFar): the aim rises from far to 100 over the last DrainRampH hours, and a far
+// aim at or over the ramp's value is used as it is (at most 100).
+func DrainAim7With(far, h float64) float64 {
+	if far <= 0 || math.IsNaN(far) {
+		far = DrainAimFar
+	}
+	return ramp(math.Min(far, 100), 100, DrainRampH, h)
 }
 
 // DrainCeil5At is a draining account's 5-hour ceiling with h hours to its 5-hour reset.
@@ -66,7 +76,16 @@ func ramp(lo, hi, over, h float64) float64 {
 // resets: raised to the 5-hour aim (the ceiling less DrainMargin5, 96 rising to 98) and to the
 // weekly aim (at most DrainCapMax7), never lowered.
 func DrainCaps(c5, c7, h5, h7 float64) (float64, float64) {
-	return math.Max(c5, DrainCeil5At(h5)-DrainMargin5), math.Max(c7, math.Min(DrainAim7(h7), DrainCapMax7))
+	return DrainCapsWith(c5, c7, h5, h7, DrainAimFar, DrainCapMax7)
+}
+
+// DrainCapsWith is DrainCaps with the owner's far weekly aim (account.drain_aim_7d) and weekly
+// cap ceiling (account.drain_cap_max_7d); 0 or less: the defaults DrainAimFar, DrainCapMax7.
+func DrainCapsWith(c5, c7, h5, h7, far7, capMax7 float64) (float64, float64) {
+	if capMax7 <= 0 || math.IsNaN(capMax7) {
+		capMax7 = DrainCapMax7
+	}
+	return math.Max(c5, DrainCeil5At(h5)-DrainMargin5), math.Max(c7, math.Min(DrainAim7With(far7, h7), math.Min(capMax7, 100)))
 }
 
 // DrainMargin5 is the picker's default 5-hour drain margin (LaneParams.DrainMargin5h): the

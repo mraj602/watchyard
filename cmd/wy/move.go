@@ -425,7 +425,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	settings := picker.SettingsFrom(cfg.Next)
 	settings.Proposed = cfg.Slots.Modes
 	in := picker.Input{Now: now, Strategy: config.NextStrategyLanes, Settings: settings, Candidates: picker.Candidates(slots, src),
-		Outbox: ob, N: 1, HubDown: src.Hub == nil && cfg.Hub.URL != ""}
+		Params: laneParams(cfg), Outbox: ob, N: 1, HubDown: src.Hub == nil && cfg.Hub.URL != ""}
 	if src.Hub == nil && cfg.Hub.URL != "" {
 		picker.UseHubModes(in.Candidates, picker.LoadHubModes(filepath.Join(e.dirs.State.Path, "next", "modes.json")))
 	}
@@ -771,6 +771,7 @@ func moveParams(cfg config.Config) mover.Params {
 	p.PullMinBurn = math.Max(0, a.MovePullMinBurn)
 	p.PullMargin, p.PullQuiet = math.Max(0, a.MovePullMargin), mins(math.Max(0, a.MovePullQuietMin))
 	p.DrainDestMargin, p.ResetSkip = math.Max(0, a.MoveDrainDestMargin), mins(math.Max(0, a.MoveResetSkipMin))
+	p.DrainAim7, p.DrainCapMax7 = drainKeys(a.DrainAim7d, a.DrainCapMax7d)
 	p.SpikePasses, p.SpikeNear = int(a.MoveSpikePasses), mins(a.MoveSpikeNearMin)
 	p.Cooldown, p.NoReturn = mins(a.MoveCooldownMin), mins(a.MoveNoReturnMin)
 	p.AccountMoves, p.AccountWindow = int(a.MoveAccountMoves), mins(a.MoveAccountWindowMin)
@@ -1512,4 +1513,17 @@ func scaledReserveNote(p mover.Params, pr mover.Projection, now time.Time) strin
 		return ""
 	}
 	return fmt.Sprintf("; pin reserve %s, scaled to time left (full %s/%s)", strings.Join(parts, ", "), pct1(f5), pct1(f7))
+}
+
+// drainKeys are the owner's far weekly drain aim and weekly cap ceiling, each held to 0..100
+// (account.drain_aim_7d, drain_cap_max_7d; setup.md 8.5, Drain aim).
+func drainKeys(aim7, capMax7 float64) (aim, capMax float64) {
+	return math.Min(100, math.Max(0, aim7)), math.Min(100, math.Max(0, capMax7))
+}
+
+// laneParams are the lanes parameters with the owner's drain keys.
+func laneParams(cfg config.Config) *picker.LaneParams {
+	p := picker.DefaultLaneParams
+	p.DrainAim7d, p.DrainCapMax7d = drainKeys(cfg.Account.DrainAim7d, cfg.Account.DrainCapMax7d)
+	return &p
 }

@@ -82,6 +82,8 @@ type MoverView struct {
 	// level neither blocks a lane nor draws one (it is ranked after the accounts with fresh
 	// data, setup.md 8.6, Stale data). 0: off.
 	StaleMin float64
+	// DrainAim7, DrainCapMax7: the owner's drain keys for the switch's caps (0: defaults).
+	DrainAim7, DrainCapMax7 float64
 }
 
 // PinReserve is one account's pin reserve: Pins live pinned sessions keep R5 points of its
