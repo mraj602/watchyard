@@ -22,6 +22,11 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **Smart Account Switch: a forked session keeps its move history** (setup.md 8.6). When Claude
+  Code resumed a moved session under a new id (`resumed_as` in moves.jsonl), the new id had no
+  history, so the cooldown, no-return, young-gate age and chain did not apply: a session moved at
+  19:36 was pulled again at 19:46. The move log now treats the old and new id as one session.
+
 - **Smart Account Switch: a background move records what its launch did** (setup.md 8.6).
   The `claude --bg --resume` launch used to run with its output discarded and its exit
   status ignored, so a failed launch left a move logged as a success, and a session Claude

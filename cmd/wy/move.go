@@ -254,7 +254,7 @@ func moveCmd(e moveEnv, args []string) error {
 	}
 	// A move of it a moment ago may still be starting its resumed copy (a background session
 	// registers after its launch): a second move now would leave two copies.
-	for _, x := range st.Log(e.now().Add(-moveSettle)) {
+	for _, x := range mover.WithForks(st.Log(e.now().Add(-moveSettle))) {
 		if x.SessionID == l.SessionID && !*force {
 			return fmt.Errorf("%s was moved %s ago (%s -> %s): its resumed copy may still be starting; check `claude agents` there, or pass --force",
 				short(l.SessionID), e.now().Sub(x.At).Round(time.Second), w.slotLabel(x.FromDir), w.slotLabel(x.ToDir))
@@ -588,7 +588,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	expect := laneExpect(lanes, ls2, now)
 	log := st.Log(now.Add(-6 * time.Hour))
 	last := map[string]mover.LogEntry{}
-	for _, x := range log {
+	for _, x := range mover.WithForks(log) {
 		last[x.SessionID] = x
 	}
 	w.sw = st.LoadSwitch(now, params.Pass)

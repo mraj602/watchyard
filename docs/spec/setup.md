@@ -2516,7 +2516,7 @@ its `claude --bg` launch to end (output in `<state>/move/logs/<session>.log`); a
 the move's `error`. It then looks up to 15 s for the resumed session in the new account's
 registry: `resumed_as` is its session id when Claude Code resumed it under a new id (a fork:
 the transcript and job go on under that id), `warn` says none was seen. The digest shows both
-and lists the failed moves. `<state>/move/notify.json`: the push cursor and the moves waiting
+and lists the failed moves. A session recorded with `resumed_as` is one session across the fork: its cooldown, no-return, move count and "moved sessions keep their age" follow the new id. `<state>/move/notify.json`: the push cursor and the moves waiting
 for the next push. `<state>/move/digest.stamp`: the day the digest was last sent.
 `<state>/move/passes.jsonl`: each auto pass's projections per account (`at`, `accounts`: `key`,
 `label`, `protected`, `l5`, `l7`, `p5`, `p7`, `cap5`, `cap7`, `r5`, `reset7_s`, `window`,

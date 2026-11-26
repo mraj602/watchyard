@@ -212,6 +212,25 @@ type LogEntry struct {
 	Warn      string `json:"warn,omitempty"`
 	// Recheck: the re-check after its step wait changed its destination (Move.Recheck).
 	Recheck string `json:"recheck,omitempty"`
+	// Alias: not a log line but the copy WithForks makes under the resumed-as id (never stored).
+	Alias bool `json:"-"`
+}
+
+// WithForks returns es plus, for each move that recorded resumed_as, a copy of it under the
+// new session id (Alias set): a session Claude Code resumed under a new id is the same session,
+// so its cooldown, no-return, lane and chain follow it. Copies keep the order; counting code
+// skips them (they are not another move).
+func WithForks(es []LogEntry) []LogEntry {
+	out := make([]LogEntry, 0, len(es))
+	for _, e := range es {
+		out = append(out, e)
+		if e.ResumedAs != "" && e.ResumedAs != e.SessionID {
+			a := e
+			a.SessionID, a.ResumedAs, a.Alias = e.ResumedAs, "", true
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // Append adds a move to the log.
@@ -276,8 +295,16 @@ func (s State) LogAll(since time.Time) []LogEntry {
 // folder it started in, then each one it moved to (nil when it never moved).
 func (s State) Chain(sessionID string, since time.Time) []string {
 	var out []string
-	for _, e := range s.Log(since) {
-		if e.SessionID != sessionID {
+	es := s.Log(since)
+	// The session's ids: the one asked for and every id it was resumed from, back along the log.
+	ids := map[string]bool{sessionID: true}
+	for i := len(es) - 1; i >= 0; i-- {
+		if es[i].ResumedAs != "" && ids[es[i].ResumedAs] {
+			ids[es[i].SessionID] = true
+		}
+	}
+	for _, e := range es {
+		if !ids[e.SessionID] {
 			continue
 		}
 		if len(out) == 0 || out[len(out)-1] != e.FromDir {
@@ -306,8 +333,8 @@ func (s State) PastSlots(sessionID string, since time.Time) []string {
 // Records are the log's moves as Plan's Recent.
 func Records(es []LogEntry) []Record {
 	out := make([]Record, 0, len(es))
-	for _, e := range es {
-		out = append(out, Record{Session: e.SessionID, From: e.From, To: e.To, At: e.At, Rate: e.Rate, RateKnown: e.Rate > 0 || e.RateKnown})
+	for _, e := range WithForks(es) {
+		out = append(out, Record{Session: e.SessionID, From: e.From, To: e.To, At: e.At, Rate: e.Rate, RateKnown: e.Rate > 0 || e.RateKnown, Alias: e.Alias})
 	}
 	return out
 }
