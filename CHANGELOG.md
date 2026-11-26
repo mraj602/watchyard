@@ -8,6 +8,12 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Added
 
+- **Drain entry slack keys and a per-account pin reserve** (setup.md 8.5, 8.6).
+  `account.drain_slack` (default 2) and `account.drain_slack_protected` (default **1.5**, was 1:
+  owner "1.5x instead of 1x") set how close to its weekly reset an account's drain starts, as
+  a multiple of the hours its room needs; `--explain` shows it ("entry 1.5 × need").
+  `next.accounts.<key>.pin_reserve_5h` / `pin_reserve_7d` give one account its own pin reserve
+  per live pin instead of the global one (the weekly part already scales down toward the reset).
 - **Drain aim keys** (setup.md 8.5, Drain aim). `account.drain_aim_7d` (default 96) and
   `account.drain_cap_max_7d` (default 99), each up to 100, set a draining account's far
   weekly aim and the ceiling of the switch's weekly cap for it; the picker's weekly aim, the

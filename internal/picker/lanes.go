@@ -66,7 +66,7 @@ type LaneParams struct {
 	DrainMinRoom   float64       // weekly points of room under which an account never drains
 	DrainFloorH    float64       // an aggressive account with room drains within this many hours of its reset
 	DrainSlack     float64       // ... or within DrainSlack × need
-	ProtDrainSlack float64       // a protected account drains only within this × need (owner Q3: 1)
+	ProtDrainSlack float64       // a protected account drains only within this × need (account.drain_slack_protected; owner: 1.5)
 	RiskSlack      float64       // at risk (ordering only): hours to reset <= RiskSlack × need
 	Guard          time.Duration // finish_by = weekly reset − Guard; no drain closer to the reset
 	DrainAim7d     float64       // far weekly drain aim (account.drain_aim_7d; 0: projection.DrainAimFar)
@@ -102,7 +102,7 @@ var DefaultLaneParams = LaneParams{
 	LeasePrice: 4, LaneFull5: 0, CostMult: 2, Ratio: 7.2, F5: 1.4e-6,
 	LeaseTTL: 5 * time.Hour, Settle: 10 * time.Minute, StaleGuard: time.Hour, StaleLease: 6 * time.Hour,
 	Unlaunched:   10 * time.Minute,
-	DrainMinRoom: 0.5, DrainFloorH: 24, DrainSlack: 2, ProtDrainSlack: 1, RiskSlack: 4, Guard: 10 * time.Minute,
+	DrainMinRoom: 0.5, DrainFloorH: 24, DrainSlack: 2, ProtDrainSlack: 1.5, RiskSlack: 4, Guard: 10 * time.Minute,
 	DrainMargin: 1, DrainMargin5h: 2, LaneCost: 8, LaneLen: 15 * time.Minute, BurnWindow: 15 * time.Minute, FreshSoon: 15 * time.Minute,
 	Backstop5h: 95, SpillMax: 2, LandMax: 99, ShortWait: 15 * time.Minute, HubDownFactor: 0.5,
 	NoStall: true, UseEstimate: true, EstFloor: true,

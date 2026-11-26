@@ -449,6 +449,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 	// This machine's sessions and its live pinned sessions: their accounts keep a reserve
 	// free, for new lanes (the picker) and for the moves (setup.md 8.6, Pinned sessions).
 	params := moveParams(cfg)
+	params.PinPer = pinOverrides(settings, in.Candidates)
 	if inject != nil {
 		inject.applyParams(&params)
 	}
@@ -514,7 +515,7 @@ func (e moveEnv) world(noHub bool) (*moveWorld, error) {
 			ma.Label = a.Key
 		}
 		ma.Pins = len(w.pins[a.Key])
-		ma.Reserve5, ma.Reserve7 = params.PinReserve(ma.Pins) // scaled to the time left once the pins' burn is known
+		ma.Reserve5, ma.Reserve7 = params.PinReserveOf(ma.Key, ma.Pins) // scaled to the time left once the pins' burn is known
 		if inject != nil {
 			inject.applyAccount(&ma, now)
 		}
@@ -1540,7 +1541,7 @@ func pct1(x float64) string {
 // left (setup.md 8.6, Pinned sessions): "; pin reserve 7d 2.1% until Thu 03:30, scaled to time
 // left (full 10)"; "" when it is the full reserve.
 func scaledReserveNote(p mover.Params, pr mover.Projection, now time.Time) string {
-	f5, f7 := p.PinReserve(pr.Pins)
+	f5, f7 := p.PinReserveOf(pr.Key, pr.Pins)
 	var parts []string
 	at := func(d time.Duration) string {
 		t := now.Add(d).Local()
@@ -1570,6 +1571,12 @@ func drainKeys(aim7, capMax7 float64) (aim, capMax float64) {
 // laneParams are the lanes parameters with the owner's drain keys.
 func laneParams(cfg config.Config) *picker.LaneParams {
 	p := picker.DefaultLaneParams
+	if s := cfg.Account.DrainSlack; s > 0 {
+		p.DrainSlack = s
+	}
+	if s := cfg.Account.DrainSlackProtected; s > 0 {
+		p.ProtDrainSlack = s
+	}
 	p.DrainAim7d, p.DrainCapMax7d = drainKeys(cfg.Account.DrainAim7d, cfg.Account.DrainCapMax7d)
 	return &p
 }

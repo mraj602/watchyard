@@ -368,6 +368,9 @@ func pinLine(label string, v LaneView, now time.Time) string {
 func drainLine(label string, d DrainView, now time.Time) string {
 	s := fmt.Sprintf("Drain %s: room %.1f%% (%.0f pts), need %.1f h at full 5h speed, horizon %.0f h", label, d.RoomPct, d.RoomPts,
 		d.NeedHours, d.HorizonHours)
+	if d.SlackX > 0 {
+		s += fmt.Sprintf(" (entry %g × need)", d.SlackX)
+	}
 	if d.Owner && d.FinishBy != nil {
 		s = fmt.Sprintf("Drain %s, %s: room %.1f%% (%.0f pts), need %.1f h at full 5h speed", label, OwnerDrainText(*d.FinishBy, now), d.RoomPct, d.RoomPts, d.NeedHours)
 	}

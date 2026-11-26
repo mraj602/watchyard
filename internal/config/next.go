@@ -55,7 +55,7 @@ const nextAccountsPrefix = "next.accounts."
 var nextAccountFields = map[string]kind{
 	"mode": kString, "cap_5h": kFloat, "cap_7d": kFloat, "cap_model": kFloat, "reserve_pct": kFloat,
 	"priority": kFloat, "weight": kFloat, "exclude": kBool, "hours": kString, "days": kString,
-	"drain_until": kString,
+	"drain_until": kString, "pin_reserve_5h": kFloat, "pin_reserve_7d": kFloat,
 }
 
 func nextAccountFieldNames() []string {

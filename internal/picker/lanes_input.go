@@ -87,6 +87,7 @@ type DrainView struct {
 	RoomPts        float64    `json:"room_pts"`
 	NeedHours      float64    `json:"need_hours"`
 	HorizonHours   float64    `json:"horizon_hours"`
+	SlackX         float64    `json:"entry_slack,omitempty"`
 	Capacity       *int       `json:"capacity"`
 	CapacityWeekly *int       `json:"capacity_weekly"`
 	Capacity5h     *int       `json:"capacity_5h"`
@@ -107,7 +108,7 @@ type DrainView struct {
 
 func drainView(d DrainInfo) *DrainView {
 	v := &DrainView{On: d.On, RoomPct: pyRound(d.RoomPct, 1), RoomPts: pyRound(d.RoomPts, 1), NeedHours: pyRound(d.NeedH, 2),
-		HorizonHours: pyRound(d.HorizonH, 2), Running: d.Running, ForwardBurn: pyRound(d.ForwardBurn, 1), Owner: d.Owner}
+		HorizonHours: pyRound(d.HorizonH, 2), SlackX: d.SlackX, Running: d.Running, ForwardBurn: pyRound(d.ForwardBurn, 1), Owner: d.Owner}
 	if !d.On {
 		return v
 	}

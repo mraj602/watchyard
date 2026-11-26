@@ -134,13 +134,9 @@ func (p Policy) Protected() bool {
 // nothing moved into it.
 func (p Policy) Off() bool { return p.Mode == config.NextModeOff }
 
-// PolicyFor finds the account's settings: the next.accounts key equal to its hub seat id,
-// then its email, then its folder, then its label on this machine, then its hub label.
-// Keys never match by position, so a label that differs between machines only matters when
-// it is used as the key. The mode is the first that is set of that key's mode, the seat's
-// hub setting and this machine's slots.modes proposal; none is normal (aggressive for lanes).
-func (s Settings) PolicyFor(c Candidate) (Policy, []string) {
-	var warn []string
+// AccountFor is the next.accounts table that applies to c and its key ("": none), looked up as
+// PolicyFor does.
+func (s Settings) AccountFor(c Candidate) (config.NextAccount, string) {
 	var a config.NextAccount
 	key := ""
 	for _, k := range []string{c.SeatID, c.Email, c.Folder, c.Label, c.HubLabel} {
@@ -163,6 +159,17 @@ func (s Settings) PolicyFor(c Candidate) (Policy, []string) {
 			}
 		}
 	}
+	return a, key
+}
+
+// PolicyFor finds the account's settings: the next.accounts key equal to its hub seat id,
+// then its email, then its folder, then its label on this machine, then its hub label.
+// Keys never match by position, so a label that differs between machines only matters when
+// it is used as the key. The mode is the first that is set of that key's mode, the seat's
+// hub setting and this machine's slots.modes proposal; none is normal (aggressive for lanes).
+func (s Settings) PolicyFor(c Candidate) (Policy, []string) {
+	var warn []string
+	a, key := s.AccountFor(c)
 	hubMode := ""
 	if ValidSeatMode(c.HubMode) {
 		hubMode = c.HubMode
