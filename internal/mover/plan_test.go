@@ -438,8 +438,10 @@ func TestPlanDestinationAddsPlanned(t *testing.T) {
 // simulator's comparison) let in moves the next trigger undid.
 func TestPlanDestinationAsTrigger(t *testing.T) {
 	// b resets in 4 h: 26.5 points/h to the reset is 106, over 90; for 90 minutes it is 40.
+	// p resets in 2 h (53, under its 75); resetting within DestResetWithin it would have to hold
+	// the burn in its next window too (TestDestResetNextWindow).
 	mk := func() Input {
-		in := Input{Accounts: []Account{acc("a", 90, 3*time.Hour, 30), acc("b", 0, 4*time.Hour, 10), prot("p", 0, 30*time.Minute, 10)},
+		in := Input{Accounts: []Account{acc("a", 90, 3*time.Hour, 30), acc("b", 0, 4*time.Hour, 10), prot("p", 0, 2*time.Hour, 10)},
 			Sessions: []Session{lane("s", "a", 26.5, true)}}
 		in.Params = DefaultParams
 		return in
