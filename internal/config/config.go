@@ -164,15 +164,19 @@ type Config struct {
 		// DrainAim7d: the far weekly aim of a draining account (rises to 100 over the last
 		// 6 hours before the reset; default 96, up to 100); DrainCapMax7d: the most the
 		// switch's weekly cap for a draining account is raised to (default 99, up to 100).
-		DrainAim7d       float64 `toml:"drain_aim_7d"`
-		DrainCapMax7d    float64 `toml:"drain_cap_max_7d"`
-		MoveResetSkipMin float64 `toml:"move_reset_skip_min"`
-		MoveSpikePasses  float64 `toml:"move_spike_passes"`
-		MoveSpikeNearMin float64 `toml:"move_spike_near_min"`
-		MoveCooldownMin  float64 `toml:"move_cooldown_min"`
-		MoveNoReturnMin  float64 `toml:"move_no_return_min"`
-		MoveAccountMoves float64 `toml:"move_account_moves"`
-		MoveAccountBurn  float64 `toml:"move_account_burn"`
+		// DrainSlack, DrainSlackProtected: a drain starts when the hours to the weekly reset are
+		// within slack x the hours the account's room needs (default 2; protected 1.5).
+		DrainSlack          float64 `toml:"drain_slack"`
+		DrainSlackProtected float64 `toml:"drain_slack_protected"`
+		DrainAim7d          float64 `toml:"drain_aim_7d"`
+		DrainCapMax7d       float64 `toml:"drain_cap_max_7d"`
+		MoveResetSkipMin    float64 `toml:"move_reset_skip_min"`
+		MoveSpikePasses     float64 `toml:"move_spike_passes"`
+		MoveSpikeNearMin    float64 `toml:"move_spike_near_min"`
+		MoveCooldownMin     float64 `toml:"move_cooldown_min"`
+		MoveNoReturnMin     float64 `toml:"move_no_return_min"`
+		MoveAccountMoves    float64 `toml:"move_account_moves"`
+		MoveAccountBurn     float64 `toml:"move_account_burn"`
 		// MoveExpiringH: within this many hours of a protected account's weekly reset its weekly
 		// cap is the aggressive one (its room would expire unused); 0: never.
 		MoveExpiringH float64 `toml:"move_expiring_h"`
@@ -223,6 +227,10 @@ type NextAccount struct {
 	// DrainUntil: an owner-set drain until this time (RFC 3339; `wy account drain`; setup.md
 	// 8.5, Owner drain).
 	DrainUntil string `toml:"drain_until"`
+	// PinReserve5h, PinReserve7d: this account's pin reserve per live pinned session, instead of
+	// account.pin_reserve_5h / _7d (0: the global one; setup.md 8.6).
+	PinReserve5h float64 `toml:"pin_reserve_5h"`
+	PinReserve7d float64 `toml:"pin_reserve_7d"`
 }
 
 // MCPMode returns share.mcp as "true", "false" or "external" ("" when unset).
@@ -352,7 +360,7 @@ var moveDefaults = map[string]float64{
 	"move_stopped_wait_min": 20, "move_owner_grace_min": 0, "move_step_wait_min": 3, "move_pass_wait_s": 90,
 	"pin_reserve_5h": 10, "pin_reserve_7d": 5, "move_dest_horizon_min": 0,
 	"move_young_min": 15, "move_min_burn": 1, "move_pull_min_burn": 3, "move_pull_margin": 10, "move_pull_quiet_min": 15,
-	"move_drain_dest_margin": 2, "move_reset_skip_min": 10, "drain_aim_7d": 96, "drain_cap_max_7d": 99,
+	"move_drain_dest_margin": 2, "move_reset_skip_min": 10, "drain_aim_7d": 96, "drain_cap_max_7d": 99, "drain_slack": 2, "drain_slack_protected": 1.5,
 }
 
 func init() {
@@ -395,6 +403,10 @@ func (c *Config) moveField(k string) *float64 {
 		return &a.MoveDrainDestMargin
 	case "move_reset_skip_min":
 		return &a.MoveResetSkipMin
+	case "drain_slack":
+		return &a.DrainSlack
+	case "drain_slack_protected":
+		return &a.DrainSlackProtected
 	case "drain_aim_7d":
 		return &a.DrainAim7d
 	case "drain_cap_max_7d":

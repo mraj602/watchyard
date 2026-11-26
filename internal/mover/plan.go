@@ -138,6 +138,9 @@ type Params struct {
 	// DrainAim7, DrainCapMax7: the far weekly aim and the weekly cap ceiling of a draining
 	// account (account.drain_aim_7d, drain_cap_max_7d; 0: projection.DrainAimFar, DrainCapMax7).
 	DrainAim7, DrainCapMax7 float64
+	// PinPer: an account's own pin reserve per live pin (next.accounts.<key>.pin_reserve_5h / _7d),
+	// by account key; a zero part falls back to PinReserve5 / PinReserve7.
+	PinPer map[string][2]float64
 }
 
 // ScaledPinReserve is a's pin reserve scaled to what its a.Pins pinned sessions, burning rate
@@ -145,9 +148,22 @@ type Params struct {
 // window resets, twice over (projection.PinReserve; setup.md 8.6, Pinned sessions). A 5-hour
 // window not started is a whole window away; an unknown weekly reset keeps the full reserve.
 func (p Params) ScaledPinReserve(a Account, rate float64, now time.Time) (r5, r7 float64) {
-	f5, f7 := p.PinReserve(a.Pins)
+	f5, f7 := p.PinReserveOf(a.Key, a.Pins)
 	rate = math.Max(rate, float64(a.Pins)*projection.PinBaseRate)
 	return projection.PinReserve(f5, rate, hoursTo(a.W5, now, 5)), projection.PinReserve(f7, rate/ratio(a), hoursTo(a.W7, now, -1))
+}
+
+// PinReserveOf is PinReserve with the account's own per-pin values (PinPer) where set.
+func (p Params) PinReserveOf(key string, pins int) (float64, float64) {
+	o := p.PinPer[key]
+	r5, r7 := p.PinReserve5, p.PinReserve7
+	if o[0] > 0 {
+		r5 = o[0]
+	}
+	if o[1] > 0 {
+		r7 = o[1]
+	}
+	return float64(pins) * math.Max(0, r5), float64(pins) * math.Max(0, r7)
 }
 
 // PinReserve is the reserve of an account with pins live pinned sessions: pins x

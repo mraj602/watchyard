@@ -81,7 +81,7 @@ func pinReserves(p mover.Params, live map[string][]string, tokens []picker.Token
 		burn = burnStats(tokens, now, p.BurnWindow)
 	}
 	for k, ids := range live {
-		r5, r7 := p.PinReserve(len(ids))
+		r5, r7 := p.PinReserveOf(k, len(ids))
 		units := 0.0
 		for _, id := range ids {
 			units += burn[id].Units / p.BurnWindow.Hours()
@@ -97,6 +97,7 @@ func pinReserves(p mover.Params, live map[string][]string, tokens []picker.Token
 // or command lines needed), the pins file and, only when a session runs, the peers tags.
 func nextSwitch(e nextEnv, cfg config.Config, slots []picker.Slot, cands []picker.Candidate, tokens []picker.TokenUse, now time.Time) (map[string]picker.PinReserve, *picker.MoverView) {
 	p := moveParams(cfg)
+	p.PinPer = pinOverrides(picker.SettingsFrom(cfg.Next), cands)
 	if p.PinReserve5 <= 0 && p.PinReserve7 <= 0 && !cfg.Account.SmartSwitch {
 		return nil, nil
 	}
@@ -245,4 +246,24 @@ func (e moveEnv) listPins(cfg config.Config) ([]pinRow, []string) {
 		warns = append(warns, x)
 	}
 	return pinRows(launches, labelOfDir, keyOfDir, ps, livePins(launches, keyOfDir, ps, e.now())), warns
+}
+
+// pinOverrides are the accounts' own pin reserves per live pin (next.accounts.<key>.pin_reserve_5h
+// and _7d), by account key, for the candidates that have a table with one.
+func pinOverrides(s picker.Settings, cands []picker.Candidate) map[string][2]float64 {
+	var out map[string][2]float64
+	for _, c := range cands {
+		if c.Account == "" {
+			continue
+		}
+		a, _ := s.AccountFor(c)
+		if a.PinReserve5h <= 0 && a.PinReserve7d <= 0 {
+			continue
+		}
+		if out == nil {
+			out = map[string][2]float64{}
+		}
+		out["acct:"+c.Account+"/"+c.Org] = [2]float64{a.PinReserve5h, a.PinReserve7d}
+	}
+	return out
 }

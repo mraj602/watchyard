@@ -59,7 +59,8 @@ type DrainInfo struct {
 	RoomPct     float64 // weekly room to the limit less the margin, weekly points
 	RoomPts     float64 // the same in 5-hour points (R5)
 	NeedH       float64 // hours to use it at full 5-hour speed
-	HorizonH    float64 // drain entry horizon: max(floor, slack × need) (protected: 1 × need)
+	HorizonH    float64 // drain entry horizon: max(floor, slack × need) (protected: no floor)
+	SlackX      float64 // the slack used: account.drain_slack, or drain_slack_protected
 	Capacity    int     // new lanes the room absorbs now (C)
 	CapWeekly   int
 	Cap5h       int // -1: not limiting (no 5-hour window open)
@@ -378,7 +379,7 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 		slack, floor = p.ProtDrainSlack, 0
 	}
 	horizon := math.Max(floor, slack*need)
-	d.RoomPct, d.RoomPts, d.NeedH, d.HorizonH = math.Max(0, lim7-m-v.wM), R5, need, horizon
+	d.RoomPct, d.RoomPts, d.NeedH, d.HorizonH, d.SlackX = math.Max(0, lim7-m-v.wM), R5, need, horizon, slack
 	if H > horizon && !owner {
 		return d
 	}

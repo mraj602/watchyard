@@ -1056,7 +1056,7 @@ own readings and token use and moves from the value shown (its fallback) to the 
 | stale lease | 6 h | Age after which an account with a lease since its reading is stale. |
 | unlaunched | 10 min | A lease whose session never started is dropped after this. |
 | drain floor | 24 h | An aggressive account with room left drains within this many hours of its weekly reset. |
-| drain slack | 2 (protected 1, no floor) | ... or when the hours to its reset are at most this times `need` (Drain). |
+| drain slack | 2 (protected 1.5, no floor) | ... or when the hours to its reset are at most this times `need` (Drain). |
 | drain minimum room | 0.5 | Weekly points of room under which an account never drains. |
 | drain margin `M` | 1 (2 stale or hub down) | Weekly points a drain keeps under the limit: it aims at 97. |
 | drain 5-hour margin | 2 | 5-hour points a drain's 5-hour capacity keeps under the limit: it aims at 96 (many small lanes together cost more than their mean now and then). |
@@ -1291,9 +1291,10 @@ account out of the drain; they only limit how many more it takes).
   at 82 % with 2 pins had 6 points of room to its cap 88, not 16 to 98).
   For a protected account's capacity `A0` is `max(0, 45 − h)`: its 5-hour floor stays.
 - *Entry* (all of): the weekly level and its `resets_at` are known from a reading; `98 − w > 0.5`;
-  `H > guard` (10 minutes); and `H ≤ max(24, 2 × need)` for an aggressive account, `H ≤ 1 × need`
-  for a protected one that is not stale (owner: only room that would be wasted even at full
-  speed). It leaves the drain as soon as one fails (no state is kept between calls). A protected
+  `H > guard` (10 minutes); and `H ≤ max(24, S × need)` for an aggressive account (`account.drain_slack` S, default 2), `H ≤ P × need`
+  for a protected one that is not stale (`account.drain_slack_protected` P, default 1.5; it was 1
+  until owner 2026-11-26: "make it 1.5x times instead of 1x"; only room that would be wasted
+  even at 1.5 × full speed). `--explain` shows the slack used ("entry 1.5 × need"). It leaves the drain as soon as one fails (no state is kept between calls). A protected
   account in drain may use its room up to `W − M` (not its target or pace line), with its 5-hour
   floor kept.
 - *Owner drain* (owner 2026-11-25). `wy account drain <label> [--until <time>]` sets
@@ -1746,6 +1747,7 @@ aggressive`). The field is the part after the last dot, so emails with dots work
 | `priority` | `fill` order, lowest first; unset is after every set one. |
 | `weight` | Multiplies the `smart` score (default 1). |
 | `exclude` | `true`: never recommended. |
+| `pin_reserve_5h`, `pin_reserve_7d` | This account's pin reserve per live pinned session (8.6) instead of `account.pin_reserve_5h` / `_7d`; 0 or unset: the global one. Both are scaled to the time left in their window the same way. |
 | `hours`, `days` | Allowed local times, e.g. `09:00-18:00` (may cross midnight) and `mon-fri` or `sat,sun`. |
 
 Unknown fields are reported by `wy doctor` as unknown keys.
@@ -2605,6 +2607,8 @@ move_pull_min_burn = 3      # an owner-drained account pulls in only sessions bu
 move_pull_margin = 10       # a pull keeps the drained account this many points under its caps until its resets
 move_pull_quiet_min = 15    # no pull within this many minutes after a move off the drained account
 move_drain_dest_margin = 2  # a move into a drained account leaves it this many points under its caps (a filled drain does not re-trigger on drift)
+drain_slack = 2             # aggressive: drain when the hours to the weekly reset are within max(24, this × need)
+drain_slack_protected = 1.5 # protected: drain when within this × need (no floor)
 drain_aim_7d = 96           # a draining account's far weekly aim (rises to 100 over the last 6 h before its reset); up to 100: fill the week now
 drain_cap_max_7d = 99       # the most the switch's weekly cap for a draining account is raised to; up to 100
 move_reset_skip_min = 10    # no 5-hour move when the projected 100% hit is within this many minutes of that window's reset; 0: off
