@@ -47,6 +47,7 @@ func commands() map[string]command {
 		"machine":     {summary: "Print this machine's id and name", run: runMachine},
 		"outbox":      {summary: "Append to or inspect the local outbox (append, stat)", run: runOutbox},
 		"hook":        {summary: "Record one Claude Code hook event (stdin JSON)", run: runHook},
+		"grok":        {summary: "Run xAI Grok Build headlessly (run, status)", run: runGrok},
 		"agent":       {summary: "The peers agent service (enable, disable, status, run)", run: runAgent},
 		"peers":       {summary: "Message sessions in other accounts (list, send, off, on)", run: runPeers},
 		"statusline":  {summary: "Status line wrapper that also records limits", run: runStatusline},

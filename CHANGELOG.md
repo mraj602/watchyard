@@ -6,6 +6,11 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `wy grok run` and `wy grok status`: run xAI's Grok Build CLI headlessly and read its result, so
+  Claude sessions and orchestrators can hand work to Grok (docs/grok.md).
+
 ## [1.3.2] - 2026-11-24
 
 ### Changed
