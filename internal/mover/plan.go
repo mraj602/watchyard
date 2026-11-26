@@ -867,7 +867,14 @@ func Plan(in Input) Result {
 				mv.Window, mv.P, mv.ResetAt = pr.Window, pr.pOf(pr.Window), now.Add(pr.resetOf(pr.Window))
 			}
 			mv.HitAt = cur.HitAt(now)
-			p.place(in, &res, st, s, a, mv, delta, skip, *srcUrg)
+			u := *srcUrg
+			if u.near && u.hit > 0 {
+				// The best-available check weighs the source as this pass's moves leave it.
+				if h := cur.Hit; h < 0 || h > u.hit {
+					u.hit = h
+				}
+			}
+			p.place(in, &res, st, s, a, mv, delta, skip, u)
 		}
 		if p.MinBurn >= 0 && !p.IdleMoves {
 			if cur := p.Project(a, ss, delta[a.Key], now); p.overTarget(cur) {
@@ -1138,6 +1145,7 @@ func (p Params) place(in Input, res *Result, st *moveState, s Session, a Account
 		if !s.Stopped {
 			delta[a.Key] -= s.Rate
 		}
+		st.off[a.Key] = true
 	}
 	if to == "" {
 		// No destination: the accounts that only their stale data kept out might have had room.
@@ -1330,10 +1338,12 @@ type moveState struct {
 	burnIn map[string]float64
 	// bestFit: how long the last best-available destination fits (destination → place).
 	bestFit time.Duration
+	// off: the accounts this pass moves sessions off (never a best-available destination).
+	off map[string]bool
 }
 
 func (p Params) newMoveState(in Input) *moveState {
-	st := &moveState{last: map[string]Record{}, movedIn: map[string]int{}, burnIn: map[string]float64{}}
+	st := &moveState{last: map[string]Record{}, movedIn: map[string]int{}, burnIn: map[string]float64{}, off: map[string]bool{}}
 	for _, r := range in.Recent {
 		if p.AccountWindow > 0 && !r.Alias && in.Now.Sub(r.At) < p.AccountWindow {
 			if !r.RateKnown || p.countsAsMove(r.Rate) {
@@ -1644,11 +1654,19 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 	// was at 16% and claude-2 at 34%). Only for an urgent source (a soft trigger waits: a
 	// destination over its caps by its reset triggers there in turn), and only onto an
 	// aggressive account (a protected one keeps its room).
-	if u.near && !p.oldChurn && !p.oldDest {
-		need := max(u.hit, ExpectFloor)
+	//
+	// The destination must last BestMargin longer than the source (and BestFloor at least),
+	// each as this pass leaves it (the moves planned into and off both), and must not be an
+	// account this pass moves burners off or that sent burn to the source within NoReturn: a
+	// move re-reads the session's whole context, and swapping burners between two accounts
+	// that both hit buys nothing (live pre24 02:47-02:52: owner-drained claude-6 and claude-7
+	// both over their 5h caps swapped eight 1.1-5.6 points/h sessions, 7->6 "fits for 41m"
+	// against the 36m the source had left, then 6->7 "fits for 37m" against 36m).
+	if u.near && !p.oldChurn && !p.oldDest && u.hit >= 0 {
+		need := max(u.hit+BestMargin, BestFloor)
 		best, bestFit, label := "", time.Duration(0), ""
 		for _, b := range accs {
-			if b.Protected || noReturn(b) {
+			if b.Protected || noReturn(b) || st.off[b.Key] || p.sentTo(in, b, s.Account) {
 				continue
 			}
 			pr, _ := room(b)
@@ -1663,6 +1681,24 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 		}
 	}
 	return "", why
+}
+
+// BestMargin is how much longer than the source a best-available destination must stay under
+// its caps with the session; BestFloor the least it must (a move re-reads the whole context).
+const (
+	BestMargin = 30 * time.Minute
+	BestFloor  = time.Hour
+)
+
+// sentTo reports whether a move from account b to account to happened within NoReturn with
+// b's 5-hour window not reset since (a best-available move back would swap burn between them).
+func (p Params) sentTo(in Input, b Account, to string) bool {
+	for _, r := range in.Recent {
+		if !r.Alias && r.From == b.Key && r.To == to && p.NoReturn > 0 && in.Now.Sub(r.At) < p.NoReturn && !resetSince(b, r.At, in.Now) {
+			return true
+		}
+	}
+	return false
 }
 
 // urgency is how pressing a source's moves are: near (a hit within UrgentWithin, a cap reached
