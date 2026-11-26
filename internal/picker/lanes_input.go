@@ -705,6 +705,7 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 			}
 		}
 		acc.Off = rs[g.rep].policy.Off()
+		acc.SetCap5, acc.SetCap7 = rs[g.rep].policy.SetCap5h, rs[g.rep].policy.SetCap7d
 		if u := rs[g.rep].policy.DrainUntil; u.After(now) && !acc.Off {
 			// The owner drains it: an aggressive drain account until then (setup.md 8.5, Owner drain).
 			acc.DrainUntil = u

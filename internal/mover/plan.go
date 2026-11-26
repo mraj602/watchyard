@@ -266,6 +266,9 @@ type Account struct {
 	// caps for every other session are its caps less these.
 	Pins               int
 	Reserve5, Reserve7 float64
+	// Cap5 and Cap7: next.accounts.<key>.cap_5h and cap_7d when set (0: not set): they replace
+	// Params.Cap5 and Cap7 for this account (an unprotected one; a drain ramps from them).
+	Cap5, Cap7 float64
 }
 
 // Ignores5h: the owner drain is on and drain_ignore_5h set.
@@ -1367,11 +1370,22 @@ func (p Params) caps(a Account, now time.Time) (c5, c7 float64) {
 		}
 		return p.Cap5Protected, p.Cap7Protected
 	}
+	b5, b7 := p.Cap5, p.Cap7
+	if a.Cap5 > 0 {
+		b5 = math.Min(a.Cap5, 100)
+	}
+	if a.Cap7 > 0 {
+		b7 = math.Min(a.Cap7, 100)
+	}
 	if !a.Off && (a.Drain || a.DrainUntil.After(now)) {
 		// A draining account's caps ramp toward its resets (setup.md 8.5, Drain aim).
-		return projection.DrainCapsWith(p.Cap5, p.Cap7, hoursTo(a.W5, now, 5), hoursTo(a.W7, now, -1), p.DrainAim7, p.DrainCapMax7)
+		d5, d7 := projection.DrainCapsWith(b5, b7, hoursTo(a.W5, now, 5), hoursTo(a.W7, now, -1), p.DrainAim7, p.DrainCapMax7)
+		if a.Cap5 > 0 {
+			d5 = b5 // the owner's own 5-hour cap holds while it drains
+		}
+		return d5, d7
 	}
-	return p.Cap5, p.Cap7
+	return b5, b7
 }
 
 // hoursTo is the hours to w's reset; none when it is not known or past.

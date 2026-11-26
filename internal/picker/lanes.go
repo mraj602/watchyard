@@ -290,6 +290,9 @@ type LaneAccount struct {
 	// Off: the owner keeps it out (mode off; setup.md 8.5, Kind): never picked, not even with
 	// --urgent or when nothing else fits.
 	Off bool
+	// SetCap5 and SetCap7: next.accounts.<key>.cap_5h and cap_7d when set (0: not set); the
+	// switch uses them in place of account.move_cap_5h/7d for this account.
+	SetCap5, SetCap7 float64
 }
 
 // Ignores5h reports whether the 5-hour window is ignored for acc: drain_ignore_5h while its
