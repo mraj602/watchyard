@@ -119,6 +119,11 @@ type DigestMove struct {
 	To      string    `json:"to"`
 	Auto    bool      `json:"auto"`
 	Reason  string    `json:"reason,omitempty"`
+	// ResumedAs: the session went on under this new session id. Warn: the resumed session was
+	// not seen on the new account. Error: the move failed.
+	ResumedAs string `json:"resumed_as,omitempty"`
+	Warn      string `json:"warn,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // LimitHit is a session a limit stopped (a StopFailure rate_limit hook event).
@@ -163,6 +168,7 @@ type Digest struct {
 	Since         time.Time       `json:"since"`
 	Until         time.Time       `json:"until"`
 	Moves         []DigestMove    `json:"moves"`
+	Failed        []DigestMove    `json:"failed,omitempty"`
 	LimitHits     []LimitHit      `json:"limit_hits"`
 	Weekly        []WeeklyRoom    `json:"weekly"`
 	ProtectedOver []ProtectedOver `json:"protected_over"`
@@ -185,7 +191,11 @@ func (s State) BuildDigest(since, now time.Time, name func(dir, key string) stri
 	entries := s.Log(since)
 	for _, e := range entries {
 		d.Moves = append(d.Moves, DigestMove{At: e.At, Session: e.SessionID, Name: e.Name, From: name(e.FromDir, e.From),
-			To: name(e.ToDir, e.To), Auto: e.Auto, Reason: e.Reason})
+			To: name(e.ToDir, e.To), Auto: e.Auto, Reason: e.Reason, ResumedAs: e.ResumedAs, Warn: e.Warn})
+	}
+	for _, e := range s.Failed(since) {
+		d.Failed = append(d.Failed, DigestMove{At: e.At, Session: e.SessionID, Name: e.Name, From: name(e.FromDir, e.From),
+			To: name(e.ToDir, e.To), Auto: e.Auto, Reason: e.Reason, Error: e.Error})
 	}
 	if len(passes) == 0 {
 		d.Notes = append(d.Notes, "no pass records in this period (the switch was off, or it ran before passes were recorded): weekly room, protected minutes and suspects are left out")
@@ -303,6 +313,13 @@ func passAccount(p PassRecord, key string) (PassAccount, bool) {
 	return PassAccount{}, false
 }
 
+func short8(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
 func (m DigestMove) text() string {
 	n := m.Name
 	if n == "" {
@@ -319,6 +336,15 @@ func (m DigestMove) text() string {
 	if m.Reason != "" {
 		t += ": " + cutRunes(m.Reason, maxReason)
 	}
+	if m.ResumedAs != "" {
+		t += " [went on as session " + short8(m.ResumedAs) + "]"
+	}
+	if m.Warn != "" {
+		t += " [" + m.Warn + "]"
+	}
+	if m.Error != "" {
+		t += " [FAILED: " + cutRunes(m.Error, maxReason) + "]"
+	}
 	return t
 }
 
@@ -329,6 +355,12 @@ func (d Digest) Text() string {
 	fmt.Fprintf(&b, "\nMoves: %d\n", len(d.Moves))
 	for _, m := range d.Moves {
 		b.WriteString("  " + m.text() + "\n")
+	}
+	if len(d.Failed) > 0 {
+		fmt.Fprintf(&b, "\nMoves that failed: %d\n", len(d.Failed))
+		for _, m := range d.Failed {
+			b.WriteString("  " + m.text() + "\n")
+		}
 	}
 	fmt.Fprintf(&b, "\nLimit hits (sessions a limit stopped): %d\n", len(d.LimitHits))
 	for _, h := range d.LimitHits {

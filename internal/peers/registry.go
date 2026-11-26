@@ -32,6 +32,8 @@ type RegistryEntry struct {
 	JobID           string          `json:"jobId"`
 	Tmux            json.RawMessage `json:"tmux"`
 	StatusUpdatedAt int64           `json:"statusUpdatedAt"`
+	// StartedAt: when the process started (Unix milliseconds).
+	StartedAt int64 `json:"startedAt"`
 
 	// Slot is the config folder the entry was read from (not in the file).
 	Slot identity.Slot `json:"-"`

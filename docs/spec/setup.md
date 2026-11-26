@@ -1315,6 +1315,13 @@ account out of the drain; they only limit how many more it takes).
   reaches the drain aim as it will be at `until`, less the pin reserve (the account is then as
   configured again).
 - *Drain aim* (owner 2026-11-25: "drain slowly till 95-96%, and as time comes reach 98-100%").
+  The far aim (96) and the switch's weekly cap ceiling (99) are `account.drain_aim_7d` and
+  `account.drain_cap_max_7d`, each up to 100: an owner who drains an account to fill its week
+  now (a manual full reset follows) sets both to 100, and the aim is then 100 at every hour to
+  the reset (still less the pin reserve and the 1-point drain margin, so lanes stop at about
+  99 projected); the ramp rises from `drain_aim_7d` to 100 over the last 6 hours, and an aim at
+  or over the ramp's value is used as it is. The switch's weekly cap for the draining account
+  follows the same two keys, so it does not move sessions off below the aim.
   A draining account (automatic or the owner's) aims its week at
 
       aim7 = 96 + 4 × (1 − h/6)    for h < 6 hours to its weekly reset, else 96
@@ -1330,7 +1337,7 @@ account out of the drain; they only limit how many more it takes).
   would land over 99, so a lane is not stopped by a limit before the reset. A lane estimated to
   outlast the week goes to other accounts first (runway), so the last stretch takes short
   lanes. Smart Account Switch's caps for a draining account ramp the same way (5h: the 5-hour
-  aim; 7d: the weekly aim, at most 99). Those caps are the aim itself: the switch's 5-point margin
+  aim; 7d: the weekly aim, at most `drain_cap_max_7d`, 99). Those caps are the aim itself: the switch's 5-point margin
   (`move_hysteresis`) is not kept under them, neither by the picker's switch-projection check
   nor by the switch's moves off it or onto it (a pull onto an owner drain keeps `PullMargin`);
   with it a drain could never come within 5 points of its aim (live pre15: claude-3 at 89%,
@@ -2501,8 +2508,13 @@ what is new, and the hub keeps one row per machine, session and time.
 **Records.** `<state>/move/alerts.json`: the pin alerts (`at`, `session`, `name`, `account`,
 `window`, `hit_at`, `reset_at`, `rate`, `command`), each kept until its window resets.
 `<state>/move/moves.jsonl`: `{"at", "session_id", "from", "to", "from_dir", "to_dir",
-"kind", "auto", "reason", "argv", "error"}` per move (failed ones with `error`; `name` is the
-session's name when it has one). `<state>/move/notify.json`: the push cursor and the moves waiting
+"kind", "auto", "reason", "argv", "error", "resumed_as", "warn"}` per move (failed ones with
+`error`; `name` is the session's name when it has one). A background move waits up to 30 s for
+its `claude --bg` launch to end (output in `<state>/move/logs/<session>.log`); a non-zero exit is
+the move's `error`. It then looks up to 15 s for the resumed session in the new account's
+registry: `resumed_as` is its session id when Claude Code resumed it under a new id (a fork:
+the transcript and job go on under that id), `warn` says none was seen. The digest shows both
+and lists the failed moves. `<state>/move/notify.json`: the push cursor and the moves waiting
 for the next push. `<state>/move/digest.stamp`: the day the digest was last sent.
 `<state>/move/passes.jsonl`: each auto pass's projections per account (`at`, `accounts`: `key`,
 `label`, `protected`, `l5`, `l7`, `p5`, `p7`, `cap5`, `cap7`, `r5`, `reset7_s`, `window`,
@@ -2617,6 +2629,8 @@ move_pull_min_burn = 3      # an owner-drained account pulls in only sessions bu
 move_pull_margin = 10       # a pull keeps the drained account this many points under its caps until its resets
 move_pull_quiet_min = 15    # no pull within this many minutes after a move off the drained account
 move_drain_dest_margin = 2  # a move into a drained account leaves it this many points under its caps (a filled drain does not re-trigger on drift)
+drain_aim_7d = 96           # a draining account's far weekly aim (rises to 100 over the last 6 h before its reset); up to 100: fill the week now
+drain_cap_max_7d = 99       # the most the switch's weekly cap for a draining account is raised to; up to 100
 move_reset_skip_min = 10    # no 5-hour move when the projected 100% hit is within this many minutes of that window's reset; 0: off
 pin_reserve_5h = 10         # points of the 5-hour window kept free per live pinned session (8.6)
 pin_reserve_7d = 5          # points of the week kept free per live pinned session

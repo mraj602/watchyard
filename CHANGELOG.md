@@ -6,7 +6,24 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Drain aim keys** (setup.md 8.5, Drain aim). `account.drain_aim_7d` (default 96) and
+  `account.drain_cap_max_7d` (default 99), each up to 100, set a draining account's far
+  weekly aim and the ceiling of the switch's weekly cap for it; the picker's weekly aim, the
+  owner-drain end check and the switch's caps all follow them, so an owner drain can fill the
+  week to 100 now instead of only in the last 6 hours. The defaults keep today's behaviour.
+
 ### Fixed
+
+- **Smart Account Switch: a background move records what its launch did** (setup.md 8.6).
+  The `claude --bg --resume` launch used to run with its output discarded and its exit
+  status ignored, so a failed launch left a move logged as a success, and a session Claude
+  Code resumed under a new session id (live 2026-11-26: `5c0f0b81` went on as `3c4dbb08`,
+  which looked like a move whose resume never ran) left no trace. The launch's output now goes
+  to `move/logs/<session>.log`, its failure is the move's `error`, and `moves.jsonl` gets
+  `resumed_as` (the new session id) or `warn` (no resumed session seen on the new account
+  within 15 s). `wy move --digest` shows both and lists failed moves.
 
 - **Smart Account Switch: in/out churn on a draining account** (setup.md 8.6). A move into an
   owner-drained account now leaves it `account.move_drain_dest_margin` (default 2) points under

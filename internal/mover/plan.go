@@ -135,6 +135,9 @@ type Params struct {
 	// is within this long of that window's reset: a stall costs at most this, a mid-turn move a
 	// kill and an uncached re-read (live: a move at 01:04 for a hit at 01:55, reset 01:59).
 	ResetSkip time.Duration
+	// DrainAim7, DrainCapMax7: the far weekly aim and the weekly cap ceiling of a draining
+	// account (account.drain_aim_7d, drain_cap_max_7d; 0: projection.DrainAimFar, DrainCapMax7).
+	DrainAim7, DrainCapMax7 float64
 }
 
 // ScaledPinReserve is a's pin reserve scaled to what its a.Pins pinned sessions, burning rate
@@ -171,7 +174,7 @@ var DefaultParams = Params{
 	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, PassWait: 90 * time.Second, Orgs: OrgsAny,
 	PinReserve5: 10, PinReserve7: 5, PinAlertWithin: 2 * time.Hour,
 	CheapMoves: true, YoungGate: 15 * time.Minute, MinBurn: 1, PullMinBurn: 3, PullMargin: 10, PullQuiet: 15 * time.Minute,
-	DrainDestMargin: 2, ResetSkip: 10 * time.Minute,
+	DrainDestMargin: 2, ResetSkip: 10 * time.Minute, DrainAim7: projection.DrainAimFar, DrainCapMax7: projection.DrainCapMax7,
 }
 
 // PinIdle: a pinned session idle this long holds no reserve (the caller counts the live pins).
@@ -1279,7 +1282,7 @@ func (p Params) caps(a Account, now time.Time) (c5, c7 float64) {
 	}
 	if !a.Off && (a.Drain || a.DrainUntil.After(now)) {
 		// A draining account's caps ramp toward its resets (setup.md 8.5, Drain aim).
-		return projection.DrainCaps(p.Cap5, p.Cap7, hoursTo(a.W5, now, 5), hoursTo(a.W7, now, -1))
+		return projection.DrainCapsWith(p.Cap5, p.Cap7, hoursTo(a.W5, now, 5), hoursTo(a.W7, now, -1), p.DrainAim7, p.DrainCapMax7)
 	}
 	return p.Cap5, p.Cap7
 }

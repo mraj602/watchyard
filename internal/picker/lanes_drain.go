@@ -319,7 +319,7 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	}
 	if acc.Limit7d <= 0 && (acc.SwitchCap7 <= 0 || acc.SwitchCap7 >= base) {
 		ceil7 := pinLess(100, acc.PinReserve7)
-		lim7 = math.Min(ceil7, pinLess(projection.DrainAim7(v.hrs), acc.PinReserve7)+p.DrainMargin)
+		lim7 = math.Min(ceil7, pinLess(projection.DrainAim7With(p.DrainAim7d, v.hrs), acc.PinReserve7)+p.DrainMargin)
 		// At the reset the scaled pin reserve is down to its floor (1 point; the full one when
 		// it is not scaled).
 		endR := acc.PinReserve7
@@ -604,7 +604,7 @@ func (p LaneParams) ownerDrainEnds(accs []LaneAccount, m *MoverView, now time.Ti
 		end := full7 - p.DrainMargin
 		if a.Limit7d <= 0 {
 			// The drain aim at its until (Drain aim): it can only rise before then.
-			end = pinLess(projection.DrainAim7(math.Max(0, hrs-a.DrainUntil.Sub(now).Hours())), a.PinReserve7)
+			end = pinLess(projection.DrainAim7With(p.DrainAim7d, math.Max(0, hrs-a.DrainUntil.Sub(now).Hours())), a.PinReserve7)
 		}
 		if OwnerDrainOn(a.DrainUntil, now) && w < end {
 			continue

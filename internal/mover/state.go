@@ -206,6 +206,10 @@ type LogEntry struct {
 	RateKnown bool     `json:"rate_known,omitempty"`
 	Argv      []string `json:"argv,omitempty"`
 	Error     string   `json:"error,omitempty"`
+	// ResumedAs: claude resumed a background session under this new session id (a fork); it
+	// goes on there. Warn: the move ran but the resumed session was not seen on the new account.
+	ResumedAs string `json:"resumed_as,omitempty"`
+	Warn      string `json:"warn,omitempty"`
 	// Recheck: the re-check after its step wait changed its destination (Move.Recheck).
 	Recheck string `json:"recheck,omitempty"`
 }
@@ -232,6 +236,17 @@ func (s State) Log(since time.Time) []LogEntry {
 	var out []LogEntry
 	for _, e := range s.LogAll(since) {
 		if e.Error == "" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// Failed returns the moves since since that failed (they carry an error), oldest first.
+func (s State) Failed(since time.Time) []LogEntry {
+	var out []LogEntry
+	for _, e := range s.LogAll(since) {
+		if e.Error != "" {
 			out = append(out, e)
 		}
 	}
