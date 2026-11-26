@@ -135,6 +135,13 @@ type Params struct {
 	// is within this long of that window's reset: a stall costs at most this, a mid-turn move a
 	// kill and an uncached re-read (live: a move at 01:04 for a hit at 01:55, reset 01:59).
 	ResetSkip time.Duration
+	// DestResetWithin: a destination whose 5-hour window resets within this long must also fit
+	// the window after the reset: its projection to the reset counts the moved burn for only
+	// those minutes, while the trigger after the reset projects it over a whole new window
+	// (live 2026-11-27 01:18-01:29: claude-7, resetting at 01:30, took 43 points/h of lanes
+	// at a projected 64%; at 01:31 it was "5h projected 170%" and the lanes moved off again).
+	// 0: off.
+	DestResetWithin time.Duration
 	// DrainAim7, DrainCapMax7: the far weekly aim and the weekly cap ceiling of a draining
 	// account (account.drain_aim_7d, drain_cap_max_7d; 0: projection.DrainAimFar, DrainCapMax7).
 	DrainAim7, DrainCapMax7 float64
@@ -190,7 +197,7 @@ var DefaultParams = Params{
 	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, PassWait: 90 * time.Second, Orgs: OrgsAny,
 	PinReserve5: 10, PinReserve7: 5, PinAlertWithin: 2 * time.Hour,
 	CheapMoves: true, YoungGate: 15 * time.Minute, MinBurn: 1, PullMinBurn: 3, PullMargin: 10, PullQuiet: 15 * time.Minute,
-	DrainDestMargin: 2, ResetSkip: 10 * time.Minute, DrainAim7: projection.DrainAimFar, DrainCapMax7: projection.DrainCapMax7,
+	DrainDestMargin: 2, ResetSkip: 10 * time.Minute, DestResetWithin: 30 * time.Minute, DrainAim7: projection.DrainAimFar, DrainCapMax7: projection.DrainCapMax7,
 }
 
 // PinIdle: a pinned session idle this long holds no reserve (the caller counts the live pins).
@@ -394,6 +401,9 @@ type Projection struct {
 	// further ("only pinned burn left ...").
 	Left  string `json:",omitempty"`
 	ratio float64
+	// nextFit: a destination check's time under its 5-hour cap counting the window after its
+	// reset (DestResetWithin; 0: not counted), for fitFor.
+	nextFit time.Duration
 }
 
 // Move is one planned move.
@@ -1214,6 +1224,33 @@ func (p Params) destHyst(pr Projection) (h5, h7 float64) {
 	return h5, h7
 }
 
+// resetsSoon reports whether a destination's 5-hour window resets within DestResetWithin (and
+// counts: not ignored by drain_ignore_5h).
+func (p Params) resetsSoon(a Account, now time.Time) bool {
+	return p.DestResetWithin > 0 && !p.oldDest && a.W5.Reset.After(now) && a.W5.Reset.Sub(now) <= p.DestResetWithin && !a.Ignores5h(now)
+}
+
+// nextWindow is account a's projection of the 5-hour window that starts at its reset: from no
+// level, its sessions ss (each until its expected end, from now) and extra points per hour
+// burning through the whole window, against its caps at the reset. Only P5 and Cap5 count.
+func (p Params) nextWindow(a Account, ss []Session, extra float64, now time.Time) Projection {
+	at := a.W5.Reset
+	shift := at.Sub(now)
+	a.W5 = Window{Reset: at.Add(5 * time.Hour)}
+	next := make([]Session, 0, len(ss))
+	for _, s := range ss {
+		if s.Expected > 0 {
+			if e := max(s.Expected, ExpectFloor) - shift; e > 0 {
+				s.Expected = e
+			} else {
+				s.Rate = 0 // ends before the reset
+			}
+		}
+		next = append(next, s)
+	}
+	return p.Project(a, next, extra, at)
+}
+
 // nearReset reports whether a 5-hour trigger that is not a limit reached now has its projected
 // 100% hit within ResetSkip of the window's reset. A projection that reaches 100 only at the
 // reset itself is a soft overshoot with no stall to save, and is not skipped.
@@ -1479,7 +1516,23 @@ func (p Params) destination(in Input, s Session, st *moveState, delta map[string
 			pr.P7 -= r / pr.ratio * math.Max(0, math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())-e)
 		}
 		h5, h7 := p.destHyst(pr)
-		return pr, pr.P5 <= pr.Cap5-h5 && pr.P7 <= pr.Cap7-h7 && pr.Level5 < pr.Cap5-h5 && pr.Level7 < pr.Cap7-h7
+		ok := pr.P5 <= pr.Cap5-h5 && pr.P7 <= pr.Cap7-h7 && pr.Level5 < pr.Cap5-h5 && pr.Level7 < pr.Cap7-h7
+		if p.resetsSoon(a, now) {
+			// The burn goes on past the reset: the next window must hold it too.
+			nx := p.nextWindow(a, byAcc[a.Key], delta[a.Key]+r, now)
+			if s.Expected > 0 && r > 0 {
+				e := max(s.Expected, ExpectFloor) - pr.Reset5
+				nx.P5 -= r * math.Max(0, 5-math.Max(0, e.Hours()))
+			}
+			n5, _ := p.destHyst(nx)
+			if nx.P5 > nx.Cap5-n5 {
+				ok = false
+				nx.P7, nx.Level7 = 0, 0
+				nx.Cap5 -= n5
+				pr.nextFit = pr.Reset5 + min(p.fitFor(nx), 5*time.Hour)
+			}
+		}
+		return pr, ok
 	}
 	if p.DestHorizon > 0 && p.oldDest {
 		full := room
@@ -1652,6 +1705,9 @@ func (p Params) fitFor(pr Projection) time.Duration {
 	}
 	one(pr.Level5, pr.P5, pr.Cap5, pr.Reset5.Hours())
 	one(pr.Level7, pr.P7, pr.Cap7, math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours()))
+	if pr.nextFit > 0 && pr.nextFit < fit {
+		fit = pr.nextFit // over its cap in the window after its reset
+	}
 	return fit
 }
 

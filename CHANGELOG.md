@@ -27,6 +27,11 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Fixed
 
+- **Smart Account Switch: no move onto an account just before its 5-hour reset that its next
+  window cannot hold** (setup.md 8.6, Destination near its reset). A destination resetting
+  within 30 minutes was judged only to its reset, so any burn fit (live: claude-7, resetting at
+  01:30, took 43 points/h of lanes at a projected 64%, was "5h projected 170%" after the reset
+  and the lanes moved off again). It must now also fit the window after the reset; pulls too.
 - **Smart Account Switch: a forked session keeps its move history** (setup.md 8.6). When Claude
   Code resumed a moved session under a new id (`resumed_as` in moves.jsonl), the new id had no
   history, so the cooldown, no-return, young-gate age and chain did not apply: a session moved at
