@@ -442,3 +442,62 @@ func TestJobID(t *testing.T) {
 		t.Errorf("bad json: %q", got)
 	}
 }
+
+func TestResumeArgsNamesRemoteControl(t *testing.T) {
+	has := func(a []string, want ...string) bool {
+		for i := range a {
+			if i+len(want) <= len(a) && strings.Join(a[i:i+len(want)], "\x00") == strings.Join(want, "\x00") {
+				return true
+			}
+		}
+		return false
+	}
+	count := func(a []string, f string) int {
+		n := 0
+		for _, x := range a {
+			if x == f {
+				n++
+			}
+		}
+		return n
+	}
+	base := Launch{SessionID: "s", Name: "Watchyard Fixes", Kind: KindBackground}
+
+	l := base
+	l.RemoteControl = true
+	a := ResumeArgs(l, "n")
+	if !has(a, "--remote-control", "Watchyard Fixes") || !has(a, "--name", "Watchyard Fixes") {
+		t.Errorf("registry bridge: %v", a)
+	}
+
+	l = base // no Remote Control: not added
+	if a = ResumeArgs(l, "n"); count(a, "--remote-control") != 0 {
+		t.Errorf("no RC: %v", a)
+	}
+
+	l = base
+	l.Argv = []string{"--remote-control", "--model", "opus"} // bare flag from argv
+	a = ResumeArgs(l, "n")
+	if count(a, "--remote-control") != 1 || !has(a, "--remote-control", "Watchyard Fixes") || !has(a, "--model", "opus") {
+		t.Errorf("bare: %v", a)
+	}
+
+	l = base
+	l.Argv = []string{"--rc", "--model", "opus"}
+	a = ResumeArgs(l, "n")
+	if count(a, "--rc") != 0 || count(a, "--remote-control") != 1 || !has(a, "--remote-control", "Watchyard Fixes") {
+		t.Errorf("rc: %v", a)
+	}
+
+	l = base
+	l.Argv = []string{"--remote-control", "Custom"}
+	a = ResumeArgs(l, "n")
+	if !has(a, "--remote-control", "Custom") || count(a, "--remote-control") != 1 {
+		t.Errorf("explicit kept: %v", a)
+	}
+
+	l = Launch{SessionID: "s", Kind: KindBackground, RemoteControl: true, Name: "  "}
+	if a = ResumeArgs(l, "n"); count(a, "--remote-control") != 0 {
+		t.Errorf("blank name: %v", a)
+	}
+}

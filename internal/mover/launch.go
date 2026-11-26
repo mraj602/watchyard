@@ -227,11 +227,14 @@ func HasPrompt(argv []string) bool {
 func ResumeArgs(l Launch, note string) []string {
 	args := KeptArgs(l.Argv)
 	args = append(args, "--resume", l.SessionID)
-	// The resumed session opens a new Remote Control session under the new account, titled
-	// from its first prompt (the move note) unless it has a name: pass the session's own.
-	if n := strings.TrimSpace(l.Name); n != "" && !hasFlag(args, "--name", "-n") {
+	// The resumed session opens a new Remote Control session, titled from its first prompt (the
+	// move note) unless the flag names it: --name does not name it (live test, 2.1.332), so a
+	// session that had Remote Control gets --remote-control <its name>.
+	n := strings.TrimSpace(l.Name)
+	if n != "" && !hasFlag(args, "--name", "-n") {
 		args = append(args, "--name", n)
 	}
+	args = nameRemoteControl(args, n, l.RemoteControl)
 	prompt := note + PromptTail
 	if l.MidTurn {
 		prompt = note // the mid-turn note ends "Carry on with your task."
@@ -248,6 +251,36 @@ func ResumeArgs(l Launch, note string) []string {
 		if l.MidTurn {
 			args = append(args, prompt)
 		}
+	}
+	return args
+}
+
+// nameRemoteControl makes the Remote Control flag of args carry name: a bare
+// --remote-control/--rc (no value) is replaced by --remote-control <name>, one that already
+// has a value stays, and with had (the session had Remote Control) and none in args it is
+// added. A blank name leaves args as they are.
+func nameRemoteControl(args []string, name string, had bool) []string {
+	if name == "" {
+		return args
+	}
+	for i, a := range args {
+		if a == "--" {
+			break
+		}
+		switch {
+		case a == "--remote-control" || a == "--rc":
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				return args // already named
+			}
+			out := append([]string(nil), args[:i]...)
+			out = append(out, "--remote-control", name)
+			return append(out, args[i+1:]...)
+		case strings.HasPrefix(a, "--remote-control=") || strings.HasPrefix(a, "--rc="):
+			return args
+		}
+	}
+	if had {
+		args = append(args, "--remote-control", name)
 	}
 	return args
 }
