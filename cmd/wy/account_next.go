@@ -53,8 +53,13 @@ const nextFlushEvery = 2 * time.Second
 
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// nextHubTimeout bounds all hub reads of one run.
-const nextHubTimeout = 5 * time.Second
+// nextHubTimeout bounds all hub reads of one run; moveHubTimeout those of a switch pass, which
+// runs in the background: during the hub's hourly backup GET /v1/usage took over 5 s and the
+// passes fell back to this machine's own readings (live 2026-11-25 20:06, every account stale).
+const (
+	nextHubTimeout = 5 * time.Second
+	moveHubTimeout = 20 * time.Second
+)
 
 // nextEnv is what `wy account next` reads; tests build it on temporary folders.
 type nextEnv struct {
@@ -76,6 +81,8 @@ type nextEnv struct {
 	// spawn starts `wy <args>` in the background; nil means a detached copy of this binary
 	// (none with WY_NO_SPAWN=1).
 	spawn func(args []string) error
+	// hubTimeout bounds the hub reads of one run; 0 means nextHubTimeout.
+	hubTimeout time.Duration
 	// parent is the session this command runs inside (its id), recorded on the leases so
 	// Watchyard can tell it when one of its lanes moves (setup.md 8.6, Who is told); nil means
 	// the nearest Claude Code ancestor (peers' Whoami), "" outside a session.
@@ -288,9 +295,13 @@ func accountNext(e nextEnv, args []string) error {
 	}
 	src.Local = ob.Samples
 	in := picker.Input{Now: now, Strategy: strat, Model: *model, Settings: settings, Candidates: picker.Candidates(slots, src),
-		Outbox: ob, N: k, SIDs: sids, Urgent: *urgent, Expect: x.Dur, HubDown: hubErr != ""}
+		Params: laneParams(cfg), Outbox: ob, N: k, SIDs: sids, Urgent: *urgent, Expect: x.Dur, HubDown: hubErr != ""}
 	if x != (picker.LaneExpect{}) {
 		in.Expects = []picker.LaneExpect{x}
+	}
+	if lanes {
+		// setup.md 8.6, Pinned sessions; 8.5, The switch's projection.
+		in.PinReserves, in.Mover = nextSwitch(e, cfg, slots, in.Candidates, ob.Tokens, now)
 	}
 	// The seats' hub modes: kept after each hub read, used when the hub could not be read (a
 	// setting: no age limit; setup.md 8.5, Kind).
@@ -495,6 +506,11 @@ func leaseLines(res picker.Result, model string, now time.Time) []leases.Line {
 			fb := p.FinishBy.UTC()
 			out[len(out)-1].Drain, out[len(out)-1].FinishBy = true, &fb
 		}
+		if p.SwitchDur > 0 {
+			end := now.Add(p.SwitchDur).UTC()
+			l := &out[len(out)-1]
+			l.Expect, l.ExpectMin, l.ExpectEnd = p.SwitchClass, math.Round(p.SwitchDur.Minutes()*10)/10, &end
+		}
 	}
 	return out
 }
@@ -654,9 +670,13 @@ func nextHub(e nextEnv, cfg config.Config, slots []picker.Slot, machine string, 
 		}
 		tr = t
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), nextHubTimeout)
+	limit := e.hubTimeout
+	if limit <= 0 {
+		limit = nextHubTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
-	hc := picker.HubClient{URL: cfg.Hub.URL, HTTP: &http.Client{Transport: tr, Timeout: nextHubTimeout}}
+	hc := picker.HubClient{URL: cfg.Hub.URL, HTTP: &http.Client{Transport: tr, Timeout: limit}}
 	timeout := func(err error) error {
 		if ctx.Err() != nil {
 			return errors.New("the hub did not answer in time")

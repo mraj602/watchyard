@@ -12,6 +12,7 @@ import (
 
 	"github.com/mraj602/watchyard/internal/config"
 	"github.com/mraj602/watchyard/internal/doctor"
+	"github.com/mraj602/watchyard/internal/mover"
 	"github.com/mraj602/watchyard/internal/paths"
 	"github.com/mraj602/watchyard/internal/status"
 )
@@ -49,15 +50,26 @@ func runStatus(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// Pinned sessions that alone take their account to 100 (setup.md 8.6, Pinned sessions).
+	alerts := mover.NewState(d.State.Path).Alerts(now)
 	if *asJSON {
 		if rows == nil {
 			rows = []status.Row{}
 		}
+		if alerts == nil {
+			alerts = []mover.PinAlert{}
+		}
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(map[string]any{"sessions": rows})
+		return enc.Encode(map[string]any{"sessions": rows, "pin_alerts": alerts})
 	}
-	return status.Render(stdout, rows, now)
+	if err := status.Render(stdout, rows, now); err != nil {
+		return err
+	}
+	for _, a := range alerts {
+		fmt.Fprintln(stdout, "alert: "+a.Text())
+	}
+	return nil
 }
 
 // runDoctor is `wy doctor [--json] [--rebaseline]`. It exits non-zero only when a check

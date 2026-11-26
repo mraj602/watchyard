@@ -127,9 +127,11 @@ func Run(ctx context.Context, o Options) Report {
 		set, serr := readSettings(o.FS, filepath.Join(s.Dir, "settings.json"))
 		checkHooks(&rep, s, set, serr)
 		checkStatusline(&rep, s, set, serr)
+		checkMoverHooks(&rep, s, set, serr, cfg.Account.SmartSwitch)
 	}
 	checkSymlinks(&rep, o, slots)
 	checkSetup(&rep, o, cfg, slots)
+	checkTimerUnit(&rep, o, cfg)
 	checkAgent(&rep, o, cfg)
 	checkOutbox(&rep, o, cfg)
 	checkMachine(ctx, &rep, o, cfg)

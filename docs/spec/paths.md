@@ -148,7 +148,12 @@ one folder.
   move/moves.jsonl             Smart Account Switch: every move, mode 0600 (setup.md 8.6)
   move/notes/<session>.json    the one-line note the moved session's SessionStart hook prints once
   move/runs/<pid>.json, move/orders/<pid>.json  wy run wrappers and their relaunch orders
-  move/pins.json               sessions pinned to their account (wy move --pin-account)
+  move/steps/<session>/<id>    one tool call of a session: start and end (step hooks; ended ones kept a day)
+  move/pass.lock               held while a Smart Account Switch pass plans (one at a time)
+  move/locks/<session>.lock    held while a move of the session waits for its step and runs
+  move/waits/<session>         when a mid-turn move of the session began waiting (across passes)
+  move/pins.json               retired: pins of the old wy move --pin-account, left in place and
+                               not read (pins come from Claude Code's <config dir>/jobs/pins.json)
   move/logs/<session>.log      output of a moved headless session
   move.stamp                   wy tick's last Smart Account Switch pass (every 2 minutes)
   keys/                        mode 0700: device.json, owner.sealed (owner machine), owner.pub, hub.pub,
@@ -247,6 +252,9 @@ delivery = "honest"                          # honest | accept | courier (peers.
 smart_switch = false                         # on: wy tick moves sessions predicted to hit a limit before its reset
 move_launch = ""                             # command a moved session starts with ({dir}, {n}, {label})
 smart_switch_scope = "all"                   # which sessions may move: all | tag:<tag> | sessions:<id>,...
+move_orgs = "any"                            # any | same-first | same: may a session move to another organisation
+move_cap_5h = 95                             # and the other move_* numbers of setup.md 8.6 (caps, burn window,
+                                             # spike filter, cooldown, no-return, account rate, notices)
 
 [next]                                       # wy account next (setup.md 8.5)
 strategy = "lanes"                           # lanes | smart | expiring | most-room | spread | fill | sticky

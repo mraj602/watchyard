@@ -13,7 +13,7 @@ import { isOwner, ensureSessions, reorderSeats } from '../store.js';
 import { moveBy, dropTarget, dropOrder, moveSentence } from '../components/order.js';
 import { patchJSON, getRelation } from '../api.js';
 import { verdictModel, verdictAge, tilesModel, sessionLine, ratioChart, capacityModel, howRows, CHART_HINT } from '../components/relation-fmt.js';
-import { MODE_WORDS, MODE_OPTIONS, MODE_QUESTION, modeKey, localOverrideLine } from '../components/pick-mode.js';
+import { MODE_WORDS, MODE_OPTIONS, MODE_QUESTION, OFF_LINE, seatModeKey, drainText, drainInputValue, localInputValue, modeBody, localOverrideLine } from '../components/pick-mode.js';
 import { relChart } from '../components/rel-chart.js';
 import { toast } from '../components/ui.js';
 
@@ -377,20 +377,22 @@ function relationBody(seat, st, now) {
 }
 
 // ---- how the picker uses this account (pwa.md 3.0a) -------------------------------------------
-// The seat's hub setting (Seat.mode): the owner picks with radio buttons, which save at once
-// with PATCH /v1/accounts/{seat} {"mode": ...}; a refusal puts the old choice back.
-const modeState = { busy: '', error: '', errorId: '' };
+// The seat's hub setting (Seat.mode, Seat.drain_until): the owner picks with radio buttons, which
+// save at once with PATCH /v1/accounts/{seat} (modeBody: {mode, drain_until: null}, or for Drain
+// {drain_until} from the time field); a refusal puts the old choice back.
+const modeState = { busy: '', error: '', errorId: '', drainOpen: '', time: '' };
 
-async function saveMode(seat, value) {
-  if ((seat.mode || null) === value) return;
-  const prev = seat.mode || null;
-  seat.mode = value;
+async function saveMode(seat, body) {
+  if (!body) return;
+  const prev = { mode: seat.mode || null, drain_until: seat.drain_until || null };
+  Object.assign(seat, body);
   Object.assign(modeState, { busy: seat.id, error: '', errorId: seat.id });
   again();
   try {
-    Object.assign(seat, await patchJSON(`/v1/accounts/${encodeURIComponent(seat.id)}`, { mode: value }));
+    Object.assign(seat, await patchJSON(`/v1/accounts/${encodeURIComponent(seat.id)}`, body));
+    modeState.drainOpen = '';
   } catch (ex) {
-    seat.mode = prev;
+    Object.assign(seat, prev);
     modeState.error = ex.status === 403 ? 'Sign in as owner to change this.' : ex.message || 'Could not save.';
     if (ex.name === 'AuthError') toast(ex.message);
   }
@@ -398,23 +400,58 @@ async function saveMode(seat, value) {
   again();
 }
 
+// The Drain choice: a date-and-time field (local; prefilled with the current end while draining,
+// else the end of today) and Start / Change, which send exactly what the field shows (a past
+// time is refused here, never moved to another day); "Stop draining" sends drain_until null.
+function drainForm(seat, draining) {
+  if (modeState.drainOpen !== seat.id && !draining) return null;
+  let value = modeState.drainOpen === seat.id && modeState.time ? modeState.time : drainInputValue(seat);
+  const input = h('input', { type: 'datetime-local', class: 'drain-until', value, min: localInputValue(new Date()), step: 60, required: true,
+    'aria-label': 'Drain until', 'data-key': `drain-time-${seat.id}`,
+    oninput: (e) => { value = e.target.value; modeState.time = value; modeState.drainOpen = seat.id; } });
+  input.value = value; // the property too: the attribute alone is only the default
+  const send = () => {
+    const body = modeBody('drain', value);
+    if (!body) {
+      Object.assign(modeState, { error: 'Pick a date and time in the future.', errorId: seat.id });
+      again();
+      return;
+    }
+    saveMode(seat, body);
+  };
+  return h('div', { class: 'drain-form row-ctl', 'data-key': `drain-form-${seat.id}` },
+    h('label', { class: 'drain-label' }, 'Until ', input),
+    h('button', { type: 'button', class: 'btn', 'data-key': `drain-save-${seat.id}`, onclick: send }, draining ? 'Change' : 'Start draining'),
+    draining ? h('button', { type: 'button', class: 'btn', 'data-key': `drain-stop-${seat.id}`, onclick: () => saveMode(seat, { drain_until: null }) }, 'Stop draining') : null);
+}
+
 function modeSection(seat) {
-  const key = modeKey(seat.mode);
+  const key = seatModeKey(seat);
+  const draining = key === 'drain';
   const st = rel.get(seat.id);
   const override = localOverrideLine(st && st.data ? st.data.verdict : null, seat.mode);
   const busy = modeState.busy === seat.id;
+  const shown = key === 'off' ? OFF_LINE : draining ? drainText(seat) : '';
   return h('section', { class: 'acct-sec', 'data-key': `mode-${seat.id}` }, h('h3', {}, 'How the picker uses this account'),
     key === 'none' ? h('p', { class: 'mode-unset', 'data-key': `mode-unset-${seat.id}` }, MODE_WORDS.none.definition) : null,
+    shown ? h('p', { class: 'mode-state', 'data-key': `mode-state-${seat.id}` }, shown) : null,
     isOwner() ? h('fieldset', { class: 'mode-pick', 'data-key': `mode-pick-${seat.id}`, disabled: busy ? true : undefined },
       h('legend', {}, MODE_QUESTION),
       MODE_OPTIONS.map((o) => {
         const w = MODE_WORDS[o.key];
         const id = `mode-${seat.id}-${o.key}`;
-        return h('div', { class: `mode-opt${key === o.key ? ' is-on' : ''}` },
-          h('input', { type: 'radio', name: `mode-${seat.id}`, id, value: o.key, checked: key === o.key ? true : undefined, 'data-key': `mode-opt-${seat.id}-${o.key}`,
-            'aria-describedby': `${id}-def`, onchange: () => saveMode(seat, o.value) }),
+        const on = key === o.key || (o.key === 'drain' && modeState.drainOpen === seat.id);
+        return h('div', { class: `mode-opt${on ? ' is-on' : ''}` },
+          h('input', { type: 'radio', name: `mode-${seat.id}`, id, value: o.key, checked: on ? true : undefined, 'data-key': `mode-opt-${seat.id}-${o.key}`,
+            'aria-describedby': `${id}-def`,
+            onchange: () => {
+              if (o.key === 'drain') { if (!draining) { modeState.drainOpen = seat.id; modeState.time = ''; again(); } return; }
+              modeState.drainOpen = '';
+              saveMode(seat, modeBody(o.key));
+            } }),
           h('label', { for: id }, h('b', {}, w.name)),
-          h('p', { class: 'small muted mode-def', id: `${id}-def` }, w.definition));
+          h('p', { class: 'small muted mode-def', id: `${id}-def` }, w.definition),
+          o.key === 'drain' ? drainForm(seat, draining) : null);
       }))
       : h('p', { class: 'small', 'data-key': `mode-read-${seat.id}` }, h('b', {}, MODE_WORDS[key].name), key === 'none' ? null : `: ${MODE_WORDS[key].definition}`),
     modeState.error && modeState.errorId === seat.id ? h('p', { class: 'form-error', role: 'alert', 'data-key': `mode-error-${seat.id}` }, modeState.error) : null,

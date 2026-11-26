@@ -9,7 +9,7 @@ more, so you set things up once.
 Use only your own accounts, each used within the terms of its plan. Watchyard never
 switches or rotates accounts for you, and it never shares a login between folders.
 
-## Choosing protected or aggressive
+## Choosing protected, aggressive or off
 
 `wy account next` (below) decides where new Claude Code sessions go. Tell it, once per
 account, how to treat that account:
@@ -20,6 +20,10 @@ account, how to treat that account:
   anyway, and nothing ever falls back onto it when the other accounts are full.
 - **Aggressive**: use it up. Sessions go here until 98% of the week or 5 hours. Choose it for
   accounts that only run agents.
+- **Off**: never picked and nothing is moved into it; sessions already there stay. Stricter
+  than protected: no new session goes there even when every other account is full, the Smart
+  Account Switch never moves a session into it or off it, and a drain on it is ignored. Its
+  usage is still shown. Use it for an account you want left alone completely for a while.
 - **Not chosen**: treated as aggressive, as before this setting existed. The board, the phone
   app and `wy account next --explain` show "Not chosen yet; treated as aggressive." with the
   choice one click away.
@@ -31,7 +35,8 @@ machine uses it. `wy setup` and `wy account add` also ask once per account that 
 in this machine's config.
 
 **A setting on one machine still wins there.** `wy config set next.accounts.<email>.mode
-protected` (or `aggressive`) overrides the hub's choice on that machine only; `--explain` says
+protected` (or `aggressive`, `off`), or `wy account mode <label> protected|aggressive|off|none`,
+overrides the hub's choice on that machine only; `--explain` says
 "set on this machine", and the board names the machine when its setting differs from the
 hub's. Settings made this way before this release keep working unchanged; to share one, pick
 the same mode on the board and delete the `mode` line from this machine's config.toml (`wy paths`
@@ -118,6 +123,14 @@ or **protected** (kept for you and used last: it is preferred while its week is 
 plus 10 points, under 85 %, and its 5 hours under 45 %; past that it still takes a session when no
 aggressive account can, so work never waits while any account can safely take it).
 
+**Draining an account on purpose.** On the board or in the phone app (Accounts, the account,
+choose **Drain** and its end time), or with `wy account drain <label> [--until 18:00]` (default: the end of today),
+you can make an account drain now: new sessions go to it first, and with Smart Account Switch on
+busy sessions of other accounts are pulled into it, up to 97% of its week. The drain is kept on
+the hub, so every machine drains it (`--local`: this machine only), and it ends by itself at
+its end time or at 97% of the week. `wy account drain <label> off` ends it early. Your phone
+gets a notice when a drain starts, ends and pulls sessions in (the Drain notification category).
+
 An aggressive account **drains** when its week resets soon with room left: within a day, or
 within twice the time it would need to use that room running flat out. A draining account goes
 first and takes as many sessions at once as its room can absorb before the reset, worked out
@@ -130,7 +143,9 @@ short, up to 2 hours medium, longer long. A long session is kept off accounts wh
 before it would finish, so short ones use up the room that is about to expire. Without it, a
 session counts as your typical one. A
 protected account drains too, but only when its room would expire even at full speed, and only
-after every aggressive draining account. Then come aggressive accounts whose room is at risk,
+after every aggressive draining account; with Smart Account Switch on, in the last 3 hours before
+its weekly reset (`account.move_expiring_h`) it may be drained up to 98% of its week, its 5 hours
+still kept under 80%. Then come aggressive accounts whose room is at risk,
 then the other aggressive accounts in turn (one whose running sessions will use up its 5 hours
 waits for them), then those with an unknown weekly level, and protected accounts last, only when
 no aggressive account has room. Nothing waits while an account can take a session safely: the
@@ -177,6 +192,54 @@ each printed folder with `claude --session-id <its uuid>` (or one at a time with
 `wy account next --exec --session-id <uuid> -- claude …`). Start only the sessions it placed,
 and when it exits 4 wait instead of starting the rest anyway. Exit 3 means a session id was
 already used: make new ones.
+
+## Moving running sessions (Smart Account Switch)
+
+Off by default. When it is on, `wy tick` checks every minute whether an account will reach its
+5-hour or weekly limit before that window resets at the current burn, and moves the sessions
+that are burning it to an account with room, so they never stall at the limit:
+
+```sh
+wy move --plan                         # each account's projection, the moves and notices a pass would make
+wy config set account.smart_switch on  # let it move sessions by itself (off: nothing moves)
+wy config set account.move_orgs same-first   # any (default) | same-first | same
+wy move <session> [<account>]          # move one by hand
+wy move --selftest                     # run --plan in the timer's own environment: is claude found there?
+```
+
+What it does, in short:
+
+- It moves only sessions that burned in the last 10 minutes, the biggest burner first, and only
+  as many as bring the account back under its cap (95% of the 5-hour, 98% of the weekly window;
+  80/80 for a protected account). Idle sessions never move.
+- Background, headless and agent tmux sessions move even in the middle of a turn: Claude Code
+  stops and resumes under the new account with a note that tells the session what happened, and
+  it goes on by itself. Its peers handles keep working, and the session that started it is told.
+- A session in the middle of a turn is moved between two steps (tool calls), not inside one: the
+  move waits up to 3 minutes (`account.move_step_wait_min`) for the running step to end, so a
+  step is not cut short and run again after the move.
+- Sessions you work in move too, and you see a message where they ran: a tmux pane or a `wy run`
+  terminal gets the session back in place under the new account, with the message printed above
+  it; a plain terminal's session goes on as a background agent on the new account, and the
+  terminal gets the message with the commands to see it (`claude agents`) or attach it there.
+- Only accounts logged in on this machine are destinations, the session's organisation per
+  `account.move_orgs`, aggressive accounts first and protected ones last.
+- A session you pin in Claude Code itself stays where it is: Watchyard reads the account's
+  `jobs/pins.json` (never writes it); there is no other way to pin (`wy move --pin-account` and
+  the peers tag `no-move` are retired). `wy move --plan` and `--list` list the pinned sessions,
+  and moving one by hand needs `--force` (its pin stays on the old account's list; its note says
+  you moved it, with no forecast). Pin the
+  long-running sessions that burn little but must not stop (a Slack watcher, an orchestrator, a
+  CI watcher): each live pinned session keeps 10% of its account's 5-hour window and 5% of
+  its week free (`account.pin_reserve_5h`, `account.pin_reserve_7d`). The picker hands out new
+  lanes as if the account's limits were that much lower, and the switch moves the other burners
+  off before they eat into it. A pin that has been idle for 6 hours holds nothing. When a pinned
+  session alone would take its account to 100% within 2 hours, `wy status` and the switch's log
+  say so once, with the `wy move` command to move it by hand. `wy account next --explain` and
+  `wy move --plan` show each account's reserve.
+
+Every number above is a setting (`wy config list | grep move_`); the full rules are in
+setup.md 8.6.
 
 ## Sharing
 

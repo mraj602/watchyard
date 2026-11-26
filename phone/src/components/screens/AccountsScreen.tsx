@@ -11,11 +11,11 @@
 // "+ Add account" is in the header (a tab for a hub account this phone has none for).
 import { useRef, useState } from 'react';
 import { LayoutAnimation, Modal, Pressable, Text, View } from 'react-native';
-import type { PickMode, Seat, UsageRelation } from '../../contract/api';
+import type { Seat, SeatPatch, UsageRelation } from '../../contract/api';
 import {
   agoLabel, mostRoom, paceInfo, pct, planLabel, plural, resetWords, seatIndex, seatName, shownUse, sortWindows, tighterWindow, windowLabel, windowPhase, worstPace,
 } from '../../lib/format';
-import { localOverrideLine, MODE_OPTIONS, MODE_WORDS, modeChoice, modeOption, type ModeChoice } from '../../lib/format/pickMode';
+import { drainChoices, drainEnd, drainLine, drainPatch, localOverrideLine, MODE_OPTIONS, MODE_WORDS, modeChoice, modeOption, modePatch, type ModeChoice, type ModeValue } from '../../lib/format/pickMode';
 import {
   MODEL_COLOURS, NO_VERDICT, relationStale, GAP_MARK, TAP_HINT, usageModel, type Chart, type UsageModel,
 } from '../../lib/format/relation';
@@ -28,7 +28,7 @@ import { go } from '../nav';
 import { giveTab, profilesChanged, signOutTab, useTabMemos, useTabProfiles } from '../tab-memo';
 import { useTabsSupported } from '../tabs';
 import { useTheme } from '../theme';
-import { Btn, Calm, Card, Dot, Meter, Muted, Page, useToast, useToneColour } from '../ui';
+import { Btn, Calm, Card, Chip, Dot, Meter, Muted, Page, useToast, useToneColour } from '../ui';
 
 export default function AccountsScreen({ seat: focus }: { seat?: string }) {
   const api = useHubApi();
@@ -330,7 +330,7 @@ function AccountRow({ seat, colour, now, highlight, expanded, onToggle, canCount
 
 /**
  * How should the picker use this account? (pwa.md 3.0a, setup.md 8.5 Kind.) The owner picks
- * protected, aggressive or not chosen, each with its definition, and it saves at once
+ * aggressive, protected, drain (until a time), off or not chosen, each with its definition, and it saves at once
  * (PATCH /v1/accounts/{seat}); a refusal puts the old choice back and says why. Anyone else
  * reads the current choice. Not chosen is highlighted. `verdict` is the loaded relation's, for
  * the line about a setting on the picker's machine.
@@ -339,22 +339,38 @@ function ModeSection({ seat, verdict }: { seat: Seat; verdict: UsageRelation['ve
   const t = useTheme();
   const api = useHubApi();
   const owner = api.me?.owner === true;
-  const [pending, setPending] = useState<{ value: ModeChoice } | null>(null);
+  const [pending, setPending] = useState<{ value: ModeValue } | null>(null);
+  const [choosing, setChoosing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const shown = pending ? pending.value : modeChoice(seat.mode);
-  const current = modeOption(shown);
+  const drainingUntil = drainEnd(seat.drain_until, api.now);
+  const shown: ModeValue = pending ? pending.value : drainingUntil != null ? 'drain' : modeChoice(seat.mode);
+  const current = MODE_OPTIONS.find((o) => o.value === shown) ?? modeOption(shown);
   const override = localOverrideLine(verdict, seat.mode);
-  const choose = (value: ModeChoice) => {
-    if (!api.client || pending || value === shown) return;
+  const send = (value: ModeValue, patch: SeatPatch) => {
+    if (!api.client || pending) return;
     setError(null);
     setPending({ value });
-    api.client.patchSeat(seat.id, { mode: value satisfies PickMode | null }).then(
+    api.client.patchSeat(seat.id, patch).then(
       () => api.kick().finally(() => setPending(null)),
       (e: unknown) => {
         setPending(null);
         setError(errorText(e, 'Could not save the choice'));
       },
     );
+  };
+  const choose = (value: ModeValue) => {
+    if (value === 'drain') {
+      setChoosing(true);
+      return;
+    }
+    setChoosing(false);
+    // Picking the mode it already has still ends a drain.
+    if (value === shown) return;
+    send(value, modePatch(value as ModeChoice));
+  };
+  const drainUntil = (until: string) => {
+    setChoosing(false);
+    send('drain', drainPatch(until, seat.mode));
   };
   return (
     <View testID={`mode-${seat.id}`} style={{ gap: 6 }}>
@@ -393,6 +409,19 @@ function ModeSection({ seat, verdict }: { seat: Seat; verdict: UsageRelation['ve
         <Text testID={`mode-current-${seat.id}`} style={{ color: t.text, fontSize: 14 }}>
           <Text style={{ fontWeight: '700' }}>{`${current.name}. `}</Text>
           {current.words}
+        </Text>
+      ) : null}
+      {owner && choosing ? (
+        <View testID={`drain-choices-${seat.id}`} style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' }}>
+          <Muted>Drain until:</Muted>
+          {drainChoices(api.now).map((c) => (
+            <Chip key={c.id} testID={`drain-${seat.id}-${c.id}`} label={c.label} on={false} onPress={() => drainUntil(c.until)} />
+          ))}
+        </View>
+      ) : null}
+      {drainingUntil != null ? (
+        <Text testID={`mode-drain-${seat.id}`} style={{ color: t.text, fontSize: 14, fontWeight: '600' }}>
+          {drainLine(seat.drain_until, api.now)}
         </Text>
       ) : null}
       {error ? <Text testID={`mode-error-${seat.id}`} style={{ color: t.bad, fontSize: 13 }}>{error}</Text> : null}

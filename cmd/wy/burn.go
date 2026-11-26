@@ -146,10 +146,10 @@ func burnCmd(e moveEnv, window time.Duration, asJSON, noHub bool) error {
 	per := map[string]*burnAccount{}
 	for _, a := range w.input.Accounts {
 		ba := &burnAccount{Account: a.Label, FiveHour: a.W5.Level, Weekly: a.W7.Level}
-		if f, ok := w.forecasts[a.Key]; ok {
-			ba.FivePerH = f.W5.BurnRate
-			if wf, hits := f.First(); hits && wf.Window == mover.Win5h {
-				ba.HitIn = wf.HitIn.Round(time.Minute).String()
+		if pr, ok := w.proj[a.Key]; ok {
+			ba.FivePerH = pr.R5
+			if pr.Hit > 0 {
+				ba.HitIn = pr.Hit.Round(time.Minute).String()
 			}
 		}
 		per[a.Key] = ba

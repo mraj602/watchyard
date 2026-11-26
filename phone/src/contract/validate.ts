@@ -2,7 +2,7 @@
 // Pure TypeScript, no dependency: used by the contract tests on the Go goldens and the
 // devserver fixtures, and by the app on data it did not make (push data, cached replies).
 
-import { PAYLOAD_KEYS } from './payload';
+import { PAYLOAD_FLOATING_KEYS, PAYLOAD_KEYS } from './payload';
 import { SNAPSHOT_LABEL_MAX, SNAPSHOT_MAX_MACHINES, SNAPSHOT_MAX_SEATS, SNAPSHOT_NEEDS_LIST } from './snapshot';
 
 type Problems = string[];
@@ -62,6 +62,8 @@ export function validatePayload(x: unknown, path = 'payload', exact = false): Pr
     alerts.forEach((a, i) => typeof a !== 'string' && p.push(`${path}.alerts[${i}]: not a string`));
   }
   field(p, o, 'trigger', 'string', path, true);
+  field(p, o, 'channel', 'string', path, true);
+  oneOf(p, field(p, o, 'category', 'string', path, true), ['sessions', 'limits', 'switch', 'drain', 'usage', 'machines', 'test'], `${path}.category`);
   field(p, o, 'title', 'string', path);
   field(p, o, 'body', 'string', path);
   field(p, o, 'tag', 'string', path);
@@ -84,9 +86,11 @@ export function validatePayload(x: unknown, path = 'payload', exact = false): Pr
   }
   field(p, o, 'ts', 'iso?', path);
   if (exact) {
-    const keys = Object.keys(o);
+    const all = Object.keys(o);
+    const floating = (k: string) => (PAYLOAD_FLOATING_KEYS as readonly string[]).includes(k);
+    const keys = all.filter((k) => !floating(k));
     const order = PAYLOAD_KEYS.filter((k) => keys.includes(k));
-    keys.forEach((k) => !(PAYLOAD_KEYS as readonly string[]).includes(k) && p.push(`${path}.${k}: unknown key`));
+    all.forEach((k) => !(PAYLOAD_KEYS as readonly string[]).includes(k) && p.push(`${path}.${k}: unknown key`));
     if (keys.join(',') !== order.join(',')) p.push(`${path}: keys not in Go order (${keys.join(',')})`);
   }
   return p;
@@ -235,6 +239,8 @@ export function validateSeat(x: unknown, path = 'seat'): Problems {
   if (!o) return p;
   for (const k of ['id', 'account', 'org']) field(p, o, k, 'string', path);
   for (const k of ['label', 'colour', 'email']) field(p, o, k, 'string?', path, true);
+  oneOf(p, field(p, o, 'mode', 'string?', path, true), ['protected', 'aggressive', 'off', null], `${path}.mode`);
+  field(p, o, 'drain_until', 'iso?', path, true);
   const ws = field(p, o, 'windows', 'array', path, true);
   if (Array.isArray(ws)) ws.forEach((w, i) => p.push(...validateWindow(w, `${path}.windows[${i}]`)));
   return p;
@@ -273,6 +279,12 @@ export function validateDevicePrefs(x: unknown, path = 'prefs'): Problems {
   const o = root(x, path, p);
   if (!o) return p;
   field(p, o, 'mute', 'array', path, true);
+  const cats = field(p, o, 'mute_categories', 'array', path, true);
+  if (Array.isArray(cats)) {
+    cats.forEach((c, i) => {
+      if (typeof c !== 'string') p.push(`${path}.mute_categories[${i}]: not a string`);
+    });
+  }
   field(p, o, 'private', 'boolean?', path, true);
   oneOf(p, field(p, o, 'tap', 'string', path, true), ['auto', 'session', 'claude'], `${path}.tap`);
   field(p, o, 'tz', 'string?', path, true);

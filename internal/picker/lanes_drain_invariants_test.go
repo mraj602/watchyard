@@ -9,6 +9,7 @@ package picker
 
 import (
 	"fmt"
+	"github.com/mraj602/watchyard/internal/projection"
 	"math"
 	"math/rand"
 	"os"
@@ -303,16 +304,26 @@ func checkInvariants(t *testing.T, in LaneInput) []string {
 				fail("I2: pick %s (%s) while aggressive drain %s had capacity %d", pk.Key, pk.Class, x.Key, x.Drain.Capacity)
 			}
 		}
-		// I4: no pick past the hard limits; the 5-hour backstop; the landing guard.
+		// I4: no pick past the hard limits; the 5-hour backstop; the landing guard. A drain's
+		// limits ramp toward the resets (Drain aim): its weekly target (the aim plus its margin), the 5-hour
+		// ceiling and its aim as the backstop.
 		if pk.Drain {
 			d := row.Drain
-			lim5 := 98.0
+			lim5, bs := 98.0, p.Backstop5h
+			if !acc.Protected {
+				h5 := 5.0
+				if row.FiveReset.After(in.Now) {
+					h5 = row.FiveReset.Sub(in.Now).Hours()
+				}
+				lim5 = math.Max(lim5, projection.DrainCeil5At(h5))
+				bs = math.Max(bs, projection.DrainCeil5At(h5)-p.DrainMargin5h)
+			}
 			if acc.Protected && !pk.Over {
 				lim5 = p.Cap5h - p.Lane5h
 			}
 			soon := row.FiveReset.IsZero() || !row.FiveReset.After(in.Now) || row.FiveReset.Sub(in.Now) <= p.FreshSoon
-			if d.WM >= 98 || d.HM >= lim5 || (!soon && d.HM >= p.Backstop5h) {
-				fail("I4: drain pick %s at measured w %.1f h %.1f", pk.Key, d.WM, d.HM)
+			if d.WM >= math.Max(98, d.Target) || d.HM >= lim5 || (!soon && d.HM >= bs) {
+				fail("I4: drain pick %s at measured w %.1f h %.1f (aim %.2f, lim5 %.1f, bs %.1f, prot %v over %v, cap %d %s, reset in %v)", pk.Key, d.WM, d.HM, d.AimNow, lim5, bs, acc.Protected, pk.Over, d.Capacity, d.LimitedBy, row.FiveReset.Sub(in.Now))
 			}
 			if d.WM+e/p.account(acc).ratio() > p.LandMax {
 				fail("I4: drain pick %s lands over %.0f", pk.Key, p.LandMax)

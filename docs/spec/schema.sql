@@ -32,6 +32,10 @@
 --   v20 seat.pick_mode, seat.pick_mode_src (setup.md 8.5, Kind).
 --   v21 peer_trust; peer_message.from_kind/via_tag (peers.md 4.1a, 10).
 --   v22 session.moved_from_seat/moved_at, session_move (identity.md 5.3: a session moved to another account).
+--   v23 the switch-notice base rules session_moved and switch_digest (push.md 3.9; record.md 4.12).
+--   v24 switch_move: the Smart Account Switch log, one row per move (record.md 4.13; setup.md 8.6 Switch log).
+--   v25 seat.pick_off, seat.drain_until and the drain-notice base rules (setup.md 8.5, Kind and
+--       Owner drain; push.md 3.9).
 --
 -- Conventions
 --   * Times are INTEGER milliseconds since the Unix epoch, UTC (`*_at`, `ts`).
@@ -56,7 +60,7 @@ CREATE TABLE schema_version (
 ) STRICT;
 
 INSERT INTO schema_version (version, applied_at, wy_version)
-VALUES (22, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
+VALUES (25, CAST(unixepoch('subsec') * 1000 AS INTEGER), 'spec');
 
 -- Hub-wide settings that are not secrets (retention days, last-message policy, …).
 CREATE TABLE setting (
@@ -108,7 +112,7 @@ CREATE TABLE seat (
   sort_order    INTEGER NOT NULL DEFAULT 0,
   hidden        INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0, 1)),
   track_web     INTEGER NOT NULL DEFAULT 1 CHECK (track_web IN (0, 1)),
-  created_at    INTEGER NOT NULL, look_src TEXT CHECK (look_src IS NULL OR look_src IN ('ui', 'slot', 'import')), pick_mode TEXT CHECK (pick_mode IS NULL OR pick_mode IN ('protected', 'aggressive')), pick_mode_src TEXT CHECK (pick_mode_src IS NULL OR pick_mode_src IN ('ui', 'slot')),
+  created_at    INTEGER NOT NULL, look_src TEXT CHECK (look_src IS NULL OR look_src IN ('ui', 'slot', 'import')), pick_mode TEXT CHECK (pick_mode IS NULL OR pick_mode IN ('protected', 'aggressive')), pick_mode_src TEXT CHECK (pick_mode_src IS NULL OR pick_mode_src IN ('ui', 'slot')), pick_off INTEGER NOT NULL DEFAULT 0 CHECK (pick_off IN (0, 1)), drain_until INTEGER,
   UNIQUE (account_uuid, org_uuid)
 ) STRICT;
 -- sort_order: the display position (`order` on Seat). PUT /v1/seats/order puts the listed seats
@@ -121,6 +125,10 @@ CREATE TABLE seat (
 -- applied only while pick_mode and pick_mode_src are both NULL: nobody has chosen). Added by
 -- migration 0020 (ALTER TABLE ADD COLUMN), so the columns sit on the created_at line, as
 -- SQLite writes them.
+-- pick_off, drain_until: v25 (setup.md 8.5, Kind and Owner drain). pick_off 1: the account
+-- is Off (never picked, nothing moved into it; pick_mode kept for when it is on again).
+-- drain_until: the owner's drain end (ms), NULL when not draining; the alert engine clears it
+-- when the drain ends. Added by migration 0024, on the created_at line too.
 -- look_src: v5 (desktop.md C10). Who set label and colour last: 'ui' (PATCH /v1/accounts/{seat}),
 -- 'slot' (slot_info; applies only while look_src is NULL or 'slot'), 'import' (rows imported by earlier versions; nothing writes it now).
 
@@ -330,6 +338,35 @@ CREATE TABLE session_move (
   to_slot       INTEGER REFERENCES slot(id)
 ) STRICT;
 CREATE INDEX session_move_session ON session_move(session_id, at);
+
+-- Every move of a session to another account with what made it and its result (v24, record.md
+-- 4.13): the board's Switches page. record_id: a replayed record makes no second row.
+CREATE TABLE switch_move (
+  record_id     TEXT    NOT NULL PRIMARY KEY,
+  machine_id    TEXT    NOT NULL REFERENCES machine(id) ON DELETE CASCADE,
+  at            INTEGER NOT NULL,
+  session_id    TEXT    NOT NULL,
+  session_name  TEXT,
+  kind          TEXT    NOT NULL,
+  interactive   INTEGER NOT NULL CHECK (interactive IN (0, 1)),
+  from_label    TEXT    NOT NULL,
+  to_label      TEXT    NOT NULL,
+  auto          INTEGER NOT NULL CHECK (auto IN (0, 1)),
+  reason        TEXT,
+  window        TEXT,
+  p5            REAL,
+  p7            REAL,
+  cap5          REAL,
+  cap7          REAL,
+  burn5         REAL,
+  cross_org     INTEGER NOT NULL CHECK (cross_org IN (0, 1)),
+  error         TEXT
+) STRICT;
+-- One row per machine, session and second: a back-filled move that was also sent live is one row.
+CREATE UNIQUE INDEX switch_move_once ON switch_move(machine_id, session_id, at);
+CREATE INDEX switch_move_at ON switch_move(at DESC);
+CREATE INDEX switch_move_session ON switch_move(session_id, at);
+CREATE INDEX switch_move_machine ON switch_move(machine_id, at DESC);
 
 -- Current state only (states.md). History is in hook_event.
 CREATE TABLE session_state (
@@ -572,6 +609,15 @@ INSERT INTO rule (id, trigger, base, enabled, delay_s, bypass_quiet, scope, upda
   ('rule_usage_reset',      'usage_reset',      1, 1,    0, 0, '{}', 0),
   ('rule_seat_change',      'seat_change',      1, 1,    0, 0, '{}', 0),
   ('rule_weekly_drop',      'weekly_drop',      1, 1,    0, 0, '{}', 0);
+-- v23: the Smart Account Switch notices (push.md 3.9).
+INSERT INTO rule (id, trigger, base, enabled, delay_s, bypass_quiet, scope, updated_at) VALUES
+  ('rule_session_moved',    'session_moved',    1, 1,    0, 0, '{}', 0),
+  ('rule_switch_digest',    'switch_digest',    1, 1,    0, 0, '{}', 0);
+-- v25: the owner drain notices (push.md 3.9).
+INSERT INTO rule (id, trigger, base, enabled, delay_s, bypass_quiet, scope, updated_at) VALUES
+  ('rule_drain_started',    'drain_started',    1, 1,    0, 0, '{}', 0),
+  ('rule_drain_ended',      'drain_ended',      1, 1,    0, 0, '{}', 0),
+  ('rule_drain_pulled',     'drain_pulled',     1, 1,    0, 0, '{}', 0);
 
 -- One row per episode (push.md 3.2 and 4).
 CREATE TABLE alert (

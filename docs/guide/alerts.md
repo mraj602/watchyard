@@ -53,6 +53,11 @@ Each episode alerts at most once, so restarts and replays never send duplicates.
 | `usage_reset` | Anthropic or the org owner reset an account's usage: both windows back to about 0 % in several sessions | On, low urgency |
 | `seat_change` | A config folder logged in to another account or org | On, low urgency |
 | `weekly_drop` | An account's 7-day use fell more than 10 points without a reset: something changed, check | On, low urgency |
+| `session_moved` | The Smart Account Switch on a machine moved sessions to another account (at most one push per 5 minutes per machine) | On, low urgency |
+| `switch_digest` | A machine's daily Smart Account Switch digest (moves, limit hits, weekly room) | On, low urgency |
+| `drain_started` | An account you set to drain started draining (until its end time) | On, low urgency |
+| `drain_ended` | The drain ended: its end time came or the account reached 97% of its week | On, low urgency |
+| `drain_pulled` | The switch on a machine pulled sessions into a draining account (batched like `session_moved`) | On, low urgency |
 
 "Turn finished" is not an alert: the board shows it. Limit alerts use the highest value a
 window reached, so a window that dips back under 80 % does not alert again. See
@@ -95,6 +100,15 @@ Rules are global and belong to the owner. Open the board signed in as owner
 
 A phone cannot change global rules. Its own Alerts screen has a switch per trigger that mutes
 that trigger on that phone only.
+
+**Categories.** Each trigger belongs to a category: Sessions (needs you, asked, permission,
+failed), Limits (80%, 95%, reset), Account switch (moves and the digest), Drain (started, ended,
+pulled), Usage notices and Machines (silent machine). In the Android app's Notifications screen,
+and in the web app's Settings, each category has an on/off switch for that device: off means the
+hub sends nothing of it there. In the Android app each category is its own notification channel,
+so its sound, vibration and lock-screen display are set in Android's settings; the **Sound…**
+button next to a category opens that channel's page. ntfy has no such channels: only the on/off
+switch applies.
 
 ## Channels
 

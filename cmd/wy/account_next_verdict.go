@@ -69,6 +69,18 @@ func nextVerdicts(res picker.Result) record.AccountVerdictsPayload {
 			v.WeeklyPct, v.FiveHourPct, v.Burst, v.BurstCap = level(w), level(f), &b, &c
 			v.WeeklyCap, v.FiveHourCap = level(l.WeeklyCap), level(l.FiveHourCap)
 			v.Expiring, v.Stale = l.Expiring, v.Stale || l.Stale
+			if l.Pins > 0 {
+				n := l.Pins
+				v.Pins = &n
+				v.PinReserve5h, v.PinReserve7d = level(l.PinReserve5hPct), level(l.PinReserve7dPct)
+				if l.PinFull5hPct > 0 {
+					v.PinFull5h, v.PinFull7d = level(l.PinFull5hPct), level(l.PinFull7dPct)
+				}
+				if l.HoursToReset > 0 {
+					s := res.Now.Add(time.Duration(l.HoursToReset * float64(time.Hour))).UTC().Truncate(time.Minute).Format(time.RFC3339)
+					v.WeeklyResetsAt = &s
+				}
+			}
 			if !r.Eligible {
 				s := l.SkipLevel
 				v.SkipLevel = &s

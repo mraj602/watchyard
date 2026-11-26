@@ -218,6 +218,17 @@ class FramesTest {
     assertEquals("watchyard://now", Payloads.appLink("/#/\\evil"))
   }
 
+  @Test fun payloadChannelWinsWhenKnownAndOtherwiseTheTriggerMapsIt() {
+    assertEquals(Channels.DRAIN, Payloads.channelFor("alert", "limit_80", "wy_drain"))
+    assertEquals(Channels.SWITCH, Payloads.channelFor("alert", "failed", "wy_switch"))
+    assertEquals(Channels.TEST, Payloads.channelFor("alert", "failed", "wy_test"))
+    assertEquals(Channels.LIMITS, Payloads.channelFor("alert", "limit_80", "wy_nonsense"))
+    assertEquals(Channels.NEEDS_YOU, Payloads.channelFor("alert", "failed", Channels.CONNECTION))
+    assertEquals(Channels.MACHINES, Payloads.channelFor("alert", "machine_silent", null))
+    assertEquals(Channels.NEEDS_YOU, Payloads.channelFor("summary", null, ""))
+    assertEquals(Channels.TEST, Payloads.channelFor("test", null, "wy_nonsense"))
+  }
+
   @Test fun everyKindMapsToItsIcon() {
     fun k(type: String, trigger: String?) = Payloads.iconKindFor(type, trigger)
     assertEquals(IconKind.NEEDS_YOU, k("alert", "needs_permission"))
@@ -230,6 +241,14 @@ class FramesTest {
     for (t in listOf("limit_change", "usage_reset", "seat_change", "weekly_drop")) {
       assertEquals(IconKind.LIMIT, k("alert", t))
       assertEquals(Channels.USAGE, Payloads.channelFor("alert", t))
+    }
+    for (t in listOf("session_moved", "switch_digest")) {
+      assertEquals(IconKind.MACHINE, k("alert", t))
+      assertEquals(Channels.SWITCH, Payloads.channelFor("alert", t))
+    }
+    for (t in listOf("drain_started", "drain_ended", "drain_pulled")) {
+      assertEquals(IconKind.LIMIT, k("alert", t))
+      assertEquals(Channels.DRAIN, Payloads.channelFor("alert", t))
     }
     assertEquals(IconKind.SUMMARY, k("summary", null))
     assertEquals(IconKind.SUMMARY, k("summary", "asked"))

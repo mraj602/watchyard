@@ -81,21 +81,26 @@ const moveTestEnv = "WY_MOVE_TEST"
 // narrowed (not all), so it can never move the owner's other sessions.
 type moveTest struct {
 	// Accounts by label: the 5-hour and weekly levels (percent) and minutes to their resets.
+	// Rate is the account's 5-hour burn, points per hour (instead of the meter).
 	Accounts map[string]struct {
 		FiveHour       *float64 `json:"five_hour"`
 		FiveResetMin   *float64 `json:"five_reset_min"`
 		Weekly         *float64 `json:"weekly"`
 		WeeklyResetMin *float64 `json:"weekly_reset_min"`
+		Rate           *float64 `json:"rate"`
+		// Readings: the readings' slope, points per hour (instead of the outbox and hub
+		// readings).
+		Readings *float64 `json:"readings"`
 	} `json:"accounts"`
 	// Rates: 5-hour points per hour by session id (or a prefix of 8+ characters).
 	Rates map[string]float64 `json:"rates"`
-	// Rule timings in minutes, and moves per account per window.
+	// Rule timings in minutes, moves per account per window and the spike filter's passes.
 	CooldownMin      *float64 `json:"cooldown_min"`
 	NoReturnMin      *float64 `json:"no_return_min"`
-	OncePerMin       *float64 `json:"once_per_min"`
 	AccountWindowMin *float64 `json:"account_window_min"`
-	HorizonMin       *float64 `json:"horizon_min"`
+	OwnerGraceMin    *float64 `json:"owner_grace_min"`
 	AccountMoves     *int     `json:"account_moves"`
+	SpikePasses      *int     `json:"spike_passes"`
 }
 
 // loadMoveTest reads WY_MOVE_TEST (JSON, or @<file>); nil when unset.
@@ -132,11 +137,13 @@ func (t *moveTest) applyParams(p *mover.Params) {
 	}
 	set(&p.Cooldown, t.CooldownMin)
 	set(&p.NoReturn, t.NoReturnMin)
-	set(&p.OncePer, t.OncePerMin)
 	set(&p.AccountWindow, t.AccountWindowMin)
-	set(&p.Horizon, t.HorizonMin)
+	set(&p.OwnerGrace, t.OwnerGraceMin)
 	if t.AccountMoves != nil {
 		p.AccountMoves = *t.AccountMoves
+	}
+	if t.SpikePasses != nil {
+		p.SpikePasses = *t.SpikePasses
 	}
 }
 
@@ -158,7 +165,7 @@ func (t *moveTest) applyAccount(a *mover.Account, now time.Time) bool {
 	if x.WeeklyResetMin != nil {
 		a.W7.Reset = now.Add(mins(*x.WeeklyResetMin))
 	}
-	a.Stale = false
+	a.Stale, a.ReadAt = false, now // test levels are read now
 	return true
 }
 

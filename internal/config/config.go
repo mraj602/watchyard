@@ -126,9 +126,75 @@ type Config struct {
 	Account struct {
 		SmartSwitch bool   `toml:"smart_switch"`
 		MoveLaunch  string `toml:"move_launch"`
+		// MoveNotify: push each automatic move to the owner's phone (batched, at most one push
+		// per 5 minutes). MoveDigest: one daily digest push at 09:00 (setup.md 8.6, Notices and
+		// digest). Both default on.
+		MoveNotify bool `toml:"move_notify"`
+		MoveDigest bool `toml:"move_digest"`
 		// SmartSwitchScope is which sessions the switch may move: all (the default), tag:<tag>
 		// (sessions with that peers tag) or sessions:<id>,<id> (ids or 8+ character prefixes).
 		SmartSwitchScope string `toml:"smart_switch_scope"`
+		// MoveOrgs: the organisations a session may move to: any (the default), same-first or
+		// same. The Move* numbers are the decision rules of setup.md 8.6 (each key's default and
+		// reason are in its Decision table).
+		MoveOrgs           string  `toml:"move_orgs"`
+		MoveCap5h          float64 `toml:"move_cap_5h"`
+		MoveCap7d          float64 `toml:"move_cap_7d"`
+		MoveCap5hProtected float64 `toml:"move_cap_5h_protected"`
+		MoveCap7dProtected float64 `toml:"move_cap_7d_protected"`
+		MoveHysteresis     float64 `toml:"move_hysteresis"`
+		MoveBurnMin        float64 `toml:"move_burn_min"`
+		MoveWeekSpanH      float64 `toml:"move_week_span_h"`
+		// MoveDestHorizonMin: retired (ignored): a destination is judged with the trigger's
+		// projection, to its resets (setup.md 8.6, Destination); kept so old configs load.
+		MoveDestHorizonMin float64 `toml:"move_dest_horizon_min"`
+		MoveYoungMin       float64 `toml:"move_young_min"`
+		MoveMinBurn        float64 `toml:"move_min_burn"`
+		// MovePullMinBurn: an owner-drained account pulls in only sessions burning at least
+		// this many points per hour.
+		MovePullMinBurn float64 `toml:"move_pull_min_burn"`
+		// MovePullMargin: a pull keeps the draining account this many points under its caps;
+		// MovePullQuietMin: no pull within this many minutes after a move off it.
+		MovePullMargin   float64 `toml:"move_pull_margin"`
+		MovePullQuietMin float64 `toml:"move_pull_quiet_min"`
+		// MoveDrainDestMargin: a move into a draining account leaves it this many points under
+		// its caps; MoveResetSkipMin: no 5-hour move when the projected hit is within this many
+		// minutes of its reset.
+		MoveDrainDestMargin float64 `toml:"move_drain_dest_margin"`
+		// DrainAim7d: the far weekly aim of a draining account (rises to 100 over the last
+		// 6 hours before the reset; default 96, up to 100); DrainCapMax7d: the most the
+		// switch's weekly cap for a draining account is raised to (default 99, up to 100).
+		// DrainSlack, DrainSlackProtected: a drain starts when the hours to the weekly reset are
+		// within slack x the hours the account's room needs (default 2; protected 1.5).
+		DrainSlack          float64 `toml:"drain_slack"`
+		DrainSlackProtected float64 `toml:"drain_slack_protected"`
+		DrainAim7d          float64 `toml:"drain_aim_7d"`
+		DrainCapMax7d       float64 `toml:"drain_cap_max_7d"`
+		MoveResetSkipMin    float64 `toml:"move_reset_skip_min"`
+		MoveSpikePasses     float64 `toml:"move_spike_passes"`
+		MoveSpikeNearMin    float64 `toml:"move_spike_near_min"`
+		MoveCooldownMin     float64 `toml:"move_cooldown_min"`
+		MoveNoReturnMin     float64 `toml:"move_no_return_min"`
+		MoveAccountMoves    float64 `toml:"move_account_moves"`
+		MoveAccountBurn     float64 `toml:"move_account_burn"`
+		// MoveExpiringH: within this many hours of a protected account's weekly reset its weekly
+		// cap is the aggressive one (its room would expire unused); 0: never.
+		MoveExpiringH float64 `toml:"move_expiring_h"`
+		// MoveStaleMin: an account whose level rests on a reading older than this many minutes
+		// is neither a source nor a destination of the switch, and its level neither blocks nor
+		// attracts the picker's lanes (setup.md 8.6, Stale data); 0: off.
+		MoveStaleMin         float64 `toml:"move_stale_min"`
+		MoveAccountWindowMin float64 `toml:"move_account_window_min"`
+		MoveStoppedWaitMin   float64 `toml:"move_stopped_wait_min"`
+		MoveOwnerGraceMin    float64 `toml:"move_owner_grace_min"`
+		MoveStepWaitMin      float64 `toml:"move_step_wait_min"`
+		// MovePassWaitS: a pass waits at most this long in all for mid-turn sessions to reach
+		// a step boundary (the waits run side by side); the rest wait on in the next pass.
+		MovePassWaitS float64 `toml:"move_pass_wait_s"`
+		// PinReserve5h and PinReserve7d: the points of an account's 5-hour and weekly windows
+		// kept free for each live pinned session on it (setup.md 8.6, Pinned sessions).
+		PinReserve5h float64 `toml:"pin_reserve_5h"`
+		PinReserve7d float64 `toml:"pin_reserve_7d"`
 	} `toml:"account"`
 }
 
@@ -158,6 +224,17 @@ type NextAccount struct {
 	Exclude    bool    `toml:"exclude"`
 	Hours      string  `toml:"hours"`
 	Days       string  `toml:"days"`
+	// DrainUntil: an owner-set drain until this time (RFC 3339; `wy account drain`; setup.md
+	// 8.5, Owner drain).
+	DrainUntil string `toml:"drain_until"`
+	// PinReserve5h, PinReserve7d: this account's pin reserve per live pinned session, instead of
+	// account.pin_reserve_5h / _7d (0: the global one; setup.md 8.6).
+	PinReserve5h float64 `toml:"pin_reserve_5h"`
+	PinReserve7d float64 `toml:"pin_reserve_7d"`
+	// DrainIgnore5h: while this account's owner drain is on, ignore its 5-hour window: no
+	// 5-hour limit, projection, capacity or burst cap in the picker, no move off it for a
+	// 5-hour trigger, no 5-hour room or margin for a pull into it (setup.md 8.5, Owner drain).
+	DrainIgnore5h bool `toml:"drain_ignore_5h"`
 }
 
 // MCPMode returns share.mcp as "true", "false" or "external" ("" when unset).
@@ -198,6 +275,12 @@ func Defaults() Config {
 	c.Peers.Delivery = "honest"
 	c.Peers.HubMayWiden = true
 	c.Account.SmartSwitchScope = "all"
+	c.Account.MoveOrgs = "any"
+	c.Account.MoveNotify = true
+	c.Account.MoveDigest = true
+	for k, v := range moveDefaults {
+		*c.moveField(k) = v
+	}
 	c.Update.VerifyAttestation = true
 	c.Next = Next{Strategy: NextStrategyLanes, Session5h: 15, Session7d: 2, SessionMin: 120, StaleMin: 30,
 		ReserveMin: 12, StickyMargin: 10, Accounts: map[string]NextAccount{}}
@@ -260,6 +343,9 @@ var known = map[string]spec{
 	"account.smart_switch":       {kind: kBool, def: false},
 	"account.move_launch":        {kind: kString, def: ""},
 	"account.smart_switch_scope": {kind: kString, def: "all"},
+	"account.move_orgs":          {kind: kString, def: "any"},
+	"account.move_notify":        {kind: kBool, def: true},
+	"account.move_digest":        {kind: kBool, def: true},
 	"next.strategy":              {kind: kString, def: NextStrategyLanes},
 	"next.model":                 {kind: kString, def: ""},
 	"next.session_5h":            {kind: kFloat, def: float64(15)},
@@ -268,6 +354,99 @@ var known = map[string]spec{
 	"next.stale_min":             {kind: kFloat, def: float64(30)},
 	"next.reserve_min":           {kind: kFloat, def: float64(12)},
 	"next.sticky_margin":         {kind: kFloat, def: float64(10)},
+}
+
+// moveDefaults are the defaults of the account.move_* numbers (setup.md 8.6, Decision).
+var moveDefaults = map[string]float64{
+	"move_cap_5h": 95, "move_cap_7d": 98, "move_cap_5h_protected": 80, "move_cap_7d_protected": 80,
+	"move_hysteresis": 5, "move_burn_min": 10, "move_week_span_h": 5, "move_spike_passes": 2, "move_spike_near_min": 30,
+	"move_cooldown_min": 20, "move_no_return_min": 60, "move_account_moves": 5, "move_account_burn": 40, "move_expiring_h": 3, "move_stale_min": 10, "move_account_window_min": 15,
+	"move_stopped_wait_min": 20, "move_owner_grace_min": 0, "move_step_wait_min": 3, "move_pass_wait_s": 90,
+	"pin_reserve_5h": 10, "pin_reserve_7d": 5, "move_dest_horizon_min": 0,
+	"move_young_min": 15, "move_min_burn": 1, "move_pull_min_burn": 3, "move_pull_margin": 10, "move_pull_quiet_min": 15,
+	"move_drain_dest_margin": 2, "move_reset_skip_min": 10, "drain_aim_7d": 96, "drain_cap_max_7d": 99, "drain_slack": 2, "drain_slack_protected": 1.5,
+}
+
+func init() {
+	for k, v := range moveDefaults {
+		known["account."+k] = spec{kind: kFloat, def: v}
+	}
+}
+
+// moveField is the Account field of the move_* key k.
+func (c *Config) moveField(k string) *float64 {
+	a := &c.Account
+	switch k {
+	case "move_cap_5h":
+		return &a.MoveCap5h
+	case "move_cap_7d":
+		return &a.MoveCap7d
+	case "move_cap_5h_protected":
+		return &a.MoveCap5hProtected
+	case "move_cap_7d_protected":
+		return &a.MoveCap7dProtected
+	case "move_hysteresis":
+		return &a.MoveHysteresis
+	case "move_burn_min":
+		return &a.MoveBurnMin
+	case "move_week_span_h":
+		return &a.MoveWeekSpanH
+	case "move_dest_horizon_min":
+		return &a.MoveDestHorizonMin
+	case "move_young_min":
+		return &a.MoveYoungMin
+	case "move_min_burn":
+		return &a.MoveMinBurn
+	case "move_pull_min_burn":
+		return &a.MovePullMinBurn
+	case "move_pull_margin":
+		return &a.MovePullMargin
+	case "move_pull_quiet_min":
+		return &a.MovePullQuietMin
+	case "move_drain_dest_margin":
+		return &a.MoveDrainDestMargin
+	case "move_reset_skip_min":
+		return &a.MoveResetSkipMin
+	case "drain_slack":
+		return &a.DrainSlack
+	case "drain_slack_protected":
+		return &a.DrainSlackProtected
+	case "drain_aim_7d":
+		return &a.DrainAim7d
+	case "drain_cap_max_7d":
+		return &a.DrainCapMax7d
+	case "move_spike_passes":
+		return &a.MoveSpikePasses
+	case "move_spike_near_min":
+		return &a.MoveSpikeNearMin
+	case "move_cooldown_min":
+		return &a.MoveCooldownMin
+	case "move_no_return_min":
+		return &a.MoveNoReturnMin
+	case "move_account_moves":
+		return &a.MoveAccountMoves
+	case "move_account_burn":
+		return &a.MoveAccountBurn
+	case "move_expiring_h":
+		return &a.MoveExpiringH
+	case "move_stale_min":
+		return &a.MoveStaleMin
+	case "move_account_window_min":
+		return &a.MoveAccountWindowMin
+	case "move_stopped_wait_min":
+		return &a.MoveStoppedWaitMin
+	case "move_owner_grace_min":
+		return &a.MoveOwnerGraceMin
+	case "move_step_wait_min":
+		return &a.MoveStepWaitMin
+	case "move_pass_wait_s":
+		return &a.MovePassWaitS
+	case "pin_reserve_5h":
+		return &a.PinReserve5h
+	case "pin_reserve_7d":
+		return &a.PinReserve7d
+	}
+	panic("config: unknown move key " + k)
 }
 
 // labelsPrefix: "slots.labels.<slot>" is a free-form key; the slot (e.g. "~/.claude-2")
@@ -606,6 +785,10 @@ func parse(key string, k kind, args []string) (any, error) {
 		if err := CheckSwitchScope(v); err != nil {
 			return nil, err
 		}
+	case "account.move_orgs":
+		if v != "any" && v != "same-first" && v != "same" {
+			return nil, fmt.Errorf("account.move_orgs: want any, same-first or same, got %q", v)
+		}
 	}
 	if key == "hub.url" && v != "" {
 		if !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
@@ -766,6 +949,12 @@ func (f *File) SetJSON(key string, raw json.RawMessage) error {
 // Delete removes a key from the file (a free-form slot key, or a share.* key). A missing
 // key is not an error.
 func (f *File) Delete(key string) error {
+	if acct, field, ok := nextAccountKey(key); ok {
+		if m, ok := lookupPath(f.doc, []string{"next", "accounts", acct}).(map[string]any); ok {
+			delete(m, field)
+		}
+		return nil
+	}
 	if table, rest, ok := slotMapKey(key); ok && rest != "" {
 		if m, ok := lookupPath(f.doc, []string{"slots", table}).(map[string]any); ok {
 			delete(m, rest)

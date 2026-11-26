@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mraj602/watchyard/internal/hub/state"
+	"github.com/mraj602/watchyard/internal/projection"
 	"github.com/mraj602/watchyard/internal/setup/model"
 )
 
@@ -52,6 +53,12 @@ type Options struct {
 	// WarpColour maps "#rrggbb" to one of Warp's six chromatic names. nil uses WarpName,
 	// which is internal/warp's table (the tab configs' own), so the two cannot differ.
 	WarpColour func(hex string) string
+	// Drains are the owner's drains (`wy account drain`): until when, by account label; nil
+	// none. Read at each build (the setting changes while the board runs).
+	Drains func() map[string]time.Time
+	// Offs: this machine's mode settings by account label, true for off and false for any
+	// other mode (next.accounts.<label>.mode); nil none. A label not in it follows the hub.
+	Offs func() map[string]bool
 }
 
 // EndedWithin is how long an ended or gone session stays on the board with the `e` toggle.
@@ -242,6 +249,9 @@ type HubSeat struct {
 	Order   int         `json:"order"`
 	Hidden  bool        `json:"hidden"`
 	Windows []HubWindow `json:"windows"`
+	// Mode and DrainUntil: the seat's picker mode (off shows) and owner drain (setup.md 8.5).
+	Mode       *string    `json:"mode"`
+	DrainUntil *time.Time `json:"drain_until"`
 }
 
 // HubMachine is the part of api.yaml Machine the board reads.
@@ -387,7 +397,51 @@ func (c ctx) groupFrom(s HubSeat, index int) Group {
 		g.SevenDay = c.window(w, false)
 	}
 	g.Limited = c.windowFull(s.Windows, "five_hour") || c.windowFull(s.Windows, "seven_day")
+	var u time.Time
+	if s.DrainUntil != nil {
+		u = *s.DrainUntil
+	}
+	off := s.Mode != nil && *s.Mode == "off"
+	if c.opts.Drains != nil {
+		// This machine's own setting wins (next.accounts.<label>).
+		if lu, ok := c.opts.Drains()[seatLabel(s)]; ok {
+			u = lu
+		}
+	}
+	if c.opts.Offs != nil {
+		if lo, ok := c.opts.Offs()[seatLabel(s)]; ok {
+			off = lo
+		}
+	}
+	switch {
+	case off:
+		g.Note = OffNote
+	case u.After(c.now) && (g.SevenDay == nil || float64(g.SevenDay.Pct) < drainAimAt(g.SevenDay, u)):
+		g.Note = drainNote(u.In(c.loc), c.now.In(c.loc))
+	}
 	return g
+}
+
+// OffNote is the note of an account the owner turned off: its usage still shows.
+const OffNote = "off (owner): never picked, nothing moved in"
+
+// drainAimAt is the weekly level an owner's drain ends at (setup.md 8.5, Drain aim): the drain
+// ramp's aim at its until u (96 far from the weekly reset, up to 99 at it).
+func drainAimAt(w *Window, u time.Time) float64 {
+	h := -1.0
+	if w != nil && w.ResetsAt != nil {
+		h = max(0.0001, w.ResetsAt.Sub(u).Hours())
+	}
+	return min(projection.DrainAim7(h), 99)
+}
+
+// drainNote is "draining (owner, until 23:59)", a day name when it is not today.
+func drainNote(u, now time.Time) string {
+	f := "15:04"
+	if y, m, d := u.Date(); y != now.Year() || m != now.Month() || d != now.Day() {
+		f = "Mon 15:04"
+	}
+	return "draining (owner, until " + u.Format(f) + ")"
 }
 
 // window is one limit window as shown; nil when the window has no percentage.

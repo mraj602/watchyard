@@ -14,11 +14,13 @@ import (
 	"github.com/mraj602/watchyard/internal/calib"
 	"github.com/mraj602/watchyard/internal/config"
 	"github.com/mraj602/watchyard/internal/leases"
+	"github.com/mraj602/watchyard/internal/projection"
 )
 
 // Lane data rules (setup.md 8.5).
 const (
 	resetTolerance = 5 * time.Minute // store.ResetTolerance: one window's resets_at may wobble this much
+	staleDrop      = 1.0             // points a reading may fall under an earlier one of its window (rounding)
 	readingAhead   = 24 * time.Hour  // a reading further ahead than this is dropped
 	webGap         = 15 * time.Minute
 	webSpan        = 60 * time.Minute
@@ -33,22 +35,25 @@ var readingMin = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // LaneView is Ranked.Lanes: the state the lanes strategy judged an account on (`--json`).
 type LaneView struct {
-	WeeklyPct        float64    `json:"weekly_pct"`
-	FiveHourPct      float64    `json:"five_hour_pct"`
-	WeeklyReservePct float64    `json:"weekly_reserve_pct"`
-	HoursToReset     float64    `json:"hours_to_reset"`
-	ReadingAt        *time.Time `json:"reading_at"`
-	ReadingAgeMin    *float64   `json:"reading_age_min"`
-	FiveHourResetsAt *time.Time `json:"five_hour_resets_at"`
-	Meter5hPct       float64    `json:"meter_5h_pct"`
-	Meter7dPct       float64    `json:"meter_7d_pct"`
-	Unexplained5hPct float64    `json:"unexplained_5h_pct"`
-	Leases           int        `json:"leases"`
-	Burst            int        `json:"burst"`
-	BurstCap         int        `json:"burst_cap"`
-	Capped           bool       `json:"capped"`
-	LastLease        *time.Time `json:"last_lease"`
-	Expiring         bool       `json:"expiring"` // alias of class == drain (drain order), kept for one release
+	WeeklyPct float64 `json:"weekly_pct"`
+	// WeeklyMeasuredPct is the weekly level without lease charges: the level Smart Account
+	// Switch judges the account on (the same reading, meter and margins).
+	WeeklyMeasuredPct float64    `json:"weekly_measured_pct"`
+	FiveHourPct       float64    `json:"five_hour_pct"`
+	WeeklyReservePct  float64    `json:"weekly_reserve_pct"`
+	HoursToReset      float64    `json:"hours_to_reset"`
+	ReadingAt         *time.Time `json:"reading_at"`
+	ReadingAgeMin     *float64   `json:"reading_age_min"`
+	FiveHourResetsAt  *time.Time `json:"five_hour_resets_at"`
+	Meter5hPct        float64    `json:"meter_5h_pct"`
+	Meter7dPct        float64    `json:"meter_7d_pct"`
+	Unexplained5hPct  float64    `json:"unexplained_5h_pct"`
+	Leases            int        `json:"leases"`
+	Burst             int        `json:"burst"`
+	BurstCap          int        `json:"burst_cap"`
+	Capped            bool       `json:"capped"`
+	LastLease         *time.Time `json:"last_lease"`
+	Expiring          bool       `json:"expiring"` // alias of class == drain (drain order), kept for one release
 	// Class is the account's class in the drain order (drain, at_risk, aggressive, unknown,
 	// protected) and Drain its drain rules (setup.md 8.5, Drain).
 	Class       string     `json:"class,omitempty"`
@@ -58,7 +63,19 @@ type LaneView struct {
 	SkipLevel   int        `json:"skip_level"`
 	WeeklyCap   float64    `json:"weekly_cap"`    // the weekly level at which it takes no new session now
 	FiveHourCap float64    `json:"five_hour_cap"` // the 5-hour level at which it takes no new session
-	Calibration *CalibView `json:"calibration"`
+	// Pins are the account's live pinned sessions on this machine; PinReserve5hPct and
+	// PinReserve7dPct the points kept free for them, already off the caps (setup.md 8.6).
+	Pins            int     `json:"pins"`
+	PinReserve5hPct float64 `json:"pin_reserve_5h_pct"`
+	PinReserve7dPct float64 `json:"pin_reserve_7d_pct"`
+	// PinFull5hPct and PinFull7dPct: the reserve before it was scaled to the time left in each
+	// window (pins × account.pin_reserve_*); the reserve above is at most these.
+	PinFull5hPct float64 `json:"pin_reserve_full_5h_pct,omitempty"`
+	PinFull7dPct float64 `json:"pin_reserve_full_7d_pct,omitempty"`
+	// ExpiringRoom: a protected account near its weekly reset whose weekly cap is the
+	// aggressive one until then (setup.md 8.6, Expiring room).
+	ExpiringRoom float64    `json:"expiring_room_cap_7d,omitempty"`
+	Calibration  *CalibView `json:"calibration"`
 	// LeaseCharges are the account's recent leases and what each adds (setup.md 8.5).
 	LeaseCharges []LeaseChargeView `json:"lease_charges"`
 }
@@ -70,6 +87,8 @@ type DrainView struct {
 	RoomPts        float64    `json:"room_pts"`
 	NeedHours      float64    `json:"need_hours"`
 	HorizonHours   float64    `json:"horizon_hours"`
+	SlackX         float64    `json:"entry_slack,omitempty"`
+	Ignore5h       bool       `json:"ignore_5h,omitempty"`
 	Capacity       *int       `json:"capacity"`
 	CapacityWeekly *int       `json:"capacity_weekly"`
 	Capacity5h     *int       `json:"capacity_5h"`
@@ -79,11 +98,18 @@ type DrainView struct {
 	ProjectedPct   *float64   `json:"projected_at_reset_pct"`
 	UnavoidablePct *float64   `json:"unavoidable_waste_pct"`
 	FinishBy       *time.Time `json:"finish_by"`
+	// Owner: the owner's drain (`wy account drain`), until FinishBy.
+	Owner bool `json:"owner,omitempty"`
+	// AimPct is the weekly level it is drained to now and AimAtResetPct the one just before its
+	// weekly reset at ResetsAt (the ramp, less the pin reserve; setup.md 8.5, Drain aim).
+	AimPct        *float64   `json:"aim_pct,omitempty"`
+	AimAtResetPct *float64   `json:"aim_at_reset_pct,omitempty"`
+	ResetsAt      *time.Time `json:"weekly_resets_at,omitempty"`
 }
 
 func drainView(d DrainInfo) *DrainView {
 	v := &DrainView{On: d.On, RoomPct: pyRound(d.RoomPct, 1), RoomPts: pyRound(d.RoomPts, 1), NeedHours: pyRound(d.NeedH, 2),
-		HorizonHours: pyRound(d.HorizonH, 2), Running: d.Running, ForwardBurn: pyRound(d.ForwardBurn, 1)}
+		HorizonHours: pyRound(d.HorizonH, 2), SlackX: d.SlackX, Ignore5h: d.Ign5h, Running: d.Running, ForwardBurn: pyRound(d.ForwardBurn, 1), Owner: d.Owner}
 	if !d.On {
 		return v
 	}
@@ -96,6 +122,13 @@ func drainView(d DrainInfo) *DrainView {
 	pr, un := pyRound(d.Projected, 1), pyRound(d.Unavoidable, 1)
 	fb := d.FinishBy.UTC()
 	v.ProjectedPct, v.UnavoidablePct, v.FinishBy = &pr, &un, &fb
+	if d.AimNow > 0 {
+		an, ae, rs := pyRound(d.AimNow, 1), pyRound(d.AimEnd, 1), d.WeeklyReset.UTC()
+		v.AimPct, v.AimAtResetPct = &an, &ae
+		if !d.WeeklyReset.IsZero() {
+			v.ResetsAt = &rs
+		}
+	}
 	return v
 }
 
@@ -149,6 +182,9 @@ func Decide(in Input) (Result, error) {
 }
 
 func laneKind(p Policy) string {
+	if p.Off() {
+		return config.NextModeOff
+	}
 	if p.Protected() {
 		return leases.KindProtected
 	}
@@ -202,8 +238,9 @@ type reading struct {
 
 // chooseReading picks a window's reading from every reading of it (setup.md 8.5, Readings):
 // valid ones only; the newest of those whose resets_at is within the tolerance of the newest
-// resets_at seen; an idle reading (0 % without resets_at) newer than that replaces it; with
-// no resets_at anywhere, the newest.
+// resets_at seen, less a stale one (more than staleDrop under the reading used before it,
+// unless the next one confirms the drop); an idle reading (0 % without resets_at) newer than
+// that replaces it; with no resets_at anywhere, the newest.
 func chooseReading(w *Window, now time.Time) reading {
 	if w == nil {
 		return reading{}
@@ -230,12 +267,25 @@ func chooseReading(w *Window, now time.Time) reading {
 			maxReset = s.ResetsAt
 		}
 	}
-	var best *Sample
+	// Within one window the level never falls (Calibration, Used readings): a reading more
+	// than staleDrop under the last used one of its window is held; the next reading of the
+	// window under it too confirms the drop (a usage reset) and is used, else the held one is
+	// skipped: a session that sent an old level with the current resets_at (live 2026-11-25:
+	// claude-7's week read 12% between readings of 26%).
+	sort.SliceStable(valid, func(i, j int) bool { return valid[i].At.Before(valid[j].At) })
+	var best, held *Sample
 	for i := range valid {
 		s := &valid[i]
 		if !maxReset.IsZero() && (s.ResetsAt.IsZero() || maxReset.Sub(s.ResetsAt) > resetTolerance) {
 			continue
 		}
+		if !maxReset.IsZero() && best != nil && s.Pct < best.Pct-staleDrop {
+			if held == nil {
+				held = s
+				continue
+			}
+		}
+		held = nil
 		if best == nil || s.At.After(best.At) {
 			best = s
 		}
@@ -261,6 +311,37 @@ func windowOf(c Candidate, key string) *Window {
 		}
 	}
 	return nil
+}
+
+// leaseAt is one lease of a session: from when, on which account.
+type leaseAt struct {
+	at  time.Time
+	key string
+}
+
+// rowKey is the account a token row made at at counts to: the account of the session's
+// latest lease begun by then; before its first lease, the account of the folder that ran it
+// (slot); else the session's account (cur), else the folder's. A session moved from A to B
+// makes its rows before the move on A: counting them all to B (its last lease) put B's
+// 5-hour level at 100% after moves in while its reading was ~60% (live 2026-11-25 04:06,
+// 04:25: moves out of a full-looking account with "100% at" the pass time).
+func rowKey(tl []leaseAt, at time.Time, slot, cur string) string {
+	k := ""
+	for _, x := range tl {
+		if x.at.After(at) {
+			break
+		}
+		k = x.key
+	}
+	switch {
+	case k != "":
+		return k
+	case len(tl) > 0 && slot != "":
+		return slot
+	case cur != "":
+		return cur
+	}
+	return slot
 }
 
 // meter5 is the units counted against the 5-hour level since the reading, and whether the
@@ -447,11 +528,18 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		}
 	}
 	leased := map[string]bool{}
+	// timeline: each leased session's leases by start, for the meter (a moved session's
+	// rows count to the account it was on when it made them).
+	timeline := map[string][]leaseAt{}
 	for _, l := range in.Leases {
 		if l.SessionID != "" {
 			keyOf[l.SessionID] = l.Key
 			leased[l.SessionID] = true
+			timeline[l.SessionID] = append(timeline[l.SessionID], leaseAt{l.At, l.Key})
 		}
+	}
+	for _, tl := range timeline {
+		sort.SliceStable(tl, func(i, j int) bool { return tl[i].at.Before(tl[j].at) })
 	}
 	perSession := map[string][]unitAt{}
 	for _, t := range in.Outbox.Tokens {
@@ -476,7 +564,10 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 	var ls []LaneLease
 	for _, l := range in.Leases {
 		ll := LaneLease{Key: l.Key, T0: l.At, SID: l.SessionID, C5: l.C5, CF: l.CF,
-			Launched: !l.Launched.IsZero(), Ended: !l.Ended.IsZero(), From: burnNone}
+			Launched: !l.Launched.IsZero(), Ended: !l.Ended.IsZero(), From: burnNone, Moved: moveLease(l)}
+		if l.ExpectEnd != nil {
+			ll.ExpectEnd = *l.ExpectEnd
+		}
 		var hub *HubLease
 		if hl, ok := own[l.ID]; ok && l.ID != "" {
 			hub = &hl
@@ -536,10 +627,7 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		if bs.fromHub(t.Session, t.At) {
 			continue
 		}
-		k := keyOf[t.Session]
-		if k == "" {
-			k = slotKey[t.Slot]
-		}
+		k := rowKey(timeline[t.Session], t.At, slotKey[t.Slot], keyOf[t.Session])
 		if k != "" {
 			perKey[k] = append(perKey[k], unitAt{t.At, t.Units})
 		}
@@ -603,6 +691,7 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		views[g.key] = cv
 		for _, i := range g.idxs {
 			acc.Live = acc.Live || cands[i].LiveSessions > 0
+			acc.HubRead = acc.HubRead || (!in.HubDown && cands[i].SeatID != "" && strings.HasPrefix(cands[i].Source, "hub"))
 		}
 		for sid, hs := range in.Outbox.Sessions {
 			if keyOf[sid] == g.key && !hs.Ended && now.Sub(hs.Last) <= hookLive {
@@ -615,15 +704,33 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 				break
 			}
 		}
+		acc.Off = rs[g.rep].policy.Off()
+		acc.SetCap5, acc.SetCap7 = rs[g.rep].policy.SetCap5h, rs[g.rep].policy.SetCap7d
+		if u := rs[g.rep].policy.DrainUntil; u.After(now) && !acc.Off {
+			// The owner drains it: an aggressive drain account until then (setup.md 8.5, Owner drain).
+			acc.DrainUntil = u
+			acc.Ign5h = rs[g.rep].policy.DrainIgnore5h
+			if acc.Protected {
+				acc.OwnerProtected, acc.Protected = true, false
+			}
+		}
 		acc.Limit7d, acc.Limit5h = laneLimits(rs[g.rep].policy, acc.Protected, p)
+		if in.Mover != nil {
+			acc.MoveUnits = math.Max(0, in.Mover.Units[g.key])
+		}
+		if pr, ok := in.PinReserves[g.key]; ok && pr.Pins > 0 {
+			acc.Pins, acc.PinReserve5, acc.PinReserve7 = pr.Pins, math.Max(0, pr.R5), math.Max(0, pr.R7)
+			acc.PinUnits = math.Max(0, pr.Units)
+		}
 		accts = append(accts, acc)
 	}
 
 	f5Of := map[string]float64{}
-	for _, a := range accts {
+	for i, a := range accts {
 		f5Of[a.Key] = p.account(a).F5
+		scalePins(&accts[i], p, now)
 	}
-	lin := LaneInput{Now: now, Params: p, Accounts: accts, Leases: ls, N: n, SIDs: in.SIDs, Urgent: in.Urgent,
+	lin := LaneInput{Now: now, Params: p, Mover: in.Mover, Accounts: accts, Leases: ls, N: n, SIDs: in.SIDs, Urgent: in.Urgent,
 		Stats: measureLanes(in.Leases, ls[:nLocal], ls[nLocal:], f5Of, res.Model, now), Expect: in.Expect, HubDown: in.HubDown, Expects: in.Expects}
 	if in.OnLanes != nil {
 		in.OnLanes(lin)
@@ -631,6 +738,15 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 	lr, err := RankLanes(lin)
 	if err != nil {
 		return res, err
+	}
+	if p.UseEstimate {
+		if est := p.estimate(lin.expectAt(0), LaneAccount{}, lin.Stats); est.given {
+			res.LaneBurn = SwitchLaneNote(lin, est.class, hoursDur(est.dur))
+		} else {
+			res.LaneBurn = SwitchLaneNote(lin, "", 0)
+		}
+	} else {
+		res.LaneBurn = SwitchLaneNote(lin, "", 0)
 	}
 	res.Waiting = lr.Waiting
 	if lr.Waiting > 0 {
@@ -712,7 +828,8 @@ func rankLanes(in Input, p LaneParams) (Result, error) {
 		}
 		earlier[pk.Key]++
 		res.Picks = append(res.Picks, Pick{Ranked: r, SessionID: pk.SID, Urgent: pk.Forced, LaneKind: r.Kind, C5: pk.C5, CF: pk.CF,
-			Drain: pk.Drain, Spill: pk.Spill, FinishBy: pk.FinishBy, Reset: pk.Reset, Expect: pk.Expect, Over: pk.Over})
+			Drain: pk.Drain, Spill: pk.Spill, FinishBy: pk.FinishBy, Reset: pk.Reset, Expect: pk.Expect, Over: pk.Over,
+			SwitchClass: pk.SwitchClass, SwitchDur: pk.SwitchDur})
 	}
 	if len(res.Picks) > 0 {
 		res.Pick = &res.Picks[0].Ranked
@@ -750,12 +867,13 @@ func laneLimits(pol Policy, protected bool, p LaneParams) (lim7, lim5 float64) {
 }
 
 func laneView(row LaneRow, extra float64, now time.Time) LaneView {
-	v := LaneView{WeeklyPct: pyRound(row.Weekly, 1), FiveHourPct: pyRound(row.FiveHour, 1),
+	v := LaneView{WeeklyPct: pyRound(row.Weekly, 1), WeeklyMeasuredPct: pyRound(row.WeeklyM, 1), FiveHourPct: pyRound(row.FiveHour, 1),
 		WeeklyReservePct: pyRound(row.Reserve, 1), HoursToReset: pyRound(row.HoursToReset, 2),
 		Meter5hPct: pyRound(row.Meter5+row.Margin5, 1), Meter7dPct: pyRound(row.Meter7+row.Margin7, 2), Unexplained5hPct: pyRound(extra, 1),
 		Leases: row.Leases, Burst: row.Burst, BurstCap: row.BurstCap, Capped: row.Capped, Expiring: row.Expiring,
 		Stale: row.Stale, Unknown: append([]string{}, row.Unknown...), SkipLevel: row.SkipLevel,
 		WeeklyCap: pyRound(row.WeeklyCap, 1), FiveHourCap: pyRound(row.FiveHourCap, 1),
+		Pins: row.Pins, PinReserve5hPct: pyRound(row.PinReserve5, 1), PinReserve7dPct: pyRound(row.PinReserve7, 1), PinFull5hPct: pyRound(row.PinFull5, 1), PinFull7dPct: pyRound(row.PinFull7, 1), ExpiringRoom: pyRound(row.ExpiringRoom, 1),
 		LeaseCharges: []LeaseChargeView{}, Class: row.Class}
 	if row.Class != "" {
 		v.Drain = drainView(row.Drain)
@@ -802,8 +920,11 @@ func laneReason(r Ranked, row LaneRow, earlier int, sid string, urgent bool, now
 	if d := row.Drain; row.Class == ClassDrain && d.On {
 		// "drain: 9% of week left, resets 09:30, finish by 09:20; 5h 50%; 2 of 5 drain lanes running"
 		run := d.Running + earlier
-		dr := fmt.Sprintf("drain: %.0f%% of week left, resets %s, finish by %s", math.Max(0, 98-d.WM),
+		dr := fmt.Sprintf("drain: %.0f%% of week left, resets %s, finish by %s", math.Max(0, d.Target-d.WM),
 			d.Reset.Local().Format("15:04"), d.FinishBy.Local().Format("15:04"))
+		if d.Owner {
+			dr = fmt.Sprintf("%s: %.0f%% of week left to use", OwnerDrainText(d.FinishBy, now), math.Max(0, d.Target-d.WM))
+		}
 		parts = append(parts, dr, fmt.Sprintf("5h %.0f%%", d.HM), fmt.Sprintf("%d of %d drain lanes running", run, d.Running+d.Capacity))
 		if d.Spill {
 			parts = append(parts, "runs past reset")
@@ -892,10 +1013,35 @@ func recentUnits(us []unitAt, hub *HubLease, t0, now time.Time, window time.Dura
 // Lane statistics (setup.md 8.5, Drain): at least this many measured lanes, else fallbacks.
 const laneStatsMin = 10
 
+// laneRateQ is the quantile of the measured lane burn rates a new lane is taken to burn at in
+// the switch-projection check (LaneStats.Rate); laneRateMinAge the least age of a running lane
+// whose rate counts, laneRateMinEnded the least wall time of an ended one.
+const (
+	laneRateQ        = 0.75
+	laneRateMinAge   = 30 * time.Minute
+	laneRateMinEnded = 20 * time.Minute
+)
+
+// moveLease reports whether a ledger lease was written by a move (wy move, the switch, a
+// handoff), not by the picker: it continues a lane, it is not a new one.
+func moveLease(l leases.Lease) bool {
+	return l.Strategy == "move" || l.Strategy == "handoff" || l.MovedFrom != ""
+}
+
 // measureLanes measures the lane cost (p75 and mean of the 5-hour points a finished lane used,
-// or a lane's first 5 hours) and the median lane length (launched to ended, from this
-// machine's ledger) over the leases read (8 days); a model's own lanes when there are enough
-// of them. local are the LaneLeases of ledger, in the same order; remote other machines'.
+// or a lane's first 5 hours), the median lane length and the lane burn rate over the leases
+// read (8 days); a model's own lanes when there are enough of them. local are the LaneLeases
+// of ledger, in the same order; remote other machines'.
+//
+// A lane is a picker lease's session over its whole life: a move ends the session on one
+// account and resumes it on another under a new lease with the same session id (live pre8:
+// the move leases, a few minutes of wall time each with the resume's cache write, and the
+// picker leases ended at their first move while their burn ran on, made the measured lane
+// burn 57 points/h against ~9 and refused every account). So: picker leases only, each
+// from its launch to the end of the last lease of its session (or now while that runs), the
+// burn its session used since (every account); leases written by moves are not lanes.
+// Other machines' leases (the hub does not say which are moves, nor their sessions' later
+// leases) count for the cost only, not the length or the rate.
 func measureLanes(ledger []leases.Lease, local, remote []LaneLease, f5Of map[string]float64, model string, now time.Time) LaneStats {
 	type lane struct {
 		cost  float64
@@ -903,32 +1049,73 @@ func measureLanes(ledger []leases.Lease, local, remote []LaneLease, f5Of map[str
 	}
 	var costs []lane
 	var lens []lane
-	add := func(L LaneLease, m string) {
+	var rates []lane // 5-hour points per hour of wall time (the field cost holds the rate)
+	add := func(L LaneLease, m string, running bool, start time.Time) {
 		f5 := f5Of[L.Key]
-		if f5 <= 0 || !L.Seen || L.Burned <= 0 || (!L.Ended && now.Sub(L.T0) < window5h) {
+		if f5 <= 0 || !L.Seen || L.Burned <= 0 || (running && now.Sub(start) < window5h) {
 			return
 		}
 		costs = append(costs, lane{L.Burned * f5, m})
 	}
+	// The end of each session's life: its last lease (by time) and whether that one ended.
+	type life struct {
+		at    time.Time // the last lease's time
+		end   time.Time
+		ended bool
+	}
+	lives := map[string]life{}
+	for i, l := range ledger {
+		if l.SessionID == "" || i >= len(local) {
+			continue
+		}
+		if x, ok := lives[l.SessionID]; ok && x.at.After(l.At) {
+			continue
+		}
+		lives[l.SessionID] = life{at: l.At, end: l.Ended, ended: local[i].Ended}
+	}
 	for i, L := range local {
-		m := ""
-		if i < len(ledger) {
-			m = ledger[i].Model
-			l := ledger[i]
-			if !l.Ended.IsZero() {
-				start := l.At
-				if !l.Launched.IsZero() {
-					start = l.Launched
-				}
-				if d := l.Ended.Sub(start); d > 0 {
-					lens = append(lens, lane{d.Hours(), m})
-				}
+		if i >= len(ledger) {
+			break
+		}
+		l := ledger[i]
+		if moveLease(l) {
+			continue
+		}
+		m := l.Model
+		start := l.At
+		if !l.Launched.IsZero() {
+			start = l.Launched
+		}
+		end, ended := l.Ended, L.Ended
+		if x, ok := lives[l.SessionID]; ok && l.SessionID != "" {
+			end, ended = x.end, x.ended
+		}
+		add(L, m, !ended, start)
+		if ended && !end.IsZero() {
+			if d := end.Sub(start); d > 0 {
+				lens = append(lens, lane{d.Hours(), m})
 			}
 		}
-		add(L, m)
+		// The rate: its burn over its wall time, to its end (ended, at least laneRateMinEnded)
+		// or to now (running for laneRateMinAge or more: a young lane's first minutes burn far
+		// above its steady rate).
+		f5 := f5Of[L.Key]
+		if f5 <= 0 || !L.Seen || L.Burned <= 0 {
+			continue
+		}
+		least := laneRateMinEnded
+		switch {
+		case !ended:
+			end, least = now, laneRateMinAge
+		case end.IsZero():
+			continue // ended at a time this machine does not know
+		}
+		if h := end.Sub(start).Hours(); h >= least.Hours() {
+			rates = append(rates, lane{L.Burned * f5 / h, m})
+		}
 	}
 	for _, L := range remote {
-		add(L, "")
+		add(L, "", !L.Ended, L.T0)
 	}
 	pickOf := func(xs []lane) []float64 {
 		var mine, all []float64
@@ -956,6 +1143,21 @@ func measureLanes(ledger []leases.Lease, local, remote []LaneLease, f5Of map[str
 		sort.Float64s(ls)
 		st.Len, st.NLen = hoursDur(quantile(ls, 0.5)), len(ls)
 	}
+	// The lane burn: the model's own lanes only (a model's burn is its own: Opus lanes burn
+	// several times Sonnet's); without --model, every lane.
+	rs := pickOf(rates)
+	if model != "" {
+		rs = nil
+		for _, x := range rates {
+			if x.model == model {
+				rs = append(rs, x.cost)
+			}
+		}
+	}
+	if len(rs) >= laneStatsMin {
+		sort.Float64s(rs)
+		st.Rate, st.NRate = quantile(rs, laneRateQ), len(rs)
+	}
 	if model != "" {
 		st.Model = model
 	}
@@ -973,4 +1175,27 @@ func quantile(xs []float64, q float64) float64 {
 		return xs[len(xs)-1]
 	}
 	return xs[i] + (pos-float64(i))*(xs[i+1]-xs[i])
+}
+
+// scalePins scales acc's pin reserve to what its pinned sessions can plausibly burn before each
+// window resets (setup.md 8.6, Pinned sessions; projection.PinReserve): their measured burn, at
+// least projection.PinBaseRate each, times the hours left, times two. Far from a reset that is
+// the full reserve; in the last hours it shrinks, so a drain can use the rest of the week.
+func scalePins(acc *LaneAccount, p LaneParams, now time.Time) {
+	if acc.Pins <= 0 {
+		return
+	}
+	acc.PinFull5, acc.PinFull7 = acc.PinReserve5, acc.PinReserve7
+	pa := p.account(*acc)
+	rate := math.Max(acc.PinUnits*pa.F5, float64(acc.Pins)*projection.PinBaseRate)
+	c := cleanLaneSample(acc.Sample, now)
+	h5, h7 := 5.0, -1.0 // a 5-hour window not started is a whole window away; an unknown week keeps it all
+	if c.fiveRst.After(now) {
+		h5 = c.fiveRst.Sub(now).Hours()
+	}
+	if c.weeklyRst.After(now) {
+		h7 = c.weeklyRst.Sub(now).Hours()
+	}
+	acc.PinReserve5 = projection.PinReserve(acc.PinFull5, rate, h5)
+	acc.PinReserve7 = projection.PinReserve(acc.PinFull7, rate/pa.ratio(), h7)
 }

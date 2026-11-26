@@ -127,6 +127,8 @@ func decideNotice(n model.Notice, alerts []model.Alert, env Env) []Op {
 		a.Machine = strp(n.Machine)
 	}
 	switch {
+	case n.Direct:
+		a.Status, a.Reason, a.EndedAt = model.StatusSkipped, strp(model.ReasonDirect), model.Time(env.NowMS)
 	case !rule.Enabled:
 		a.Status, a.Reason, a.EndedAt = model.StatusSkipped, strp(model.ReasonRuleOff), model.Time(env.NowMS)
 	case n.SinceMS < env.NowMS-NoticeMaxAgeMS:

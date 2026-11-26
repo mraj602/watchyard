@@ -54,6 +54,32 @@ const SKIP_REASONS = [
   'it is at its limit',
 ];
 
+// The pin reserve line (setup.md 8.6, Pinned sessions): "2 pinned sessions keep 20% of the 5-hour
+// window and 2.1% of the week free until Thu 03:30, scaled to time left (full 10%)"; '' without
+// pins. The caps above are already less it.
+export function pinRule(v, nowMs, tz) {
+  if (!v || !v.pins) return '';
+  const pct = (x) => `${num(x, 1)}%`;
+  const scaled = (r, full) => full != null && r != null && full > r + 0.05;
+  const who = v.pins === 1 ? '1 pinned session keeps' : `${v.pins} pinned sessions keep`;
+  const parts = [];
+  let tail = '';
+  if (v.pin_reserve_5h_pct != null) parts.push(`${pct(v.pin_reserve_5h_pct)} of the 5-hour window`);
+  if (v.pin_reserve_7d_pct != null) {
+    parts.push(`${pct(v.pin_reserve_7d_pct)} of the week`);
+    if (scaled(v.pin_reserve_7d_pct, v.pin_reserve_full_7d_pct)) {
+      const at = v.weekly_resets_at ? dayClock(v.weekly_resets_at, nowMs, tz) : '';
+      tail = `${at ? ` until ${at}` : ''}, scaled to time left (full ${pct(v.pin_reserve_full_7d_pct)})`;
+    }
+  }
+  if (!parts.length) return '';
+  let s = `${who} ${parts.join(' and ')} free${tail}`;
+  if (scaled(v.pin_reserve_5h_pct, v.pin_reserve_full_5h_pct) && !scaled(v.pin_reserve_7d_pct, v.pin_reserve_full_7d_pct)) {
+    s += `; the 5-hour part is scaled to the time left in its window (full ${pct(v.pin_reserve_full_5h_pct)})`;
+  }
+  return s;
+}
+
 // The verdict as sentences. `empty` is the "no verdict yet" case. kindKey is protected,
 // aggressive or none (not chosen: treated as aggressive); the view adds the definition.
 export function verdictModel(v, nowMs, tz) {
@@ -89,6 +115,8 @@ export function verdictModel(v, nowMs, tz) {
     if (weekCap != null) text += aggressiveKind ? ` (stops at ${weekCap}%)` : `, the even pace allows ${weekCap}% today`;
     rules.push({ key: 'week', blocking: weekCap != null && week >= weekCap, text });
   }
+  const pins = pinRule(v, nowMs, tz);
+  if (pins) rules.push({ key: 'pins', blocking: false, text: pins });
   if (v.burst != null) rules.push({ key: 'burst', blocking: v.burst_cap != null && v.burst >= v.burst_cap,
     text: `New sessions in the last hour: ${v.burst}${v.burst_cap != null ? ` (at most ${v.burst_cap})` : ''}` });
 

@@ -139,6 +139,10 @@ func hasControl(s string) bool {
 	return false
 }
 
+// SystemdKillMode is the service's KillMode: only tick itself ends with the run; what it
+// started detached (the switch's pass) runs on.
+const SystemdKillMode = "process"
+
 // SystemdService renders watchyard-flush.service.
 func SystemdService(e Env) string {
 	var b strings.Builder
@@ -155,6 +159,9 @@ func SystemdService(e Env) string {
 	}
 	fmt.Fprintf(&b, "ExecStart=%s\n", strings.Join(args, " "))
 	b.WriteString("Nice=10\nTimeoutStartSec=60\n")
+	// `wy tick` starts the Smart Account Switch pass detached (it may wait minutes for a step
+	// to end); the default KillMode=control-group would kill it when tick exits.
+	b.WriteString("KillMode=" + SystemdKillMode + "\n")
 	return b.String()
 }
 

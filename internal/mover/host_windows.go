@@ -4,6 +4,7 @@ package mover
 
 import (
 	"errors"
+	"time"
 
 	"github.com/mraj602/watchyard/internal/peers"
 )
@@ -20,11 +21,17 @@ func (h RealHost) Alive(Launch) bool                    { return false }
 func (h RealHost) Kill(int) error                       { return errWindows }
 func (h RealHost) Tmux(...string) error                 { return errWindows }
 func (h RealHost) Start(string, []string, string) error { return errWindows }
-func (h RealHost) Order(int, RunOrder) error            { return errWindows }
-func (h RealHost) Note(string, string) error            { return errWindows }
-func (h RealHost) Carry(Launch, string) error           { return errWindows }
-func (h RealHost) StopJob(string, string) error         { return errWindows }
-func (h RealHost) Copies(string, string, int) []int     { return nil }
+func (h RealHost) StartWait(string, []string, string, time.Duration) error {
+	return errWindows
+}
+func (h RealHost) Resumed(Launch, string, time.Time) string { return "" }
+func (h RealHost) Order(int, RunOrder) error                { return errWindows }
+func (h RealHost) Note(string, string) error                { return errWindows }
+func (h RealHost) Carry(Launch, string) error               { return errWindows }
+func (h RealHost) StopJob(string, string) error             { return errWindows }
+func (h RealHost) Copies(string, string, int) []int         { return nil }
+func (h RealHost) TTY(int) string                           { return "" }
+func (h RealHost) WriteTTY(string, string) error            { return errWindows }
 
 // CleanEnv is env unchanged on Windows.
 func CleanEnv(env []string) []string { return env }

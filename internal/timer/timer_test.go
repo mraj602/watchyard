@@ -269,3 +269,11 @@ func TestSystemdQuote(t *testing.T) {
 		t.Errorf("systemdEnvQuote = %q", got)
 	}
 }
+
+// wy tick starts the Smart Account Switch pass detached: the service must not kill it when
+// tick exits (live run 1.3.3-pre3: the default KillMode=control-group did).
+func TestSystemdServiceKeepsDetachedPass(t *testing.T) {
+	if s := SystemdService(env("linux")); !strings.Contains(s, "\nKillMode=process\n") {
+		t.Errorf("no KillMode=process:\n%s", s)
+	}
+}

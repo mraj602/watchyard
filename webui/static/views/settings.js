@@ -5,6 +5,7 @@
 import { h } from '../components/dom.js';
 import { section, select, toggle, toast, moreTabs, details } from '../components/ui.js';
 import { quietHours } from '../components/quiet.js';
+import { CATEGORIES, mutedCategories, setCategory } from '../components/notif-cats.js';
 import { liveBadge } from '../components/nav.js';
 import { notifiable, appPaired, isApp } from '../components/targets.js';
 import { store, isOwner, canPush, inApp } from '../store.js';
@@ -151,7 +152,12 @@ function prefs() {
           onChange: (v) => savePrefs({ tap: v }) })),
       h('div', { class: 'row' }, quietHours({
         device: true, value: pr.quiet_hours, hubValue: st.hub && st.hub.quiet_hours, onSave: (q) => savePrefs({ quiet_hours: q }),
-      }))));
+      }))),
+    h('p', { class: 'muted small' }, 'Turn a kind of notification off for this device. The hub then sends it none of that kind.'),
+    h('div', { class: 'panel', 'data-key': 'notif-cats' }, CATEGORIES.map((c) => h('div', { class: 'row' }, toggle({
+      label: c.label, sub: c.sub, checked: !mutedCategories(pr).includes(c.id), key: `cat-${c.id}`,
+      onChange: (v) => savePrefs({ mute_categories: setCategory(pr, c.id, v) }),
+    })))));
 }
 
 // ---- Advanced: ntfy ------------------------------------------------------------------------

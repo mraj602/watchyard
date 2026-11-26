@@ -55,7 +55,10 @@ plugin (`plugin/watchyard/hooks/hooks.json`) installs these command hooks, all
 `timeout: 2` (it costs about 5 ms): an async hook can be killed when Claude Code exits, and
 the session would then show as `gone` instead of `ended`. Beside these, synchronous entries
 that record nothing: `wy hook --title <Event>` (terminal.md T6) and, on SessionStart only,
-`wy hook --peers-context SessionStart` (peers.md 2.5).
+`wy hook --peers-context SessionStart` (peers.md 2.5). And async entries for the Smart
+Account Switch that change no state: `wy hook --step` on `PreToolUse`, `PostToolUse` and
+`PostToolUseFailure` for every tool records when each tool call starts and ends, so a mid-turn
+move waits until the session is between steps (setup.md 8.6).
 
 | Event | Matcher | Why |
 | --- | --- | --- |

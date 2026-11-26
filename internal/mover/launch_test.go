@@ -2,6 +2,7 @@ package mover
 
 import (
 	"errors"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -42,10 +43,8 @@ func TestDetectKinds(t *testing.T) {
 			t.Errorf("%+v: %s, want %s", c.d, got, c.want)
 		}
 	}
-	for _, k := range []Kind{KindTerminal, KindCloud} {
-		if k.Movable() {
-			t.Errorf("%s movable", k)
-		}
+	if KindCloud.Movable() || !KindTerminal.Movable() {
+		t.Error("movable: terminal yes, cloud no")
 	}
 }
 
@@ -63,6 +62,38 @@ func TestResumeArgsByKind(t *testing.T) {
 			t.Errorf("%s: %q, want %q", k, got, want)
 		}
 	}
+	// Mid-turn: every kind resumes with the note as its prompt, without the idle tail.
+	l.MidTurn = true
+	for k, want := range map[Kind][]string{
+		KindTmux:       {"--model", "opus", "--resume", "s1", note},
+		KindWrapped:    {"--model", "opus", "--resume", "s1", note},
+		KindBackground: {"--model", "opus", "--resume", "s1", "--bg", note},
+		KindHeadless:   {"-p", "--model", "opus", "--resume", "s1", note},
+	} {
+		l.Kind = k
+		if got := ResumeArgs(l, note); !reflect.DeepEqual(got, want) {
+			t.Errorf("mid-turn %s: %q, want %q", k, got, want)
+		}
+	}
+}
+
+// The resumed session keeps its name (its Remote Control session is titled from it, not from
+// the move note), unless the session's own flags already name it.
+func TestResumeArgsKeepsName(t *testing.T) {
+	l := Launch{SessionID: "s1", Name: "my task", Kind: KindTmux, Argv: strings.Fields("--model opus first")}
+	if got, want := ResumeArgs(l, "n"), []string{"--model", "opus", "--resume", "s1", "--name", "my task"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("named: %q, want %q", got, want)
+	}
+	for _, argv := range []string{"--name mine", "-n mine", "--name=mine"} {
+		l.Argv = strings.Fields(argv)
+		if got := ResumeArgs(l, "n"); strings.Contains(strings.Join(got, " "), "my task") {
+			t.Errorf("%s: name added again: %q", argv, got)
+		}
+	}
+	l.Argv, l.Name = nil, " "
+	if got := ResumeArgs(l, "n"); !reflect.DeepEqual(got, []string{"--resume", "s1"}) {
+		t.Errorf("unnamed: %q", got)
+	}
 }
 
 func TestCommandTemplate(t *testing.T) {
@@ -70,27 +101,18 @@ func TestCommandTemplate(t *testing.T) {
 	if got := strings.Join(Command("", tg, []string{"--resume", "s"}), " "); got != "env CLAUDE_CONFIG_DIR=/home/u/.claude-2 claude --resume s" {
 		t.Errorf("default: %q", got)
 	}
-	if got := strings.Join(Command("~/bin/claude-launch {n}", tg, []string{"--resume", "s"}), " "); got != "~/bin/claude-launch 2 --resume s" {
-		t.Errorf("template: %q", got)
+	// A leading ~/ or $HOME is expanded: a detached start runs no shell to do it.
+	home, _ := os.UserHomeDir()
+	for _, tpl := range []string{"~/bin/claude-launch {n}", "$HOME/bin/claude-launch {n}", "${HOME}/bin/claude-launch {n}"} {
+		if got := strings.Join(Command(tpl, tg, []string{"--resume", "s"}), " "); got != home+"/bin/claude-launch 2 --resume s" {
+			t.Errorf("template %s: %q", tpl, got)
+		}
 	}
 	if SlotNumber("/home/u/.claude") != "1" || SlotNumber("/x/.claude-12") != "12" {
 		t.Error("slot numbers")
 	}
 	if got := Shell([]string{"a b", "it's", "ok"}); got != `'a b' 'it'\''s' ok` {
 		t.Errorf("Shell: %s", got)
-	}
-}
-
-func TestNoteText(t *testing.T) {
-	at := time.Date(2026, 11, 24, 10, 31, 0, 0, time.Local)
-	mv := Move{Window: Win5h, HitAt: at.Add(17 * time.Minute), ResetAt: time.Date(2026, 11, 24, 13, 59, 0, 0, time.Local)}
-	want := "Watchyard moved this session from claude-4 to claude-2 at 10:31 (5h would have hit at 10:48, before its 13:59 reset). " +
-		"Background shells started before keep running (Claude Code lists them as stopped; they are not) but are no longer tracked here: check their output files."
-	if got := Note("claude-4", "claude-2", at, mv); got != want {
-		t.Errorf("note:\n%s\nwant\n%s", got, want)
-	}
-	if got := Note("claude-4", "claude-2", at, Move{}); !strings.HasPrefix(got, "Watchyard moved this session from claude-4 to claude-2 at 10:31. Background") {
-		t.Errorf("manual note: %s", got)
 	}
 }
 
@@ -104,6 +126,8 @@ type fakeHost struct {
 	copyUntil, stops int
 	// stopIgnored: claude stop does not end the process (an older claude).
 	stopIgnored bool
+	// resumed: the session id Resumed reports on the new account.
+	resumed string
 }
 
 func (h *fakeHost) rec(s string) error {
@@ -132,10 +156,18 @@ func (h *fakeHost) Copies(dir, sid string, except int) []int {
 	}
 	return nil
 }
+func (h *fakeHost) TTY(pid int) string { return "/dev/pts/7" }
+func (h *fakeHost) WriteTTY(tty, text string) error {
+	return h.rec("tty " + tty + ": " + text)
+}
 func (h *fakeHost) Tmux(args ...string) error { return h.rec("tmux " + strings.Join(args, " ")) }
 func (h *fakeHost) Start(dir string, argv []string, log string) error {
 	return h.rec("start " + dir + ": " + strings.Join(argv, " ") + " > " + log)
 }
+func (h *fakeHost) StartWait(dir string, argv []string, log string, wait time.Duration) error {
+	return h.rec("start " + dir + ": " + strings.Join(argv, " ") + " > " + log)
+}
+func (h *fakeHost) Resumed(l Launch, to string, since time.Time) string { return h.resumed }
 func (h *fakeHost) Order(pid int, o RunOrder) error {
 	return h.rec("order " + strconv.Itoa(pid) + ": " + strings.Join(o.Argv, " "))
 }
@@ -144,6 +176,8 @@ func (h *fakeHost) Note(sid, text string) error { return h.rec("note " + sid) }
 func TestExecuteByKind(t *testing.T) {
 	defer func(d time.Duration) { Settle = d }(Settle)
 	Settle = 0
+	defer func(d time.Duration) { AfterWatch = d }(AfterWatch)
+	AfterWatch = 0
 	tg := Target{Key: "acct:b/o", Label: "claude-2", Dir: "/h/.claude-2"}
 	base := Launch{PID: 42, SessionID: "s1", Slot: "/h/.claude-4", CWD: "/w", Argv: []string{"--model", "opus"}, Pane: "%5", Wrapper: 40}
 	cmd := "env CLAUDE_CONFIG_DIR=/h/.claude-2 claude --model opus --resume s1"
@@ -154,8 +188,10 @@ func TestExecuteByKind(t *testing.T) {
 		{KindTmux, []string{"note s1", "tmux set-option -p -t %5 remain-on-exit on", "kill 42", "carry s1 /h/.claude-4 -> /h/.claude-2",
 			"tmux respawn-pane -k -t %5 -c /w bash -ic '" + cmd + "'", "tmux set-option -p -u -t %5 remain-on-exit"}},
 		{KindWrapped, []string{"note s1", "order 40: " + cmd, "kill 42"}},
-		{KindBackground, []string{"stop s1 in /h/.claude-4", "carry s1 /h/.claude-4 -> /h/.claude-2", "start /w: " + cmd + " --bg N" + PromptTail + " > "}},
+		{KindBackground, []string{"stop s1 in /h/.claude-4", "carry s1 /h/.claude-4 -> /h/.claude-2", "start /w: " + cmd + " --bg N" + PromptTail + " > /log"}},
 		{KindHeadless, []string{"kill 42", "carry s1 /h/.claude-4 -> /h/.claude-2", "start /w: env CLAUDE_CONFIG_DIR=/h/.claude-2 claude -p --model opus --resume s1 N" + PromptTail + " > /log"}},
+		// A plain terminal goes on as a background session; with no message nothing is written.
+		{KindTerminal, []string{"kill 42", "carry s1 /h/.claude-4 -> /h/.claude-2", "start /w: " + cmd + " --bg N" + PromptTail + " > "}},
 	} {
 		h := &fakeHost{}
 		l := base
@@ -167,9 +203,9 @@ func TestExecuteByKind(t *testing.T) {
 			t.Errorf("%s:\n got %q\nwant %q", c.kind, h.calls, c.want)
 		}
 	}
-	// Never stopped: a plain terminal, a claude.ai session, a pid that is another process now,
-	// and a wrapper order that could not be written.
-	for _, k := range []Kind{KindTerminal, KindCloud} {
+	// Never stopped: a claude.ai session, a pid that is another process now, and a wrapper
+	// order that could not be written.
+	for _, k := range []Kind{KindCloud} {
 		h := &fakeHost{}
 		l := base
 		l.Kind = k
@@ -206,11 +242,8 @@ func TestStateFiles(t *testing.T) {
 	if st.WriteNote("../x", "x", now) == nil {
 		t.Error("bad session id written")
 	}
-	if err := st.SetPin("s1", true); err != nil || !st.Pins()["s1"] {
-		t.Error("pin")
-	}
-	if err := st.SetPin("s1", false); err != nil || st.Pins()["s1"] {
-		t.Error("unpin")
+	if err := os.WriteFile(st.path("pins.json"), []byte(`["s1"]`), 0o600); err != nil || !st.Pins()["s1"] {
+		t.Error("old pins file")
 	}
 	if err := st.WriteOrder(7, RunOrder{SessionID: "s1", Argv: []string{"claude"}}); err != nil {
 		t.Fatal(err)
@@ -243,6 +276,8 @@ func TestCleanEnv(t *testing.T) {
 func TestBackgroundMoveStopsOldCopy(t *testing.T) {
 	defer func(d time.Duration) { Settle = d }(Settle)
 	Settle = 300 * time.Millisecond
+	defer func(d time.Duration) { AfterWatch = d }(AfterWatch)
+	AfterWatch = 0
 	tg := Target{Key: "acct:b/o", Label: "claude-2", Dir: "/h/.claude-2"}
 	l := Launch{PID: 42, SessionID: "s1", Slot: "/h/.claude-4", CWD: "/w", Kind: KindBackground}
 	h := &fakeHost{copyUntil: 2}
@@ -257,7 +292,7 @@ func TestBackgroundMoveStopsOldCopy(t *testing.T) {
 	defer func(d time.Duration) { StopWait = d }(StopWait)
 	StopWait = 50 * time.Millisecond
 	h = &fakeHost{stopIgnored: true}
-	if _, err := Execute(h, l, tg, "", "N", ""); err != nil || !strings.HasPrefix(strings.Join(h.calls, "|"), "stop s1 in /h/.claude-4|kill 42|carry") {
+	if _, err := Execute(h, l, tg, "", "N", ""); err != nil || !strings.HasPrefix(strings.Join(h.calls, "|"), "stop s1 in /h/.claude-4|kill 42|stop s1 in /h/.claude-4|carry") {
 		t.Fatalf("stop ignored: %v %q", err, h.calls)
 	}
 	h = &fakeHost{copyUntil: 99}
@@ -268,5 +303,201 @@ func TestBackgroundMoveStopsOldCopy(t *testing.T) {
 		if strings.HasPrefix(c, "start") {
 			t.Fatalf("resumed while a copy ran: %v", h.calls)
 		}
+	}
+}
+
+func TestHasPrompt(t *testing.T) {
+	for argv, want := range map[string]bool{
+		"--model opus":                        false,
+		"--model opus do-it":                  true,
+		"--add-dir a b --model opus":          false,
+		"--resume abc":                        false,
+		"--resume abc note":                   true,
+		"-p --output-format json task":        true,
+		"--permission-mode bypassPermissions": false,
+		"-- task":                             true,
+	} {
+		if got := HasPrompt(strings.Fields(argv)); got != want {
+			t.Errorf("%q: %v, want %v", argv, got, want)
+		}
+	}
+}
+
+// e2e v2: the old account's supervisor restarted a job killed mid-turn after the move's watch
+// ended. Each later pass stops such a copy for ReapWindow after the latest background move.
+func TestReapStopsLateCopies(t *testing.T) {
+	st := State{Dir: t.TempDir()}
+	now := time.Now()
+	_ = st.Append(LogEntry{At: now.Add(-5 * time.Minute), SessionID: "s1", From: "a", To: "b", FromDir: "/h/.claude-4", ToDir: "/h/.claude-2", Kind: KindBackground})
+	_ = st.Append(LogEntry{At: now.Add(-5 * time.Minute), SessionID: "s2", From: "a", To: "b", FromDir: "/h/.claude-4", ToDir: "/h/.claude-2", Kind: KindTmux})
+	_ = st.Append(LogEntry{At: now.Add(-time.Hour), SessionID: "s3", From: "a", To: "b", FromDir: "/h/.claude-4", ToDir: "/h/.claude-2", Kind: KindBackground})
+	h := &fakeHost{copyUntil: 1}
+	got := Reap(h, st, now)
+	if len(got) != 1 || got[0].SessionID != "s1" {
+		t.Fatalf("reaped %+v", got)
+	}
+	if c := strings.Join(h.calls, "|"); !strings.HasPrefix(c, "stop s1 in /h/.claude-4") {
+		t.Errorf("calls %s", c)
+	}
+	// No copy: nothing to do.
+	h = &fakeHost{}
+	if got := Reap(h, st, now); len(got) != 0 || len(h.calls) != 0 {
+		t.Errorf("no copy: %+v %v", got, h.calls)
+	}
+}
+
+// A copy that the old account's supervisor restarts after the resume is stopped too.
+func TestWatchOldStopsCopyAfterResume(t *testing.T) {
+	defer func(d time.Duration) { AfterWatch = d }(AfterWatch)
+	AfterWatch = 1500 * time.Millisecond
+	h := &fakeHost{copyUntil: 1}
+	watchOld(h, Launch{PID: 42, SessionID: "s1", Slot: "/h/.claude-4", Kind: KindBackground})
+	if c := strings.Join(h.calls, "|"); c != "stop s1 in /h/.claude-4" {
+		t.Errorf("calls %s", c)
+	}
+}
+
+// Owner correction to v2: an interactive session is moved, and the human sees a message where
+// it ran: above the resumed session in its tmux pane, printed by the wy run wrapper, or
+// written to its plain terminal, which the session leaves for a background session.
+func TestExecuteHumanMessage(t *testing.T) {
+	defer func(d time.Duration) { Settle = d }(Settle)
+	Settle = 0
+	tg := Target{Key: "acct:b/o", Label: "claude-2", Dir: "/h/.claude-2"}
+	l := Launch{PID: 42, SessionID: "s1", Slot: "/h/.claude-4", CWD: "/w", Pane: "%5", Wrapper: 40, MidTurn: true,
+		Message: "[Watchyard] This session moved"}
+	cmd := "env CLAUDE_CONFIG_DIR=/h/.claude-2 claude --resume s1 N"
+
+	l.Kind = KindTmux
+	h := &fakeHost{}
+	if _, err := Execute(h, l, tg, "", "N", ""); err != nil {
+		t.Fatal(err)
+	}
+	want := "tmux respawn-pane -k -t %5 -c /w bash -ic " + Shell([]string{"printf '\\n%s\\n\\n' " + Shell([]string{l.Message}) + "; sleep 4; " + cmd})
+	if !strings.Contains(strings.Join(h.calls, "|"), want) || strings.Contains(strings.Join(h.calls, "|"), "note s1") {
+		t.Errorf("tmux: %q\nwant %s (mid-turn: the note is the prompt, no SessionStart note)", h.calls, want)
+	}
+
+	l.Kind = KindTerminal
+	h = &fakeHost{}
+	if _, err := Execute(h, l, tg, "", "N", ""); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(h.calls, "|")
+	if !strings.HasSuffix(got, "|start /w: "+cmd[:len(cmd)-2]+" --bg N > |tty /dev/pts/7: "+l.Message) {
+		t.Errorf("terminal: %s", got)
+	}
+
+	l.Kind = KindWrapped
+	o := &orderHost{}
+	if _, err := Execute(o, l, tg, "", "N", ""); err != nil || o.order.Message != l.Message {
+		t.Errorf("wrapped: %v %+v", err, o.order)
+	}
+}
+
+type orderHost struct {
+	fakeHost
+	order RunOrder
+}
+
+func (h *orderHost) Order(pid int, o RunOrder) error { h.order = o; return nil }
+
+// Mid-turn, a background session is stopped, never killed first: its supervisor restarts a
+// killed job (e2e v2). It is killed only when it outlives MidTurnStopWait.
+func TestBackgroundMidTurnStopsFirst(t *testing.T) {
+	defer func(d time.Duration) { Settle = d }(Settle)
+	Settle = 0
+	defer func(d time.Duration) { AfterWatch = d }(AfterWatch)
+	AfterWatch = 0
+	tg := Target{Key: "acct:b/o", Label: "claude-2", Dir: "/h/.claude-2"}
+	l := Launch{PID: 42, SessionID: "s1", Slot: "/h/.claude-4", CWD: "/w", Kind: KindBackground, MidTurn: true}
+	h := &fakeHost{}
+	if _, err := Execute(h, l, tg, "", "N", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(h.calls, "|"); !strings.HasPrefix(got, "stop s1 in /h/.claude-4|carry") {
+		t.Errorf("steps %s", got)
+	}
+	defer func(d time.Duration) { MidTurnStopWait = d }(MidTurnStopWait)
+	MidTurnStopWait = 50 * time.Millisecond
+	h = &fakeHost{stopIgnored: true}
+	if _, err := Execute(h, l, tg, "", "N", ""); err != nil || !strings.HasPrefix(strings.Join(h.calls, "|"), "stop s1 in /h/.claude-4|kill 42|stop s1 in /h/.claude-4|carry") {
+		t.Fatalf("stop ignored: %v %q", err, h.calls)
+	}
+}
+
+// claude stop takes the job's short id: with the session id it matches nothing (e2e v2).
+func TestJobID(t *testing.T) {
+	agents := []byte(`[{"id":"b4c4db81","sessionId":"b4c4db81-fae9-401e-9961-db0875b0c674","kind":"background"},{"pid":3,"sessionId":"x"}]`)
+	for _, c := range []struct{ sid, want string }{
+		{"b4c4db81-fae9-401e-9961-db0875b0c674", "b4c4db81"},
+		{"14cbe57e-1688-4224-9d88-63598181b252", "14cbe57e"},
+		{"short", "short"},
+	} {
+		if got := JobID(c.sid, agents); got != c.want {
+			t.Errorf("%s: %q, want %q", c.sid, got, c.want)
+		}
+	}
+	if got := JobID("abcdefgh-1", []byte("not json")); got != "abcdefgh" {
+		t.Errorf("bad json: %q", got)
+	}
+}
+
+func TestResumeArgsNamesRemoteControl(t *testing.T) {
+	has := func(a []string, want ...string) bool {
+		for i := range a {
+			if i+len(want) <= len(a) && strings.Join(a[i:i+len(want)], "\x00") == strings.Join(want, "\x00") {
+				return true
+			}
+		}
+		return false
+	}
+	count := func(a []string, f string) int {
+		n := 0
+		for _, x := range a {
+			if x == f {
+				n++
+			}
+		}
+		return n
+	}
+	base := Launch{SessionID: "s", Name: "Watchyard Fixes", Kind: KindBackground}
+
+	l := base
+	l.RemoteControl = true
+	a := ResumeArgs(l, "n")
+	if !has(a, "--remote-control", "Watchyard Fixes") || !has(a, "--name", "Watchyard Fixes") {
+		t.Errorf("registry bridge: %v", a)
+	}
+
+	l = base // no Remote Control: not added
+	if a = ResumeArgs(l, "n"); count(a, "--remote-control") != 0 {
+		t.Errorf("no RC: %v", a)
+	}
+
+	l = base
+	l.Argv = []string{"--remote-control", "--model", "opus"} // bare flag from argv
+	a = ResumeArgs(l, "n")
+	if count(a, "--remote-control") != 1 || !has(a, "--remote-control", "Watchyard Fixes") || !has(a, "--model", "opus") {
+		t.Errorf("bare: %v", a)
+	}
+
+	l = base
+	l.Argv = []string{"--rc", "--model", "opus"}
+	a = ResumeArgs(l, "n")
+	if count(a, "--rc") != 0 || count(a, "--remote-control") != 1 || !has(a, "--remote-control", "Watchyard Fixes") {
+		t.Errorf("rc: %v", a)
+	}
+
+	l = base
+	l.Argv = []string{"--remote-control", "Custom"}
+	a = ResumeArgs(l, "n")
+	if !has(a, "--remote-control", "Custom") || count(a, "--remote-control") != 1 {
+		t.Errorf("explicit kept: %v", a)
+	}
+
+	l = Launch{SessionID: "s", Kind: KindBackground, RemoteControl: true, Name: "  "}
+	if a = ResumeArgs(l, "n"); count(a, "--remote-control") != 0 {
+		t.Errorf("blank name: %v", a)
 	}
 }

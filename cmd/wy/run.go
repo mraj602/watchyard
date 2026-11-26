@@ -102,7 +102,11 @@ func wrap(st mover.State, argv, env []string, stderr io.Writer) (int, error) {
 			}
 		}
 		if o, ok := st.TakeOrder(me); ok {
-			fmt.Fprintf(stderr, "wy run: Watchyard moved this session to %s; resuming it\n", o.ConfigDir)
+			if o.Message != "" {
+				fmt.Fprintf(stderr, "\n%s\n\n", o.Message)
+			} else {
+				fmt.Fprintf(stderr, "wy run: Watchyard moved this session to %s; resuming it\n", o.ConfigDir)
+			}
 			if o.FromDir != "" {
 				if err := mover.CarryTranscript(o.FromDir, o.ConfigDir, o.SessionID); err != nil {
 					fmt.Fprintf(stderr, "wy run: the transcript could not be copied to %s: %v\n", o.ConfigDir, err)

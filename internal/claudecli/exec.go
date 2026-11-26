@@ -37,20 +37,62 @@ func NewExec(path string) *Exec { return &Exec{Path: path} }
 // Locate finds the claude binary as setup.md 3 step 1.1 says: `exec.LookPath("claude")`, else
 // <home>/.local/bin/claude. It returns ErrNotFound when neither exists.
 func Locate(home string) (string, error) {
-	if p, err := exec.LookPath("claude"); err == nil {
+	return LocateFrom(home)
+}
+
+// lookPath is exec.LookPath (tests replace it).
+var lookPath = exec.LookPath
+
+// LocateFrom is Locate with more places for a process whose PATH may lack claude's folder (a
+// systemd or launchd timer): <home>/.local/bin, <home>/.claude/local (the old local install),
+// /usr/local/bin, /opt/homebrew/bin, then hints (e.g. the executable of a running claude
+// session), in that order. A hint is taken only when it is an executable file that is not a
+// script runtime (node, bun, deno: a session run by node has node as its executable).
+func LocateFrom(home string, hints ...string) (string, error) {
+	if p, err := lookPath("claude"); err == nil {
 		return p, nil
 	}
+	return Fallback(home, hints...)
+}
+
+// Fallback is LocateFrom without PATH: the usual install places, then hints.
+func Fallback(home string, hints ...string) (string, error) {
 	names := []string{"claude"}
 	if runtime.GOOS == "windows" {
 		names = []string{"claude.exe", "claude.cmd", "claude"}
 	}
-	for _, n := range names {
-		p := filepath.Join(home, ".local", "bin", n)
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+	var cands []string
+	for _, d := range []string{filepath.Join(home, ".local", "bin"), filepath.Join(home, ".claude", "local")} {
+		for _, n := range names {
+			cands = append(cands, filepath.Join(d, n))
+		}
+	}
+	if runtime.GOOS != "windows" {
+		cands = append(cands, "/usr/local/bin/claude", "/opt/homebrew/bin/claude")
+	}
+	for _, p := range cands {
+		if isExec(p) {
 			return p, nil
 		}
 	}
+	for _, h := range hints {
+		switch strings.TrimSuffix(strings.ToLower(filepath.Base(h)), ".exe") {
+		case "", ".", "node", "nodejs", "bun", "deno":
+			continue
+		}
+		if filepath.IsAbs(h) && isExec(h) {
+			return h, nil
+		}
+	}
 	return "", ErrNotFound
+}
+
+func isExec(p string) bool {
+	fi, err := os.Stat(p)
+	if err != nil || fi.IsDir() {
+		return false
+	}
+	return runtime.GOOS == "windows" || fi.Mode()&0o111 != 0
 }
 
 func (e *Exec) base() []string {

@@ -2,128 +2,411 @@ package mover
 
 import (
 	"fmt"
+	"github.com/mraj602/watchyard/internal/projection"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 )
 
-// Params are the mover's rules (setup.md 8.6, Decision). The strategies M0-M4 are Params
-// values; DefaultParams is the one the auto-mover uses.
+// Params are the rules of Smart Account Switch v2 (setup.md 8.6, Decision): move the
+// sessions that burn, not the idle ones, when an account's projected 5-hour or weekly level at
+// its current burn goes over its cap. Every number is a config key of [account] (config.go
+// moveKeys); DefaultParams holds the defaults.
 type Params struct {
 	Name string
-	// Off: never move (M0).
+	// Off: never move (M0 in the simulator).
 	Off bool
-	// Fixed5h > 0: the fixed-threshold rule (M1): move when the measured 5-hour level is at or
-	// over it, whatever the forecast.
-	Fixed5h float64
-	// Horizon: act on a forecast hit only when it is this close (0: any time before the
-	// reset). Bursty spikes far ahead do not move anything yet.
-	Horizon time.Duration
-	// Slack: after the moves the source's forecast must stay this many points under its
-	// limit until its reset.
-	Slack float64
-	// Hysteresis: a destination's forecast with the session added must stay this many points
-	// under its limit until its own reset (both windows).
+	// Cap5 and Cap7: the projected 5-hour and weekly levels an aggressive account may reach;
+	// Cap5Protected and Cap7Protected the same for a protected account.
+	Cap5, Cap7                   float64
+	Cap5Protected, Cap7Protected float64
+	// ExpiringRoom: within this long of a protected account's weekly reset its weekly cap is
+	// Cap7 (its 5-hour cap stays Cap5Protected): its room left would expire unused (setup.md
+	// 8.6, Expiring room). 0: never.
+	ExpiringRoom time.Duration
+	// StaleAfter: an account whose reading (Account.ReadAt) is older than this is neither a
+	// trigger source nor a destination (setup.md 8.6, Stale data); StaleAlert: the owner is
+	// alerted once when it lasts longer. 0: off.
+	StaleAfter, StaleAlert time.Duration
+	// Hysteresis: moves go on until the source's projections are this far under its caps, and
+	// a destination must stay this far under its own with the moved burn.
 	Hysteresis float64
-	// CostAware: choose the sessions by the room they free per point the move costs (their
-	// context re-read uncached), idle ones first; else the highest burn first.
-	CostAware bool
-	// MoveCostPerMTok: 5-hour points a move costs per million context tokens (the first turn
-	// on the new account reads the whole context uncached). MoveCostFixed is added per move.
-	MoveCostPerMTok float64
-	MoveCostFixed   float64
-	// MidTurn: what to do with a session in the middle of a turn. false: never move it before
-	// it stops; when the hit is less than WaitHit away it is planned as a wait (moved as soon
-	// as the limit stops it or its turn ends). true: move it at once (M1, M2).
-	MidTurn bool
-	WaitHit time.Duration
-	// Cooldown: no session moves twice within it. NoReturn: never back to the account it
-	// left within it (no ping-pong).
+	// BurnWindow: the burn is measured over this window (the caller measures it; a session
+	// with tokens in it burned). Pass: the time between two passes.
+	BurnWindow time.Duration
+	Pass       time.Duration
+	// WeekSpan: the weekly projection looks this far ahead at most (the 5-hour burn now says
+	// little about later days).
+	WeekSpan time.Duration
+	// SpikePasses: a trigger must hold on this many consecutive passes, unless the projected
+	// hit of 100 is within SpikeNear or a cap is reached now (0 or 1: no spike filter).
+	SpikePasses int
+	// ReadingPasses: the passes a trigger needs when only the readings' rate makes it.
+	ReadingPasses int
+	SpikeNear     time.Duration
+	// UrgentWithin: a source that will hit 100% within this (or has reached a cap, or whose
+	// session is stopped at a limit) is urgent: the account rate limit does not hold its moves
+	// back and its highest burner goes first. 0: never urgent.
+	UrgentWithin time.Duration
+	// Cooldown: a session moves at most once within it. NoReturn: never back to the account it
+	// left within it, unless that account's 5-hour window reset since.
 	Cooldown time.Duration
 	NoReturn time.Duration
-	// AccountMoves moves at most into one account per AccountWindow (0: no limit).
+	// AccountMoves: at most this many moves into one account per AccountWindow, counting only
+	// moves of sessions burning at least MinBurn; AccountBurn: at most this much moved burn
+	// (points/h) into one account per AccountWindow (0: no limit; one move always fits). Both
+	// are anti-churn limits: an aggressive account with room takes a move over them rather
+	// than a protected one taking it.
 	AccountMoves  int
+	AccountBurn   float64
 	AccountWindow time.Duration
-	// BurstWeight: how much of a session's helper burst counts in its rate.
-	BurstWeight float64
-	// MaxPerPass: at most this many moves per account per pass (0: as many as needed).
-	MaxPerPass int
-	// TokenRules: the token-optimal rules of Smart Account Switch: sessions whose prompt cache
-	// is already cold (idle longer than CacheTTL) first, as their move costs only MoveCostFixed;
-	// then small contexts; never a session the owner is typing into (Attended) or one expected
-	// to finish before the hit; a session moves once per 5-hour window; and a move must save
-	// more than it costs (Benefit).
-	TokenRules bool
-	CacheTTL   time.Duration
-	// OncePer: with TokenRules, a session moves at most once within it (the 5-hour window).
-	OncePer time.Duration
-	// StallValue: the owner's time, 5-hour points per lane-hour stalled at a limit, added to the
-	// session's own burn in the benefit test.
-	StallValue float64
-	// DrainFirst: among destinations with room, the one whose 5-hour window resets soonest
-	// first (its room expires unused otherwise), instead of the picker's order.
-	DrainFirst bool
-	// StoppedWait: a session a limit stopped moves only when that window resets later than
-	// this; nearer, waiting for the reset is cheaper than a move (minutes to restart, the
-	// context re-read on the new account) (0: always move it).
+	// oldChurn: the limits as before (every move counts, no burn limit, no aggressive
+	// account over them before a protected one); the simulator's comparison row.
+	oldChurn bool
+	// StoppedWait: a session a limit stopped moves only when that window resets at least this
+	// far ahead (nearer, waiting costs less than a restart and a re-read).
 	StoppedWait time.Duration
-	// LindyFrac: a session without an estimate is expected to run this many times its age
-	// again (0: 1, the Lindy rule).
-	LindyFrac float64
+	// StepWait: a mid-turn move waits at most this long for the step in flight to end (or
+	// less, when the hit comes sooner); then it kills inside the step.
+	StepWait time.Duration
+	// PassWait: one pass waits at most this long in all for its mid-turn moves (side by side);
+	// a session still inside its step then waits on in the next pass, until StepWait in all.
+	PassWait time.Duration
+	// OwnerGrace: an interactive session the owner typed into this recently is left alone (0:
+	// off, the default; the simulator compares 2 minutes).
+	OwnerGrace time.Duration
+	// Orgs: which organisations a session may move to: any, same-first or same.
+	Orgs string
+	// IdleMoves: idle sessions with no burn are candidates too (a simulator variant only).
+	IdleMoves bool
+	// DestHorizon: the simulator's comparison row only (oldDest): an aggressive destination
+	// qualified when the moved session fit under its caps less Hysteresis for min(its expected
+	// remaining time (DestHorizon when unknown), the 5-hour reset), at least DestFloor. The
+	// switch itself judges a destination with the trigger's projection (to the resets), so a
+	// move is not undone by the next trigger (live: 3b2611ed moved onto claude-6 at 06:12 and
+	// off it at 06:35, "5h projected 111%").
+	DestHorizon time.Duration
+	oldDest     bool
+	// noYoungDest (simulator): the destination counts young lanes at 0, as 1.3.3-pre9.
+	noYoungDest bool
+	// pullMargin: a pull onto a draining account keeps Hysteresis (PullMargin) under its caps
+	// (hyst gives a draining account none otherwise).
+	pullMargin bool
+	// CheapMoves: among the sessions whose move alone fixes the overload, the most points
+	// freed per re-read cost (context × ModelFactor) first, then the highest burn, then the
+	// youngest.
+	CheapMoves bool
+	// PinReserve5 and PinReserve7: the points of the 5-hour and weekly windows kept free for
+	// each live pinned session on an account (account.pin_reserve_5h / _7d): its caps for the
+	// other sessions are cap - pins x reserve. The caller counts the live pins (Account.Pins)
+	// and sets Account.Reserve5/7 (PinReserve).
+	PinReserve5, PinReserve7 float64
+	// PinAlertWithin: a pinned session that alone takes its account to 100 before the reset,
+	// this soon, is an owner alert (Result.Alerts).
+	PinAlertWithin time.Duration
+	// YoungGate: a session's burn counts only once it is this old (Session.Started): a lane's
+	// first minutes (reading the codebase, cache writes) burn far above its steady rate, and
+	// the burn window then holds only those minutes. Younger sessions' rates are left out of
+	// their account's meter (not of a rate from the readings). 0: counted at once.
+	YoungGate time.Duration
+	// MinBurn: a running session is a candidate only when its own measured burn (points per
+	// hour over the burn window) is at least this; busy with no burn frees nothing (live
+	// 2026-11-25: a mid-turn session at 0.0 points/h was moved). 0: any burn above 0;
+	// negative: none, a busy session with no burn too (the simulator's tables before it).
+	MinBurn float64
+	// PullMinBurn: an owner-drained account pulls in only sessions burning at least this many
+	// points per hour (a mid-turn restart re-reads the context: live 2026-11-25, a 1.1
+	// points/h lane was proposed); 0: MinBurn alone.
+	PullMinBurn float64
+	// PullMargin: a pull must keep the draining account's projections this far under its
+	// caps until its resets (more than Hysteresis: a pulled lane in a low phase burns more
+	// later; live pre12, ai-lane-H pulled at 3.3 points/h burned 14.8 and claude-4 went to
+	// P5 101%). PullQuiet: no pull within this long after a move off it.
+	PullMargin float64
+	PullQuiet  time.Duration
+	// DrainDestMargin: a move INTO a draining account leaves its projections this many points
+	// under its caps (hyst gives it none otherwise), so a filled drain is not over its cap on
+	// the next pass's small drift (live 2026-11-26 01:00-01:04: two moves filled claude-4 to its
+	// cap, a third left it at "5h projected 98% (cap 97%)"). The source side keeps none.
+	DrainDestMargin float64
+	// ResetSkip: a 5-hour trigger (soft or near hit) is not acted on when the projected 100% hit
+	// is within this long of that window's reset: a stall costs at most this, a mid-turn move a
+	// kill and an uncached re-read (live: a move at 01:04 for a hit at 01:55, reset 01:59).
+	ResetSkip time.Duration
+	// DestResetWithin: a destination whose 5-hour window resets within this long must also fit
+	// the window after the reset: its projection to the reset counts the moved burn for only
+	// those minutes, while the trigger after the reset projects it over a whole new window
+	// (live 2026-11-27 01:18-01:29: claude-7, resetting at 01:30, took 43 points/h of lanes
+	// at a projected 64%; at 01:31 it was "5h projected 170%" and the lanes moved off again).
+	// 0: off.
+	DestResetWithin time.Duration
+	// DrainAim7, DrainCapMax7: the far weekly aim and the weekly cap ceiling of a draining
+	// account (account.drain_aim_7d, drain_cap_max_7d; 0: projection.DrainAimFar, DrainCapMax7).
+	DrainAim7, DrainCapMax7 float64
+	// PinPer: an account's own pin reserve per live pin (next.accounts.<key>.pin_reserve_5h / _7d),
+	// by account key; a zero part falls back to PinReserve5 / PinReserve7.
+	PinPer map[string][2]float64
 }
 
-// The strategies compared in the simulator (setup.md 8.6, Strategies).
-var (
-	// M0: no moves.
-	M0 = Params{Name: "M0 no moves", Off: true}
-	// M1: a fixed threshold, 5-hour level at or over 92: move the highest-burn session.
-	M1 = Params{Name: "M1 fixed 5h 92%", Fixed5h: 92, MidTurn: true, MaxPerPass: 1, BurstWeight: 0}
-	// M2: predictive: the forecast hits before the reset; the highest-burn sessions move,
-	// to an account whose forecast with them does not hit before its reset.
-	M2 = Params{Name: "M2 predictive", MidTurn: true}
-	// M3: M2 with cost-aware selection, slack and hysteresis, a cooldown, no ping-pong, an
-	// account rate limit and no mid-turn moves.
-	M3 = Params{Name: "M3 M2 + cost, hysteresis, cooldown", Slack: 5, Hysteresis: 10, CostAware: true,
-		MoveCostPerMTok: 1.2, MoveCostFixed: 0.2, WaitHit: 5 * time.Minute, Cooldown: 30 * time.Minute,
-		NoReturn: 2 * time.Hour, AccountMoves: 3, AccountWindow: 30 * time.Minute}
-	// M4 (Smart Account Switch, the default): M3 with the helper burst in the rate, a 90-minute
-	// horizon (a far forecast hit waits for the next readings), 5 points of hysteresis instead
-	// of 10 (more accounts qualify as destinations) and the token rules.
-	M4 = Params{Name: "M4 Smart Account Switch", Horizon: 90 * time.Minute, Slack: 5, Hysteresis: 5,
-		CostAware: true, MoveCostPerMTok: 1.2, MoveCostFixed: 0.2, WaitHit: 5 * time.Minute, Cooldown: 30 * time.Minute,
-		NoReturn: 2 * time.Hour, AccountMoves: 3, AccountWindow: 30 * time.Minute, BurstWeight: 0.5,
-		TokenRules: true, CacheTTL: 5 * time.Minute, OncePer: 5 * time.Hour, StallValue: 5,
-		StoppedWait: 40 * time.Minute}
-	// M5 (the default since the end-to-end pass): M4 with the prompt cache taken as cold only
-	// after an hour (a subscription keeps the main conversation's cache for an hour) and the
-	// destination with the soonest 5-hour reset first (its room expires unused otherwise).
-	// 300 runs per pattern: fewer stopped minutes, hits, moves and re-reads than M4.
-	M5 = func() Params {
-		p := M4
-		p.Name, p.CacheTTL, p.DrainFirst = "M5 M4 + 1 h cache, drain-first (default)", time.Hour, true
-		return p
-	}()
-	// DefaultParams is what the auto-mover and `wy move --plan` use.
-	DefaultParams = M5
-	// Strategies in the order the simulator reports them.
-	Strategies = []Params{M0, M1, M2, M3, M4, M5}
+// ScaledPinReserve is a's pin reserve scaled to what its a.Pins pinned sessions, burning rate
+// 5-hour points per hour together (at least projection.PinBaseRate each), can burn before each
+// window resets, twice over (projection.PinReserve; setup.md 8.6, Pinned sessions). A 5-hour
+// window not started is a whole window away; an unknown weekly reset keeps the full reserve.
+func (p Params) ScaledPinReserve(a Account, rate float64, now time.Time) (r5, r7 float64) {
+	f5, f7 := p.PinReserveOf(a.Key, a.Pins)
+	rate = math.Max(rate, float64(a.Pins)*projection.PinBaseRate)
+	return projection.PinReserve(f5, rate, hoursTo(a.W5, now, 5)), projection.PinReserve(f7, rate/ratio(a), hoursTo(a.W7, now, -1))
+}
+
+// PinReserveOf is PinReserve with the account's own per-pin values (PinPer) where set.
+func (p Params) PinReserveOf(key string, pins int) (float64, float64) {
+	o := p.PinPer[key]
+	r5, r7 := p.PinReserve5, p.PinReserve7
+	if o[0] > 0 {
+		r5 = o[0]
+	}
+	if o[1] > 0 {
+		r7 = o[1]
+	}
+	return float64(pins) * math.Max(0, r5), float64(pins) * math.Max(0, r7)
+}
+
+// PinReserve is the reserve of an account with pins live pinned sessions: pins x
+// PinReserve5 points of the 5-hour window and pins x PinReserve7 of the week.
+func (p Params) PinReserve(pins int) (float64, float64) {
+	return float64(pins) * math.Max(0, p.PinReserve5), float64(pins) * math.Max(0, p.PinReserve7)
+}
+
+// The values of Params.Orgs (account.move_orgs).
+const (
+	OrgsAny       = "any"
+	OrgsSameFirst = "same-first"
+	OrgsSame      = "same"
 )
 
-// Record is a move that happened (for the cooldown, the rate limit and no ping-pong).
+// DefaultParams are the defaults of every rule (setup.md 8.6, Decision, the reason for each).
+var DefaultParams = Params{
+	Name: "V2 move the burners (default)",
+	Cap5: 95, Cap7: 98, Cap5Protected: 80, Cap7Protected: 80, ExpiringRoom: 3 * time.Hour,
+	StaleAfter: 10 * time.Minute, StaleAlert: 30 * time.Minute,
+	Hysteresis: 5, BurnWindow: 10 * time.Minute, Pass: time.Minute, WeekSpan: 5 * time.Hour,
+	SpikePasses: 2, ReadingPasses: 3, SpikeNear: 30 * time.Minute, UrgentWithin: time.Hour,
+	Cooldown: 20 * time.Minute, NoReturn: time.Hour, AccountMoves: 5, AccountBurn: 40, AccountWindow: 15 * time.Minute,
+	StoppedWait: 20 * time.Minute, StepWait: 3 * time.Minute, PassWait: 90 * time.Second, Orgs: OrgsAny,
+	PinReserve5: 10, PinReserve7: 5, PinAlertWithin: 2 * time.Hour,
+	CheapMoves: true, YoungGate: 15 * time.Minute, MinBurn: 1, PullMinBurn: 3, PullMargin: 10, PullQuiet: 15 * time.Minute,
+	DrainDestMargin: 2, ResetSkip: 10 * time.Minute, DestResetWithin: 30 * time.Minute, DrainAim7: projection.DrainAimFar, DrainCapMax7: projection.DrainCapMax7,
+}
+
+// PinIdle: a pinned session idle this long holds no reserve (the caller counts the live pins).
+const PinIdle = 6 * time.Hour
+
+// Window kinds.
+const (
+	Win5h = "5h"
+	Win7d = "7d"
+)
+
+// Window is one usage window of an account: its measured level now (percent; for the 5-hour
+// window that is also 5-hour points) and when it resets (zero: not started, or unknown).
+type Window struct {
+	Level float64
+	Reset time.Time
+}
+
+// Account is one account as the mover sees it.
+type Account struct {
+	Key       string // "acct:<account>/<org>"
+	Label     string
+	Protected bool
+	W5, W7    Window
+	// Ratio is 5-hour points per weekly point (the picker's calibrated ρ); 0: 7.2.
+	Ratio float64
+	// Rate is the account's measured 5-hour burn, points per hour (R5): its sessions' token
+	// meter over the burn window × f, or the reading delta when that is over twice as large.
+	// When it is below the sum of its sessions' rates here, that sum is used.
+	Rate float64
+	// RateNote says which measure Rate is when they disagreed (for --plan).
+	RateNote string
+	// Meter is the token meter's burn (this machine's sessions and other machines' the hub
+	// measured); FromReadings: Rate is the readings' slope instead (over twice the meter). A
+	// trigger that only the readings make needs ReadingPasses passes (they are noisy).
+	Meter        float64
+	FromReadings bool
+	// LoggedIn: logged in on this machine (the folder exists and `wy account next` does not
+	// call it "not logged in on this machine"). Only such an account is a destination.
+	LoggedIn bool
+	// Stale: its readings are too old to project; never a destination.
+	Stale bool
+	// ReadAt: when the reading its levels start from was taken (zero: not known). Older than
+	// Params.StaleAfter, the account is neither a source nor a destination, unless Quiet.
+	ReadAt time.Time
+	// Quiet: nothing ran on it since that reading (the hub was read this pass and shows no live
+	// session, no lane runs, no tokens since): its levels can only have held or fallen, so an old
+	// reading is still an upper bound and it is not stale (setup.md 8.6, Stale data).
+	Quiet bool
+	// Excluded: never a destination (excluded by settings).
+	Excluded bool
+	// Off: the owner keeps it out (setup.md 8.5, Kind): never a destination, and its sessions
+	// stay (nothing moves off it, nothing is pulled from it).
+	Off bool
+	// Drain: the picker spends its room first (it expires unused otherwise).
+	Drain bool
+	// DrainUntil: the owner drains it until then (`wy account drain`; zero: off; setup.md
+	// 8.6, Owner drain): nothing moves off it before a 5-hour hit within UrgentWithin (or its
+	// 5-hour cap), and while its 5-hour projection has room it pulls busy burners in.
+	DrainUntil time.Time
+	// Ign5h: next.accounts.<key>.drain_ignore_5h: while DrainUntil is on, its 5-hour window
+	// is ignored (no 5-hour cap, trigger, hit or pull margin; Ignores5h).
+	Ign5h bool
+	// Pins: its live pinned sessions (running, not idle for PinIdle); Reserve5 and Reserve7
+	// the points of its 5-hour and weekly windows kept free for them (Params.PinReserve): its
+	// caps for every other session are its caps less these.
+	Pins               int
+	Reserve5, Reserve7 float64
+	// Cap5 and Cap7: next.accounts.<key>.cap_5h and cap_7d when set (0: not set): they replace
+	// Params.Cap5 and Cap7 for this account (an unprotected one; a drain ramps from them).
+	Cap5, Cap7 float64
+}
+
+// Ignores5h: the owner drain is on and drain_ignore_5h set.
+func (a Account) Ignores5h(now time.Time) bool { return a.Ign5h && a.DrainUntil.After(now) && !a.Off }
+
+// Ignored5hText is the --plan / --explain note of an account whose 5-hour window is ignored.
+const Ignored5hText = "5-hour window ignored (drain_ignore_5h)"
+
+// noCap5 stands for "no 5-hour cap" (an account that ignores its 5-hour window).
+const noCap5 = 1e9
+
+// Org is the account's organisation (the part of its key after the last "/").
+func (a Account) Org() string { return Org(a.Key) }
+
+// Session is one running session as the mover sees it.
+type Session struct {
+	ID      string
+	Account string
+	Name    string
+	// Rate is its burn over the burn window, 5-hour points per hour, its helpers included.
+	Rate float64
+	// Busy: in the middle of a turn (registry busy). A busy session or one with tokens in the
+	// burn window burned; one that did neither is idle with no burn and never moves.
+	Busy bool
+	// Stopped: a limit ended its last turn (StopFailure rate_limit) and that window is full.
+	Stopped bool
+	// Interactive: a human-facing session (setup.md 8.6, Interactive): moved like any other,
+	// with a message in its pane or terminal; Typed is when the owner last typed into it.
+	Interactive bool
+	Typed       time.Time
+	// Pinned: the owner pinned it in Claude Code (its folder's jobs/pins.json) or it is outside
+	// the scope. PinFrom says where the owner's pin is ("in Claude Code"; "" when none).
+	Pinned  bool
+	PinFrom string
+	// Movable: its kind can be restarted (false for claude.ai --sdk-url sessions).
+	Movable bool
+	// Copies: other live processes of the session; never moved while there are any.
+	Copies int
+	// Moving: a move of it (another pass, or by hand) holds its lock now.
+	Moving bool
+	// Context is its context in tokens (a move re-reads it uncached).
+	Context float64
+	// Expected is how much longer it is expected to run (0: unknown).
+	Expected time.Duration
+	// ModelFactor is its model's re-read price relative to haiku (opus 5, sonnet 3, haiku 1;
+	// 0: 3); Started is when it started (zero: unknown, taken as old).
+	ModelFactor float64
+	Started     time.Time
+	// MovedAt and MovedFrom: its last move (zero: never moved).
+	MovedAt   time.Time
+	MovedFrom string
+	// YoungRate: its measured burn while it is under Params.YoungGate (GateYoung set Rate to 0).
+	YoungRate float64
+	// MovedIn: GateYoung found it moved onto its account within YoungGate: its burn counts at
+	// once (at the rate it moved with), so it is never young.
+	MovedIn bool
+}
+
+func (s Session) burned() bool { return s.Busy || s.Rate > 0 }
+
+// Record is a move that happened (cooldown, no return, the account rate limit).
 type Record struct {
 	Session  string
 	From, To string
 	At       time.Time
+	// Rate: its burn when it moved; RateKnown false for an older log line (counted as a move
+	// at the floor and over).
+	Rate      float64
+	RateKnown bool
+	// Alias: the copy of a move under the session id Claude Code resumed it as (a fork): it
+	// carries the session's cooldown, no-return and young state, and is not another move.
+	Alias bool
 }
 
 // Input is one planning pass.
 type Input struct {
 	Now      time.Time
-	Accounts []Account // in the destination order of the picker: drain first, protected last
+	Accounts []Account // in the picker's order
 	Sessions []Session
 	Recent   []Record // moves of the last hours, any order
 	Params   Params
+	// Streak: per account, on how many consecutive passes before this one it triggered (the
+	// spike filter).
+	Streak map[string]int
+	// LaneRate: the burn the picker counts a new lane at (points per hour; its switch check,
+	// setup.md 8.5). The destination check counts each lane under YoungGate (its burn left
+	// out of the trigger's projection) at it, not 0: in a few minutes it will count. 0: at
+	// its measured burn.
+	LaneRate float64
+}
+
+// Projection is one account's projections at its burn now.
+type Projection struct {
+	Key, Label string
+	Protected  bool
+	Level5     float64
+	Level7     float64
+	R5         float64 // 5-hour points per hour
+	RateNote   string  `json:",omitempty"`
+	P5, P7     float64
+	Cap5, Cap7 float64
+	// Reset5 and Reset7: time to the resets; Hit: time to the first projected 100 (-1: none
+	// before the resets / the week span).
+	Reset5, Reset7 time.Duration
+	Hit            time.Duration
+	// Pins, Reserve5 and Reserve7: its live pinned sessions and the points kept free for them;
+	// Cap5 and Cap7 are already less these.
+	Pins               int     `json:",omitempty"`
+	Reserve5, Reserve7 float64 `json:",omitempty"`
+	// Window is the window over its cap ("5h", "7d", "" none); Hard: a cap is reached now.
+	Window string
+	// NearReset: the trigger was dropped, the projected 100% hit being within ResetSkip of the
+	// 5-hour reset.
+	NearReset bool
+	// Ign5: its 5-hour window is ignored (drain_ignore_5h under an owner drain).
+	Ign5 bool
+	Hard bool
+	// Streak counts the consecutive passes it triggered, this one included; Triggered is
+	// whether this pass acts on it (Held: over the cap, waiting for the spike filter).
+	Streak    int
+	Triggered bool
+	Held      bool
+	// ReadingsOnly: over the caps only at the readings' rate (ReadingPasses passes needed).
+	ReadingsOnly bool `json:",omitempty"`
+	// Expiring: protected, within ExpiringRoom of its weekly reset: Cap7 is the aggressive cap.
+	Expiring bool `json:",omitempty"`
+	// Draining: an aggressive account drained (Account.Drain or an owner drain): its caps are
+	// the drain aim (caps) and no Hysteresis applies under them (hyst).
+	Draining bool `json:",omitempty"`
+	// StaleFor: its reading is this old, over Params.StaleAfter: no moves off or onto it.
+	StaleFor time.Duration `json:",omitempty"`
+	// Left: it stays over its target after this pass's moves because no move can lower it
+	// further ("only pinned burn left ...").
+	Left  string `json:",omitempty"`
+	ratio float64
+	// nextFit: a destination check's time under its 5-hour cap counting the window after its
+	// reset (DestResetWithin; 0: not counted), for fitFor.
+	nextFit time.Duration
 }
 
 // Move is one planned move.
@@ -131,202 +414,678 @@ type Move struct {
 	Session string
 	From    string
 	To      string // "" when no account can take it (Reason says why)
-	// Wait: the session is mid-turn and the hit is near: move it as soon as the limit stops it
-	// or its turn ends, not now.
-	Wait bool
-	// Window, HitAt and ResetAt: what triggers the move (the source window that would hit).
+	// Window: what triggers it ("5h" or "7d"; "" for a move by hand without a trigger); P its
+	// projection; HitAt when it reaches 100 at that burn (zero: not before the reset).
 	Window  string
+	P       float64
 	HitAt   time.Time
 	ResetAt time.Time
-	// Stopped: a limit reply ended the session's last turn (it waits on the owner).
+	// MidTurn: the session is in the middle of a turn (it resumes with a prompt to go on).
+	MidTurn bool
+	// Stopped: a limit ended its last turn.
 	Stopped bool
-	// ByHand: asked for with wy move <session>, not planned (the note says so when no
-	// forecast hit explains it).
+	// ByHand: asked for with wy move <session>.
 	ByHand bool
-	// Saved is the source's 5-hour points the session would burn before the reset; Cost what
-	// the move costs (points).
-	Saved, Cost float64
-	Reason      string
+	// OrgChanged: the destination is another organisation.
+	OrgChanged bool
+	// Interactive: a human-facing session (it gets a message in its pane or terminal).
+	Interactive bool
+	// StepEnded: a mid-turn move waited for the session's tool call in flight to end and
+	// killed it between steps. StepTool and StepCmd: the step it was killed inside when the
+	// wait ran out ("" none, or unknown).
+	StepEnded bool
+	StepTool  string
+	StepCmd   string
+	Rate      float64
+	Reason    string
+	// Urgent: its source will hit 100% within UrgentWithin, has reached a cap or the session is
+	// stopped: the account rate limit did not hold it back (and a best-available destination,
+	// BestFit long, may take it when none has room to its reset).
+	Urgent  bool
+	BestFit time.Duration `json:",omitempty"`
+	// Recheck: what the re-check after its step wait changed ("" none; Recheck).
+	Recheck string `json:",omitempty"`
+	// Pull: pulled onto an account the owner drains (its text, "draining (owner, until
+	// 23:59)"); its source was not over its caps.
+	Pull string `json:",omitempty"`
 }
 
-// Plan is one pass of the auto-mover: for every account whose forecast reaches a limit before
-// that window resets (or that is already stopped), the sessions to move and where. It never
-// changes anything; the caller carries the moves out.
-func Plan(in Input) []Move {
-	moves, _ := PlanWhy(in)
-	return moves
-}
-
-// Skip is a session on an account forecast to hit that the pass leaves where it is, and why.
+// Skip is a session on a triggered account the pass leaves where it is, and why.
 type Skip struct {
 	Session string `json:"session"`
 	Account string `json:"account"`
 	Why     string `json:"why"`
 }
 
-// PlanWhy is Plan plus the sessions it considered and left, with the reason (wy move --plan).
-func PlanWhy(in Input) ([]Move, []Skip) {
-	var skips []Skip
-	p := in.Params
-	if p.Off {
-		return nil, nil
+// Alert is a pinned session that alone takes its account to 100 before the window resets
+// (setup.md 8.6, Pinned sessions): it is never moved, the owner is told once.
+type Alert struct {
+	Session string        `json:"session"`
+	Account string        `json:"account"`
+	Window  string        `json:"window"`
+	P       float64       `json:"projected"` // the account's projection at the pinned burn alone
+	Rate    float64       `json:"rate"`      // the pinned sessions' burn, 5-hour points per hour
+	Level   float64       `json:"level"`
+	HitAt   time.Time     `json:"hit_at"`
+	ResetAt time.Time     `json:"reset_at"`
+	In      time.Duration `json:"-"`
+}
+
+// Result is one pass: what to move, whom to tell, what is left and why, and the projections.
+type Result struct {
+	Moves    []Move
+	Skips    []Skip
+	Alerts   []Alert
+	Accounts []Projection
+	// StaleBlocks: the accounts whose stale data held back a move this pass (setup.md 8.6,
+	// Stale data); the owner is told about these only.
+	StaleBlocks []StaleBlock
+	// Streak is the spike filter's state after this pass (keep it for the next one).
+	Streak map[string]int
+}
+
+// StaleBlock is an account whose stale data held back a move: a source over its cap with
+// sessions on it (StaleSource), an account left out as the destination of a session that found
+// none (StaleDest), or a draining account whose pulls were skipped (StalePull).
+type StaleBlock struct {
+	Key      string
+	StaleFor time.Duration
+	How      string
+}
+
+// What a StaleBlock held back.
+const (
+	StaleSource = "source"
+	StaleDest   = "destination"
+	StalePull   = "pull"
+)
+
+// staleBlock records a once per account (the first way it blocked).
+func (r *Result) staleBlock(key, how string, age time.Duration) {
+	for _, b := range r.StaleBlocks {
+		if b.Key == key {
+			return
+		}
 	}
+	r.StaleBlocks = append(r.StaleBlocks, StaleBlock{Key: key, StaleFor: age, How: how})
+}
+
+// staleAge is how old a's data is when it keeps it out of the switch: Params.staleFor, or its
+// reading's age when the picker called it stale (zero when neither).
+func (p Params) staleAge(a Account, now time.Time) time.Duration {
+	if age := p.staleFor(a, now); age > 0 {
+		return age
+	}
+	if a.Stale && !a.ReadAt.IsZero() {
+		return now.Sub(a.ReadAt)
+	}
+	return 0
+}
+
+// young reports whether session s is under Params.YoungGate (its burn not counted yet).
+func (p Params) young(s Session, now time.Time) bool {
+	return p.YoungGate > 0 && !s.MovedIn && !s.Started.IsZero() && now.Sub(s.Started) < p.YoungGate
+}
+
+// GateYoung leaves out the burn of the sessions under Params.YoungGate (setup.md 8.6, Young
+// sessions): their Rate becomes 0 (kept in YoungRate), and their account's measured Rate and
+// Meter lose it unless the Rate is the readings' slope. Plan calls it; a caller projecting on
+// its own calls it first.
+func GateYoung(in Input) Input {
+	p := in.Params
+	if p.YoungGate <= 0 {
+		return in
+	}
+	// A session moved here within YoungGate is young by its new lease, but its burn is known:
+	// the rate it moved with counts (else the account looked empty for 15 minutes and took
+	// more moves the trigger then undid; live: ai-lane-C2 moved onto claude-6 at 06:10, then
+	// 3b2611ed at 06:12, both off again at 06:35).
+	movedIn := map[string]float64{}
+	for _, r := range in.Recent {
+		if r.RateKnown && r.To != "" && in.Now.Sub(r.At) < p.YoungGate {
+			movedIn[r.Session+" "+r.To] = r.Rate
+		}
+	}
+	sub, add := map[string]float64{}, map[string]float64{}
+	var ss []Session
+	for i, s := range in.Sessions {
+		known, moved := movedIn[s.ID+" "+s.Account]
+		// A moved session is not new: its burn counts at once, whatever its age (live pre9:
+		// 54c4e1e8, moved onto claude-6 at 10:35 at 21.9 points/h, "stays on claude-6: under
+		// 15 min old" at 10:47 while claude-6 was over its cap).
+		if !moved && (!p.young(s, in.Now) || s.Rate <= 0) {
+			continue
+		}
+		if ss == nil {
+			ss = append([]Session(nil), in.Sessions...)
+		}
+		if moved {
+			// Its measured burn since the resume (the re-read) is left out; the burn it moved
+			// with is counted in its place.
+			if !s.Stopped {
+				sub[s.Account] += s.Rate
+				add[s.Account] += known
+			}
+			ss[i].YoungRate, ss[i].Rate, ss[i].MovedIn = s.Rate, known, true
+			continue
+		}
+		if !s.Stopped {
+			sub[s.Account] += s.Rate
+		}
+		ss[i].YoungRate, ss[i].Rate = s.Rate, 0
+	}
+	if ss == nil {
+		return in
+	}
+	in.Sessions = ss
+	as := append([]Account(nil), in.Accounts...)
+	for i, a := range as {
+		x, y := sub[a.Key], add[a.Key]
+		if (x <= 0 && y <= 0) || a.FromReadings {
+			continue
+		}
+		as[i].Rate, as[i].Meter = math.Max(0, a.Rate-x+y), math.Max(0, a.Meter-x+y)
+		var note string
+		if x-y > 0 || y <= 0 {
+			note = fmt.Sprintf("%.1f points/h of sessions under %d min left out (a session's first minutes burn far above its steady rate)",
+				x, int(p.YoungGate.Minutes()))
+		}
+		if y > 0 {
+			if note != "" {
+				note += "; "
+			}
+			note += fmt.Sprintf("%.1f points/h of sessions moved here in the last %d min counted at the burn they moved with", y, int(p.YoungGate.Minutes()))
+		}
+		if a.RateNote != "" {
+			note = a.RateNote + "; " + note
+		}
+		as[i].RateNote = note
+	}
+	in.Accounts = as
+	return in
+}
+
+// Plan is one pass of Smart Account Switch. It changes nothing; the caller carries out the
+// moves and notices.
+func Plan(in Input) Result {
+	in = GateYoung(in)
+	p := in.Params
 	now := in.Now
+	res := Result{Streak: map[string]int{}}
 	byAcc := map[string][]Session{}
 	for _, s := range in.Sessions {
 		byAcc[s.Account] = append(byAcc[s.Account], s)
 	}
-	accIdx := map[string]int{}
-	for i, a := range in.Accounts {
-		accIdx[a.Key] = i
-	}
-	// Sources in a fixed order: the soonest hit first, then the account order.
-	type src struct {
-		a  Account
-		f  WindowForecast
-		hi time.Duration
-	}
-	var srcs []src
+	// Planned burn moved in and out of each account during this pass.
+	delta := map[string]float64{}
+	proj := map[string]Projection{}
 	for _, a := range in.Accounts {
-		ss := byAcc[a.Key]
-		if len(ss) == 0 {
-			continue
+		pr := p.Project(a, byAcc[a.Key], 0, now)
+		over := pr.Window != ""
+		// The streak is the trigger's (account and window): a 5-hour trigger after a weekly
+		// one starts again.
+		if over {
+			k := a.Key + " " + pr.Window
+			pr.Streak = in.Streak[k] + 1
+			res.Streak[k] = pr.Streak
 		}
-		f := p.Forecast(a, ss, now, 0)
-		w, hits := f.First()
-		stopped := false
-		for _, s := range ss {
-			stopped = stopped || s.Stopped
-		}
-		switch {
-		case stopped:
-			if !hits {
-				w = f.W5
-				if f.W7.Level >= f.W7.Limit {
-					w = f.W7
-				}
-				w.HitIn = 0
+		near := pr.Hit >= 0 && pr.Hit <= p.SpikeNear
+		passes := p.SpikePasses
+		if over && a.FromReadings && !pr.Hard {
+			// Only the readings make it: the meter's projection is under the caps.
+			m := a
+			m.Rate = a.Meter
+			if p.Project(m, byAcc[a.Key], 0, now).Window == "" {
+				passes, near = max(passes, p.ReadingPasses), false
+				pr.ReadingsOnly = true
 			}
-		case p.Fixed5h > 0:
-			if a.W5.Level < p.Fixed5h {
-				continue
-			}
-			w = f.W5
-			w.HitIn = max(0, w.HitIn)
-		case !hits:
-			continue
-		case p.Horizon > 0 && w.HitIn > p.Horizon:
-			continue
 		}
-		srcs = append(srcs, src{a, w, w.HitIn})
+		pr.Triggered = over && (passes <= 1 || pr.Streak >= passes || pr.Hard || near)
+		pr.Held = over && !pr.Triggered
+		if pr.Triggered && p.nearReset(pr) {
+			// The stall would last at most ResetSkip; a mid-turn move costs more.
+			pr.Triggered, pr.NearReset = false, true
+			delete(res.Streak, a.Key+" "+pr.Window)
+		}
+		if age := p.staleFor(a, now); age > 0 {
+			// Its level rests on an old reading (live: the hub away, "5h 100%" from a reading
+			// 3 h 37 min old while the account was at ~68%): nothing moves off it on that.
+			if over && len(byAcc[a.Key]) > 0 && !a.Off {
+				res.staleBlock(a.Key, StaleSource, age)
+			}
+			pr.StaleFor, pr.Triggered, pr.Held = age, false, false
+			delete(res.Streak, a.Key+" "+pr.Window)
+		}
+		proj[a.Key] = pr
+		res.Accounts = append(res.Accounts, pr)
+	}
+	res.Alerts = p.pinAlerts(in, byAcc)
+	if p.Off {
+		return res
+	}
+	// Sources: a cap reached now first, then the soonest hit, then the picker's order.
+	var srcs []Account
+	for _, a := range in.Accounts {
+		if (proj[a.Key].Window != "" && proj[a.Key].StaleFor == 0) || hasStopped(byAcc[a.Key]) {
+			srcs = append(srcs, a)
+		}
 	}
 	sort.SliceStable(srcs, func(i, j int) bool {
-		if srcs[i].hi != srcs[j].hi {
-			return srcs[i].hi < srcs[j].hi
+		x, y := proj[srcs[i].Key], proj[srcs[j].Key]
+		if x.Hard != y.Hard {
+			return x.Hard
 		}
-		return accIdx[srcs[i].a.Key] < accIdx[srcs[j].a.Key]
+		hx, hy := x.Hit, y.Hit
+		if hx < 0 {
+			hx = math.MaxInt64
+		}
+		if hy < 0 {
+			hy = math.MaxInt64
+		}
+		return hx < hy
 	})
 
-	movedIn := map[string]int{}     // planned and recent moves into each account
-	added := map[string][]Session{} // sessions planned onto each account
-	lastMove := map[string]Record{}
-	for _, r := range in.Recent {
-		if p.AccountWindow > 0 && now.Sub(r.At) < p.AccountWindow {
-			movedIn[r.To]++
+	st := p.newMoveState(in)
+	for _, a := range srcs {
+		pr := proj[a.Key]
+		ss := byAcc[a.Key]
+		skip := func(s Session, why string) { res.Skips = append(res.Skips, Skip{s.ID, a.Key, why}) }
+		// Stopped sessions first: they burn nothing now but want to (their burn intent), and
+		// they wait on the limit until moved.
+		for _, s := range sortedIDs(ss) {
+			if !s.Stopped {
+				continue
+			}
+			w, reset := stoppedWindow(a, now)
+			if why := p.excluded(s, st, now); why != "" {
+				skip(s, why)
+				continue
+			}
+			if reset < p.StoppedWait {
+				skip(s, fmt.Sprintf("stopped at the %s limit, which resets in %s: waiting costs less than a move", w, reset.Round(time.Minute)))
+				continue
+			}
+			mv := Move{Session: s.ID, From: a.Key, Window: w, P: pr.pOf(w), ResetAt: now.Add(reset), Stopped: true, Rate: s.Rate, Interactive: s.Interactive}
+			p.place(in, &res, st, s, a, mv, delta, skip, urgency{near: true, hit: 0})
 		}
-		if l, ok := lastMove[r.Session]; !ok || r.At.After(l.At) {
-			lastMove[r.Session] = r
+		if !pr.Triggered {
+			if pr.NearReset {
+				for _, s := range ss {
+					if s.burned() && !s.Stopped {
+						skip(s, fmt.Sprintf("5h hit %s before its reset: a stall costs less than a move (account.move_reset_skip_min %d)",
+							(pr.Reset5-pr.Hit).Round(time.Minute), int(p.ResetSkip.Minutes())))
+					}
+				}
+			}
+			if pr.Held {
+				for _, s := range ss {
+					if s.burned() && !s.Stopped && s.Pinned {
+						skip(s, p.excluded(s, st, now))
+					} else if s.burned() && !s.Stopped {
+						need, by := p.SpikePasses, "spike filter"
+						if pr.ReadingsOnly {
+							need, by = max(need, p.ReadingPasses), "spike filter; only the readings' rate is over"
+						}
+						skip(s, fmt.Sprintf("%s over its cap on %d of %d passes (%s)", pr.Window, pr.Streak, need, by))
+					}
+				}
+			}
+			continue
+		}
+		// The burners: every session that burned in the burn window, any turn state,
+		// interactive ones too (they get a message in their pane or terminal), moved greedily
+		// until both projections are Hysteresis under the caps.
+		var cands []Session
+		var held float64 // counted burn of sessions held back for now (cooldown, a move under way)
+		for _, s := range ss {
+			if s.Stopped {
+				continue
+			}
+			if !s.burned() && !p.IdleMoves {
+				continue // idle with no burn: moving it frees nothing
+			}
+			if !p.IdleMoves && p.MinBurn >= 0 {
+				switch {
+				case p.young(s, now):
+					// Its burn is left out (GateYoung): moving it would free nothing counted.
+					skip(s, fmt.Sprintf("under %d min old: its burn does not count yet", int(p.YoungGate.Minutes())))
+					continue
+				case s.Rate <= 0 || s.Rate < p.MinBurn:
+					skip(s, fmt.Sprintf("burns %.1f points/h, under the %.1f a move must free", s.Rate, p.MinBurn))
+					continue
+				}
+			}
+			if why := p.excluded(s, st, now); why != "" {
+				if l, ok := st.last[s.ID]; !s.Pinned && (s.Moving || (ok && p.Cooldown > 0 && now.Sub(l.At) < p.Cooldown)) {
+					held += s.Rate // not the owner grace: it moves another burner on purpose
+				}
+				skip(s, why)
+				continue
+			}
+			cands = append(cands, s)
+		}
+		// Off: its sessions stay, whatever its projection (setup.md 8.6, Off).
+		if a.Off && len(cands) > 0 {
+			for _, s := range cands {
+				skip(s, OffText)
+			}
+			cands = nil
+		}
+		// The owner drains it: nothing moves off it before its 5-hour window is at its cap or
+		// hits 100% within UrgentWithin (its weekly room is what the owner wants used).
+		if a.ownerDrain(now) && len(cands) > 0 {
+			if cur := p.Project(a, ss, delta[a.Key], now); !p.near5h(cur) {
+				for _, s := range cands {
+					if a.Ignores5h(now) {
+						skip(s, OwnerDrainText(a.DrainUntil, now)+": "+Ignored5hText+"; nothing moves off it for a 5h trigger")
+						continue
+					}
+					skip(s, fmt.Sprintf("%s: nothing moves off it before its 5h window is within %d min of 100%% or at its cap",
+						OwnerDrainText(a.DrainUntil, now), int(p.UrgentWithin.Minutes())))
+				}
+				cands = nil
+			}
+		}
+		// A soft trigger (no hit within UrgentWithin) whose burn is mostly a session held back
+		// for now waits for it rather than moving the small ones, which cannot bring the source
+		// under its caps (live pre9: home-18 at 2.3 points/h moved off claude-2 at 10:12 while
+		// ai-lane-E, 27.1, cooled down; home-00 at 1.7 off claude-6 at 10:37 while 54c4e1e8,
+		// 21.9, moved there at 10:35). A near hit moves what it can, the highest burner first.
+		if p.UrgentWithin > 0 && held > 0 && len(cands) > 0 {
+			cur := p.Project(a, ss, delta[a.Key], now)
+			var rest float64
+			for _, s := range cands {
+				rest += s.Rate
+			}
+			if u := p.urgencyOf(cur); !u.near && held > rest && !cur.enoughWithout(p, rest) {
+				for _, s := range cands {
+					skip(s, fmt.Sprintf("waiting: moving the others (%.1f points/h) would not bring %s under its caps while %.1f points/h held back for now burns more; it moves if a hit comes within %d min",
+						rest, a.Label, held, int(p.UrgentWithin.Minutes())))
+				}
+				cands = nil
+			}
+		}
+		// Urgency is the source's as it triggered this pass (not re-read after each move: one
+		// big move pushes the hit out past UrgentWithin while the account is still headed
+		// over 100% before its reset).
+		var srcUrg *urgency
+		for len(cands) > 0 {
+			cur := p.Project(a, ss, delta[a.Key], now)
+			if srcUrg == nil {
+				u := p.urgencyOf(cur)
+				srcUrg = &u
+			}
+			if !p.overTarget(cur) {
+				for _, s := range cands {
+					skip(s, fmt.Sprintf("enough moved: %s projected 5h %.0f%%, 7d %.0f%%", a.Label, cur.P5, cur.P7))
+				}
+				break
+			}
+			urgent := srcUrg.near
+			sort.SliceStable(cands, func(i, j int) bool {
+				x, y := cands[i], cands[j]
+				ex, ey := cur.enoughWithout(p, x.Rate), cur.enoughWithout(p, y.Rate)
+				if ex != ey {
+					return ex // the fewest moves: one that brings it under alone first
+				}
+				if urgent && x.Rate != y.Rate {
+					// A hit is near: the highest burner first (live pre9 10:31: claude-4 at 99%,
+					// 100% at ~10:54; only a 2.7 points/h session moved, the 25.9 and 16.9 stayed).
+					return x.Rate > y.Rate
+				}
+				if ex && p.CheapMoves {
+					if cx, cy := x.Rate/reRead(x), y.Rate/reRead(y); cx != cy {
+						return cx > cy // the most points freed per re-read
+					}
+					if x.Rate != y.Rate {
+						return x.Rate > y.Rate
+					}
+					if !x.Started.Equal(y.Started) {
+						return x.Started.After(y.Started) // the youngest
+					}
+				}
+				if x.Rate != y.Rate {
+					return x.Rate > y.Rate // the highest burn
+				}
+				if x.Context != y.Context {
+					return x.Context < y.Context // the cheaper re-read
+				}
+				if x.Expected != y.Expected {
+					return x.Expected > y.Expected // the longest expected remaining
+				}
+				return x.ID < y.ID
+			})
+			s := cands[0]
+			// Greedy: a pick that would not lower the source's projection frees nothing.
+			if !p.IdleMoves && p.MinBurn >= 0 && !p.lowers(cur, s.Rate) {
+				for _, x := range cands {
+					skip(x, fmt.Sprintf("moving it would not lower %s's projection", a.Label))
+				}
+				break
+			}
+			cands = cands[1:]
+			mv := Move{Session: s.ID, From: a.Key, Window: cur.Window, P: cur.pOf(cur.Window), ResetAt: now.Add(cur.resetOf(cur.Window)),
+				MidTurn: s.Busy, Rate: s.Rate, Interactive: s.Interactive}
+			if mv.Window == "" {
+				mv.Window, mv.P, mv.ResetAt = pr.Window, pr.pOf(pr.Window), now.Add(pr.resetOf(pr.Window))
+			}
+			mv.HitAt = cur.HitAt(now)
+			u := *srcUrg
+			if u.near && u.hit > 0 {
+				// The best-available check weighs the source as this pass's moves leave it.
+				if h := cur.Hit; h < 0 || h > u.hit {
+					u.hit = h
+				}
+			}
+			p.place(in, &res, st, s, a, mv, delta, skip, u)
+		}
+		if p.MinBurn >= 0 && !p.IdleMoves {
+			if cur := p.Project(a, ss, delta[a.Key], now); p.overTarget(cur) {
+				// Nothing left that a move would lower: say what burns on.
+				var pinned, low float64
+				for _, s := range ss {
+					switch {
+					case s.Stopped || s.Rate <= 0:
+					case s.Pinned:
+						pinned += s.Rate
+					default:
+						if !slices.ContainsFunc(res.Moves, func(m Move) bool { return m.Session == s.ID && m.To != "" }) {
+							low += s.Rate
+						}
+					}
+				}
+				if low < p.MinBurn {
+					for i := range res.Accounts {
+						if res.Accounts[i].Key == a.Key {
+							res.Accounts[i].Left = fmt.Sprintf("only pinned burn left (%.1f points/h pinned, %.1f unpinned)", pinned, low)
+						}
+					}
+				}
+			}
 		}
 	}
-	var out []Move
-	for _, sc := range srcs {
-		a := sc.a
-		left := append([]Session(nil), byAcc[a.Key]...)
-		cands := p.candidates(left, sc.f, now, a)
-		n := 0
-		for _, s := range cands {
-			if p.MaxPerPass > 0 && n >= p.MaxPerPass {
-				break
-			}
-			// Enough moved already: the rest no longer hits (with slack) before the reset.
-			if !stoppedAny(left) && p.Fixed5h == 0 && !p.sourceHits(a, left, now) {
-				break
-			}
-			if p.Fixed5h > 0 && n > 0 {
-				break
-			}
-			skip := func(why string) { skips = append(skips, Skip{s.ID, a.Key, why}) }
-			if s.Pinned {
-				skip("pinned, or outside the scope")
-				continue
-			}
-			if l, ok := lastMove[s.ID]; ok && p.Cooldown > 0 && now.Sub(l.At) < p.Cooldown {
-				skip("moved " + now.Sub(l.At).Round(time.Minute).String() + " ago (cooldown)")
-				continue
-			}
-			if s.Stopped && p.StoppedWait > 0 && sc.f.ResetIn < p.StoppedWait {
-				skip(fmt.Sprintf("stopped at the %s limit, which resets in %s: waiting is cheaper than a move", sc.f.Window, sc.f.ResetIn.Round(time.Minute)))
-				continue
-			}
-			// Idle with nothing pending on a window that is already full: it burns nothing
-			// there, and it goes on after the reset; moving it only costs.
-			if !s.Stopped && s.Idle && p.TokenRules && sc.f.Level >= sc.f.Limit {
-				skip(fmt.Sprintf("idle, not stopped by the limit: it burns nothing on the full %s window", sc.f.Window))
-				continue
-			}
-			hitIn := max(0, sc.f.HitIn)
-			if p.TokenRules && !s.Stopped {
-				if s.Attended {
-					skip("the owner typed into it in the last minutes")
-					continue
-				}
-				if p.remaining(s) <= hitIn {
-					skip("expected to end before the hit")
-					continue
-				}
-				if p.OncePer > 0 && !s.MovedAt.IsZero() && now.Sub(s.MovedAt) < p.OncePer {
-					skip("already moved once in this window")
-					continue
-				}
-			}
-			mv := Move{Session: s.ID, From: a.Key, Window: sc.f.Window, HitAt: now.Add(hitIn),
-				ResetAt: now.Add(sc.f.ResetIn), Stopped: s.Stopped}
-			mv.Saved = p.rate(s) * math.Min(p.remaining(s).Hours(), sc.f.ResetIn.Hours())
-			mv.Cost = p.moveCost(s)
-			if p.TokenRules {
-				stall := math.Max(0, min(p.remaining(s), sc.f.ResetIn).Hours()-hitIn.Hours())
-				if stall*(p.rate(s)+p.StallValue) <= mv.Cost {
-					skip(fmt.Sprintf("the move costs more (%.1f points) than the stall it saves", mv.Cost))
-					continue
-				}
-			}
-			midTurn := !s.Idle && !s.Stopped
-			if midTurn && !p.MidTurn {
-				if sc.f.HitIn > p.WaitHit {
-					skip("mid-turn: moved at its next stop if the account still needs it")
-					continue
-				}
-				mv.Wait = true
-			}
-			to, why := p.destination(in, s, lastMove[s.ID], movedIn, added)
-			mv.To = to
-			mv.Reason = p.reason(a, sc.f, s, mv, why)
-			out = append(out, mv)
-			if to == "" {
-				continue
-			}
-			n++
-			movedIn[to]++
-			on := s
-			on.Account, on.Stopped = to, false
-			added[to] = append(added[to], on)
-			left = without(left, s.ID)
-		}
-	}
-	return out, skips
+	p.pullIn(in, &res, st, delta, byAcc)
+	return res
 }
 
-func stoppedAny(ss []Session) bool {
+// ownerDrain reports whether the owner drains a now.
+func (a Account) ownerDrain(now time.Time) bool {
+	return !a.DrainUntil.IsZero() && a.DrainUntil.After(now)
+}
+
+// OwnerDrainText names an owner's drain: "draining (owner, until 23:59)" (a day name when
+// it is not today).
+func OwnerDrainText(until, now time.Time) string {
+	u := until.In(now.Location())
+	f := "15:04"
+	if y, m, d := u.Date(); y != now.Year() || m != now.Month() || d != now.Day() {
+		f = "Mon 15:04"
+	}
+	return "draining (owner, until " + u.Format(f) + ")"
+}
+
+// near5h: pr's 5-hour window is at its cap now or reaches 100% within UrgentWithin.
+func (p Params) near5h(pr Projection) bool {
+	if pr.Ign5 { // only an actual limit (the stopped rule moves those)
+		return pr.Level5 >= 100
+	}
+	if pr.Level5 >= pr.Cap5 || pr.Level5 >= 100 {
+		return true
+	}
+	if pr.R5 <= 0 || p.UrgentWithin <= 0 {
+		return false
+	}
+	t := (100 - pr.Level5) / pr.R5
+	return t <= pr.Reset5.Hours() && t < p.UrgentWithin.Hours()
+}
+
+// pullIn: an account the owner drains whose projections (with this pass's moves) are under
+// its caps − PullMargin, with no move off it this pass or within PullQuiet, takes the biggest
+// busy burners of the other accounts (not pinned, not interactive, not young, out of
+// cooldown, at least PullMinBurn), each counted at max(its burn, the lane rate) and taken
+// when it still fits PullMargin under the caps as the destination check counts it (the
+// account rate limit too), so its weekly room is used by the owner's until (setup.md 8.6,
+// Owner drain).
+func (p Params) pullIn(in Input, res *Result, st *moveState, delta map[string]float64, byAcc map[string][]Session) {
+	now := in.Now
+	moving := map[string]bool{}
+	for _, m := range res.Moves {
+		moving[m.Session] = true
+	}
+	draining, off := map[string]bool{}, map[string]bool{}
+	for _, d := range in.Accounts {
+		draining[d.Key], off[d.Key] = d.ownerDrain(now), d.Off
+	}
+	// The account whose room expires soonest pulls first (its weekly reset, then the drain's
+	// until): the picker's drain order (live pre16: a pull went to claude-4, draining until
+	// Sunday, while claude-3's room was lost at its reset that night).
+	drains := append([]Account(nil), in.Accounts...)
+	sort.SliceStable(drains, func(i, j int) bool {
+		ei, ej := roomExpires(drains[i], now), roomExpires(drains[j], now)
+		if !ei.Equal(ej) {
+			return ei.Before(ej)
+		}
+		return drains[i].DrainUntil.Before(drains[j].DrainUntil)
+	})
+	for _, d := range drains {
+		if !d.ownerDrain(now) || !d.LoggedIn || d.Excluded || d.Off {
+			continue
+		}
+		if age := p.staleAge(d, now); age > 0 || d.Stale {
+			// A busy session elsewhere it could have pulled in: the pull was held back.
+			for _, s := range in.Sessions {
+				if age <= 0 {
+					break
+				}
+				if s.Account != d.Key && !off[s.Account] && s.Busy && s.Movable && s.Rate >= p.PullMinBurn {
+					res.staleBlock(d.Key, StalePull, age)
+					break
+				}
+			}
+			continue
+		}
+		pp := p
+		pp.Hysteresis, pp.pullMargin = math.Max(p.Hysteresis, p.PullMargin), true
+		pr := p.Project(d, byAcc[d.Key], delta[d.Key], now)
+		if m5, m7 := pp.hyst(pr); pr.P5 > pr.Cap5-m5 || pr.P7 > pr.Cap7-m7 {
+			continue
+		}
+		if p.movedOff(d.Key, in, res, now) {
+			continue
+		}
+		var cands []Session
+		measured := map[string]float64{}
+		for _, s := range in.Sessions {
+			if s.Account == d.Key || draining[s.Account] || off[s.Account] || moving[s.ID] || !s.Busy || s.Pinned || s.Interactive || s.Stopped || !s.Movable ||
+				p.young(s, now) || s.Rate < math.Max(math.Max(p.MinBurn, p.PullMinBurn), 1e-9) || p.excluded(s, st, now) != "" {
+				continue
+			}
+			// A lane in a low phase burns more later: counted at least at the lane rate, as
+			// the destination check counts a young lane.
+			measured[s.ID] = s.Rate
+			s.Rate = math.Max(s.Rate, in.LaneRate)
+			cands = append(cands, s)
+		}
+		// The biggest burner that fits first: each is checked against the room the pulls
+		// before it left (destination), so one too big for the room is passed over for the
+		// next biggest, never for the first that clears the floor.
+		sort.SliceStable(cands, func(i, j int) bool {
+			if cands[i].Rate != cands[j].Rate {
+				return cands[i].Rate > cands[j].Rate
+			}
+			if mi, mj := measured[cands[i].ID], measured[cands[j].ID]; mi != mj {
+				return mi > mj
+			}
+			return cands[i].ID < cands[j].ID
+		})
+		one := in
+		one.Accounts = []Account{d}
+		text := OwnerDrainText(d.DrainUntil, now)
+		for _, s := range cands {
+			if to, _ := pp.destination(one, s, st, delta, urgency{hit: -1}); to != d.Key {
+				continue
+			}
+			var from Account
+			for _, a := range in.Accounts {
+				if a.Key == s.Account {
+					from = a
+				}
+			}
+			m := measured[s.ID]
+			mv := Move{Session: s.ID, From: s.Account, To: d.Key, MidTurn: s.Busy, Rate: m, Interactive: s.Interactive, Pull: text,
+				OrgChanged: Org(d.Key) != from.Org()}
+			mv.Reason = fmt.Sprintf("pulled in: %s is %s at %.1f points/h of burn", d.Label, text, m)
+			if s.Rate > m {
+				mv.Reason += fmt.Sprintf(" (counted at the lane rate %.1f)", s.Rate)
+			}
+			if mv.MidTurn {
+				mv.Reason += "; mid-turn"
+			}
+			if mv.OrgChanged {
+				mv.Reason += "; another organisation"
+			}
+			if p.countsAsMove(m) {
+				st.movedIn[d.Key]++
+			}
+			st.burnIn[d.Key] += s.Rate
+			delta[d.Key] += s.Rate
+			delta[s.Account] -= m
+			moving[s.ID] = true
+			res.Moves = append(res.Moves, mv)
+		}
+	}
+}
+
+// roomExpires is when a draining account's weekly room is lost: its weekly reset (the drain's
+// until when the reset is not known or later).
+func roomExpires(a Account, now time.Time) time.Time {
+	t := a.DrainUntil
+	if a.W7.Reset.After(now) && (t.IsZero() || a.W7.Reset.Before(t)) {
+		t = a.W7.Reset
+	}
+	return t
+}
+
+// movedOff: a session moved off key this pass or within PullQuiet (a near hit's move off a
+// draining account; a pull then would ping-pong).
+// OffText is why nothing moves off an account that is off.
+const OffText = "off (owner): its sessions stay, and nothing is moved into it"
+
+func (p Params) movedOff(key string, in Input, res *Result, now time.Time) bool {
+	for _, m := range res.Moves {
+		if m.From == key {
+			return true
+		}
+	}
+	for _, r := range in.Recent {
+		if !r.Alias && r.From == key && now.Sub(r.At) < p.PullQuiet {
+			return true
+		}
+	}
+	return false
+}
+
+func hasStopped(ss []Session) bool {
 	for _, s := range ss {
 		if s.Stopped {
 			return true
@@ -335,141 +1094,697 @@ func stoppedAny(ss []Session) bool {
 	return false
 }
 
-func without(ss []Session, id string) []Session {
-	var out []Session
-	for _, s := range ss {
-		if s.ID != id {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// sourceHits reports whether account a with sessions ss still reaches its limit less Slack
-// before the window resets.
-func (p Params) sourceHits(a Account, ss []Session, now time.Time) bool {
-	f := p.Forecast(a, ss, now, p.Slack)
-	_, hits := f.First()
-	return hits
-}
-
-// moveCost is the 5-hour points a move of s costs: its context read uncached once.
-func (p Params) moveCost(s Session) float64 {
-	if p.TokenRules && s.Idle && s.IdleFor >= p.CacheTTL {
-		return p.MoveCostFixed // its cache is cold: staying would re-read it too
-	}
-	return p.MoveCostFixed + p.MoveCostPerMTok*modelWeight(s.Model)*s.Context/1e6
-}
-
-// modelWeight is a model's 5-hour points per token relative to Opus.
-func modelWeight(m string) float64 {
-	switch m := strings.ToLower(m); {
-	case strings.Contains(m, "haiku"):
-		return 0.2
-	case strings.Contains(m, "sonnet"):
-		return 0.6
-	}
-	return 1
-}
-
-// cold reports whether s's prompt cache has expired (a move costs nothing extra).
-func (p Params) cold(s Session) bool { return s.Idle && p.CacheTTL > 0 && s.IdleFor >= p.CacheTTL }
-
-// candidates orders the sessions of a source: stopped ones first (moving them loses
-// nothing); then, cost-aware, idle before mid-turn and the most room freed per point of move
-// cost; else the highest burn. Ties by id.
-func (p Params) candidates(ss []Session, f WindowForecast, now time.Time, a Account) []Session {
+func sortedIDs(ss []Session) []Session {
 	out := append([]Session(nil), ss...)
-	T := f.ResetIn.Hours()
-	scale := 1.0
-	if f.Window == Win7d {
-		scale = 1 / ratio(a)
-	}
-	key := func(s Session) float64 {
-		saved := p.rate(s) * scale * math.Min(p.remaining(s).Hours(), T)
-		if !p.CostAware {
-			return p.rate(s)
-		}
-		return saved / math.Max(p.moveCost(s), 0.05)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		a, b := out[i], out[j]
-		if a.Stopped != b.Stopped {
-			return a.Stopped
-		}
-		if p.TokenRules && p.cold(a) != p.cold(b) {
-			return p.cold(a)
-		}
-		if p.CostAware && a.Idle != b.Idle {
-			return a.Idle
-		}
-		if ka, kb := key(a), key(b); ka != kb {
-			return ka > kb
-		}
-		return a.ID < b.ID
-	})
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 
-// destination is the first account in the picker's order that can take s: not its own, not
-// stale or excluded, not the account it left within NoReturn, under the per-account move
-// limit, and whose forecast with s (and the sessions already planned onto it) stays
-// Hysteresis under its limits until its resets. Aggressive accounts before protected ones.
-func (p Params) destination(in Input, s Session, last Record, movedIn map[string]int, added map[string][]Session) (string, string) {
-	var ss []Session
-	for _, x := range in.Sessions {
-		ss = append(ss, x)
+// stoppedWindow is the full window that stopped a session on a and the time to its reset.
+func stoppedWindow(a Account, now time.Time) (string, time.Duration) {
+	if a.W7.Level >= 100 && a.W5.Level < 100 {
+		return Win7d, resetIn(a.W7, now, 7*24*time.Hour)
 	}
-	why := "no account has room for it until its reset"
-	// The same organisation first: a session resumed under another organisation loses its
-	// preserved thinking ("Claude can't use thinking from another organization") and rereads
-	// and re-thinks at more tokens (e2e).
-	type tier struct{ protected, sameOrg bool }
-	accs := in.Accounts
-	if p.DrainFirst {
-		accs = append([]Account(nil), accs...)
-		far := in.Now.Add(1000 * time.Hour)
-		at := func(a Account) time.Time {
-			if a.W5.Reset.After(in.Now) {
-				return a.W5.Reset
-			}
-			return far // not started: its room does not expire
+	return Win5h, resetIn(a.W5, now, 5*time.Hour)
+}
+
+// excluded is why the switch never moves s now ("" when it may).
+func (p Params) excluded(s Session, st *moveState, now time.Time) string {
+	switch {
+	case s.Pinned && s.PinFrom != "":
+		return "pinned (" + s.PinFrom + ")"
+	case s.Pinned:
+		return "pinned, or outside the scope"
+	case !s.Movable:
+		return "its kind cannot be restarted from this machine (claude.ai)"
+	case s.Moving:
+		return "a move of it is under way (waiting for its step)"
+	case s.Copies > 0:
+		return fmt.Sprintf("%d copies of it are running: stop the extra one first", s.Copies+1)
+	}
+	if p.OwnerGrace > 0 && s.Interactive && !s.Typed.IsZero() && now.Sub(s.Typed) < p.OwnerGrace {
+		return "the owner typed into it " + now.Sub(s.Typed).Round(time.Second).String() + " ago (owner grace)"
+	}
+	if l, ok := st.last[s.ID]; ok && p.Cooldown > 0 && now.Sub(l.At) < p.Cooldown {
+		return "moved " + now.Sub(l.At).Round(time.Minute).String() + " ago (cooldown)"
+	}
+	return ""
+}
+
+// place finds mv's destination and records the move (or, with none, why).
+func (p Params) place(in Input, res *Result, st *moveState, s Session, a Account, mv Move, delta map[string]float64, skip func(Session, string), u urgency) {
+	to, why := p.destination(in, s, st, delta, u)
+	mv.To, mv.Urgent = to, u.near
+	if to != "" && strings.HasPrefix(why, "best available") {
+		mv.BestFit = st.bestFit
+	}
+	if to != "" {
+		mv.OrgChanged = Org(to) != a.Org()
+		if p.countsAsMove(s.Rate) {
+			st.movedIn[to]++
 		}
-		sort.SliceStable(accs, func(i, j int) bool { return at(accs[i]).Before(at(accs[j])) })
+		st.burnIn[to] += math.Max(0, s.Rate)
+		delta[to] += s.Rate
+		if !s.Stopped {
+			delta[a.Key] -= s.Rate
+		}
+		st.off[a.Key] = true
 	}
-	for _, tr := range []tier{{false, true}, {false, false}, {true, true}, {true, false}} {
-		for _, a := range accs {
-			if a.Protected != tr.protected || (Org(a.Key) == Org(s.Account)) != tr.sameOrg || a.Key == s.Account || a.Stale || a.Excluded {
+	if to == "" {
+		// No destination: the accounts that only their stale data kept out might have had room.
+		for _, d := range in.Accounts {
+			if d.Key == s.Account || !d.LoggedIn || d.Excluded || d.Off {
 				continue
 			}
-			if p.NoReturn > 0 && last.From == a.Key && in.Now.Sub(last.At) < p.NoReturn {
+			if age := p.staleAge(d, in.Now); age > 0 {
+				res.staleBlock(d.Key, StaleDest, age)
+			}
+		}
+	}
+	mv.Reason = p.reason(a, mv, why, in.Now)
+	res.Moves = append(res.Moves, mv)
+}
+
+// overBy reports whether a projection is over its caps less m.
+// lowers reports whether taking rate off the account lowers its projection in the window
+// over the cap (both when neither is named).
+func (p Params) lowers(pr Projection, rate float64) bool {
+	if rate <= 0 {
+		return false
+	}
+	switch pr.Window {
+	case "5h":
+		return rate*pr.Reset5.Hours() > 0
+	case "7d":
+		return rate/pr.ratio*math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours()) > 0
+	}
+	return true
+}
+
+func (pr Projection) overBy(m float64) bool {
+	return pr.P5 > pr.Cap5-m || pr.P7 > pr.Cap7-m || (m == 0 && pr.Hard)
+}
+
+// margins are how far under each cap the moves aim: Hysteresis, but none for a window whose
+// level now is already at or over its cap less Hysteresis (no move takes a projection below
+// the level now, so that target could never be met and every burner would be moved off). With
+// MinBurn negative (the simulator's tables before it), always Hysteresis.
+func (p Params) margins(pr Projection) (m5, m7 float64) {
+	h5, h7 := p.hyst(pr)
+	m5, m7 = h5, h7
+	if p.MinBurn < 0 || p.IdleMoves {
+		return m5, m7
+	}
+	if pr.Level5 >= pr.Cap5-h5 {
+		m5 = 0
+	}
+	if pr.Level7 >= pr.Cap7-h7 {
+		m7 = 0
+	}
+	return m5, m7
+}
+
+// hyst is the margin under pr's caps that moves aim for and destinations keep: Hysteresis, but
+// none for a draining account, whose caps are already the drain aim (setup.md 8.5, Drain aim):
+// with the margin a drain could never come within Hysteresis of its aim (live pre15: claude-3
+// at 89%, lanes refused at a projected 91% against "cap 95% less the switch margin").
+//
+// A pull onto an owner drain (pullMargin) keeps Hysteresis (PullMargin) under the 5-hour cap,
+// and the same burn's weekly share under the weekly cap: PullMargin is a margin for a lane's
+// burn running higher than measured, in 5-hour points, and a weekly point is ratio 5-hour
+// points (live pre16: claude-3 at 89%, aim 96, reset in 4 h, refused every pull because 89 was
+// over 96 − 10; the pull went to claude-4, whose room lasts until Sunday).
+func (p Params) hyst(pr Projection) (h5, h7 float64) {
+	switch {
+	case pr.Draining && p.pullMargin:
+		return p.Hysteresis, p.Hysteresis / math.Max(1, pr.ratio)
+	case pr.Draining:
+		return 0, 0
+	}
+	return p.Hysteresis, p.Hysteresis
+}
+
+// destHyst is the margin a destination keeps under its caps: hyst, and for a draining account
+// at least DrainDestMargin (the source side keeps none).
+func (p Params) destHyst(pr Projection) (h5, h7 float64) {
+	h5, h7 = p.hyst(pr)
+	if pr.Draining && p.DrainDestMargin > 0 {
+		h5 = math.Max(h5, p.DrainDestMargin)
+		h7 = math.Max(h7, p.DrainDestMargin)
+	}
+	return h5, h7
+}
+
+// resetsSoon reports whether a destination's 5-hour window resets within DestResetWithin (and
+// counts: not ignored by drain_ignore_5h).
+func (p Params) resetsSoon(a Account, now time.Time) bool {
+	return p.DestResetWithin > 0 && !p.oldDest && a.W5.Reset.After(now) && a.W5.Reset.Sub(now) <= p.DestResetWithin && !a.Ignores5h(now)
+}
+
+// nextWindow is account a's projection of the 5-hour window that starts at its reset: from no
+// level, its sessions ss (each until its expected end, from now) and extra points per hour
+// burning through the whole window, against its caps at the reset. Only P5 and Cap5 count.
+func (p Params) nextWindow(a Account, ss []Session, extra float64, now time.Time) Projection {
+	at := a.W5.Reset
+	shift := at.Sub(now)
+	a.W5 = Window{Reset: at.Add(5 * time.Hour)}
+	next := make([]Session, 0, len(ss))
+	for _, s := range ss {
+		if s.Expected > 0 {
+			if e := max(s.Expected, ExpectFloor) - shift; e > 0 {
+				s.Expected = e
+			} else {
+				s.Rate = 0 // ends before the reset
+			}
+		}
+		next = append(next, s)
+	}
+	return p.Project(a, next, extra, at)
+}
+
+// nearReset reports whether a 5-hour trigger that is not a limit reached now has its projected
+// 100% hit within ResetSkip of the window's reset. A projection that reaches 100 only at the
+// reset itself is a soft overshoot with no stall to save, and is not skipped.
+func (p Params) nearReset(pr Projection) bool {
+	return p.ResetSkip > 0 && pr.Window == Win5h && !pr.Hard && pr.Hit >= 0 && pr.Reset5-pr.Hit > time.Second && pr.Reset5-pr.Hit <= p.ResetSkip
+}
+
+// overTarget reports whether a projection is still over what the moves aim for (margins).
+func (p Params) overTarget(pr Projection) bool {
+	m5, m7 := p.margins(pr)
+	return pr.P5 > pr.Cap5-m5 || pr.P7 > pr.Cap7-m7
+}
+
+// enoughWithout reports whether taking rate off the account brings both projections to
+// their targets (margins).
+func (pr Projection) enoughWithout(p Params, rate float64) bool {
+	h5 := pr.Reset5.Hours()
+	h7 := math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())
+	ratio := pr.ratio
+	m5, m7 := p.margins(pr)
+	return pr.P5-rate*h5 <= pr.Cap5-m5 && pr.P7-rate/ratio*h7 <= pr.Cap7-m7
+}
+
+func (pr Projection) pOf(w string) float64 {
+	if w == Win7d {
+		return pr.P7
+	}
+	return pr.P5
+}
+
+// staleFor is how old a's reading is when that is over StaleAfter (0: fresh, unknown or off).
+func (p Params) staleFor(a Account, now time.Time) time.Duration {
+	if p.StaleAfter <= 0 || a.ReadAt.IsZero() || a.Quiet {
+		return 0
+	}
+	if age := now.Sub(a.ReadAt); age > p.StaleAfter {
+		return age
+	}
+	return 0
+}
+
+// StaleAccounts are the accounts of r whose data has been stale for longer than StaleAlert.
+func (p Params) StaleAccounts(r Result) []Projection {
+	var out []Projection
+	for _, pr := range r.Accounts {
+		if p.StaleAlert > 0 && pr.StaleFor > p.StaleAlert {
+			out = append(out, pr)
+		}
+	}
+	return out
+}
+
+// HitAt is when the projection reaches 100% from its current level at its burn (now +
+// (100 − level)/R5, the sooner of the two windows), or zero when that is not in the future:
+// a level already at 100 has no hit time to give (live 2026-11-25: "100% at 04:24" in a pass
+// at 04:25).
+func (pr Projection) HitAt(now time.Time) time.Time {
+	if pr.Hit <= 0 {
+		return time.Time{}
+	}
+	return now.Add(pr.Hit)
+}
+
+func (pr Projection) resetOf(w string) time.Duration {
+	if w == Win7d {
+		return pr.Reset7
+	}
+	return pr.Reset5
+}
+
+// moveState is the pass's memory of moves: the last move per session and the moves into each
+// account within the account window (recent and planned).
+type moveState struct {
+	last    map[string]Record
+	movedIn map[string]int
+	// burnIn: the burn moved into each account within the account window (recent and planned).
+	burnIn map[string]float64
+	// bestFit: how long the last best-available destination fits (destination → place).
+	bestFit time.Duration
+	// off: the accounts this pass moves sessions off (never a best-available destination).
+	off map[string]bool
+}
+
+func (p Params) newMoveState(in Input) *moveState {
+	st := &moveState{last: map[string]Record{}, movedIn: map[string]int{}, burnIn: map[string]float64{}, off: map[string]bool{}}
+	for _, r := range in.Recent {
+		if p.AccountWindow > 0 && !r.Alias && in.Now.Sub(r.At) < p.AccountWindow {
+			if !r.RateKnown || p.countsAsMove(r.Rate) {
+				st.movedIn[r.To]++
+			}
+			st.burnIn[r.To] += math.Max(0, r.Rate)
+		}
+		if l, ok := st.last[r.Session]; !ok || r.At.After(l.At) {
+			st.last[r.Session] = r
+		}
+	}
+	return st
+}
+
+// caps are the caps of account a at now: a protected account's weekly cap is Cap7 within
+// ExpiringRoom of its weekly reset (expiring).
+func (p Params) caps(a Account, now time.Time) (c5, c7 float64) {
+	if a.Protected {
+		if p.expiring(a, now) {
+			return p.Cap5Protected, math.Max(p.Cap7, p.Cap7Protected)
+		}
+		return p.Cap5Protected, p.Cap7Protected
+	}
+	b5, b7 := p.Cap5, p.Cap7
+	if a.Cap5 > 0 {
+		b5 = math.Min(a.Cap5, 100)
+	}
+	if a.Cap7 > 0 {
+		b7 = math.Min(a.Cap7, 100)
+	}
+	if !a.Off && (a.Drain || a.DrainUntil.After(now)) {
+		// A draining account's caps ramp toward its resets (setup.md 8.5, Drain aim).
+		d5, d7 := projection.DrainCapsWith(b5, b7, hoursTo(a.W5, now, 5), hoursTo(a.W7, now, -1), p.DrainAim7, p.DrainCapMax7)
+		if a.Cap5 > 0 {
+			d5 = b5 // the owner's own 5-hour cap holds while it drains
+		}
+		return d5, d7
+	}
+	return b5, b7
+}
+
+// hoursTo is the hours to w's reset; none when it is not known or past.
+func hoursTo(w Window, now time.Time, none float64) float64 {
+	if w.Reset.After(now) {
+		return w.Reset.Sub(now).Hours()
+	}
+	return none
+}
+
+// expiring: a is protected and its weekly reset is within ExpiringRoom.
+func (p Params) expiring(a Account, now time.Time) bool {
+	return a.Protected && p.ExpiringRoom > 0 && a.W7.Reset.After(now) && a.W7.Reset.Sub(now) <= p.ExpiringRoom
+}
+
+func ratio(a Account) float64 {
+	if a.Ratio > 0 {
+		return a.Ratio
+	}
+	return 7.2
+}
+
+func resetIn(w Window, now time.Time, length time.Duration) time.Duration {
+	if w.Reset.IsZero() || !w.Reset.After(now) {
+		return length // not started: a full window from its first use
+	}
+	return w.Reset.Sub(now)
+}
+
+// Project is account a's projections with the sessions ss on it and extra 5-hour points per
+// hour added (moves planned in and out): P5 = h + R5 × hours to the 5-hour reset, P7 = w +
+// R5/ρ × min(hours to the weekly reset, WeekSpan).
+func (p Params) Project(a Account, ss []Session, extra float64, now time.Time) Projection {
+	r5 := a.Rate
+	sum := 0.0
+	for _, s := range ss {
+		if !s.Stopped {
+			sum += math.Max(0, s.Rate)
+		}
+	}
+	r5 = math.Max(r5, sum)
+	r5 = math.Max(0, r5+extra)
+	c5, c7 := p.caps(a, now)
+	c5, c7 = math.Max(0, c5-math.Max(0, a.Reserve5)), math.Max(0, c7-math.Max(0, a.Reserve7))
+	ign5 := a.Ignores5h(now)
+	if ign5 {
+		c5 = noCap5
+	}
+	pr := Projection{Key: a.Key, Label: a.Label, Ign5: ign5, Protected: a.Protected, Level5: a.W5.Level, Level7: a.W7.Level, R5: r5, RateNote: a.RateNote,
+		Cap5: c5, Cap7: c7, Hit: -1, ratio: ratio(a), Pins: a.Pins, Reserve5: math.Max(0, a.Reserve5), Reserve7: math.Max(0, a.Reserve7)}
+	pr.Expiring = p.expiring(a, now)
+	pr.Draining = !a.Protected && !a.Off && (a.Drain || a.DrainUntil.After(now))
+	pr.Reset5 = resetIn(a.W5, now, 5*time.Hour)
+	pr.Reset7 = resetIn(a.W7, now, 7*24*time.Hour)
+	if a.W5.Reset.IsZero() || !a.W5.Reset.After(now) {
+		pr.Level5 = 0 // not started (or reset since the reading)
+	}
+	h7 := math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())
+	pr.P5, pr.P7 = projection.Levels(pr.Level5, pr.Level7, r5, pr.ratio, pr.Reset5.Hours(), pr.Reset7.Hours(), p.WeekSpan.Hours())
+	if p.MinBurn >= 0 && !p.IdleMoves {
+		// A session expected to end sooner burns only until then: a short lane cannot burn
+		// the rest of the window (live: an idle account, a 25-minute lane at 23 points/h,
+		// projected 115%). Unknown (0) or overrun: the whole window, as before.
+		for _, s := range ss {
+			if s.Stopped || s.Expected <= 0 || s.Rate <= 0 {
 				continue
 			}
-			if p.AccountMoves > 0 && movedIn[a.Key] >= p.AccountMoves {
-				why = "the accounts with room took their moves for now"
-				continue
+			e := max(s.Expected, ExpectFloor).Hours()
+			pr.P5 -= s.Rate * math.Max(0, pr.Reset5.Hours()-e)
+			pr.P7 -= s.Rate / pr.ratio * math.Max(0, math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())-e)
+		}
+	}
+	pr.Hard = pr.Level5 >= c5 || pr.Level7 >= c7
+	switch {
+	case pr.P5 > c5 || pr.Level5 >= c5:
+		pr.Window = Win5h
+	case pr.P7 > c7 || pr.Level7 >= c7:
+		pr.Window = Win7d
+	}
+	if pr.P7-c7 > pr.P5-c5 && (pr.P7 > c7 || pr.Level7 >= c7) {
+		pr.Window = Win7d // the weekly one is further over
+	}
+	if r5 > 0 {
+		hit := math.Inf(1)
+		if t := (100 - pr.Level5) / r5; t <= pr.Reset5.Hours() && !ign5 {
+			hit = math.Max(0, t)
+		}
+		if t := (100 - pr.Level7) / (r5 / pr.ratio); t <= h7 && t < hit {
+			hit = math.Max(0, t)
+		}
+		if !math.IsInf(hit, 1) {
+			pr.Hit = time.Duration(hit * float64(time.Hour))
+		}
+	}
+	return pr
+}
+
+// destination is the first account that can take s: logged in on this machine, not its own,
+// not stale or excluded, of an organisation Orgs allows, not the account it left within
+// NoReturn (unless that 5-hour window reset since), under the account rate limit, and whose
+// projections with s's burn (and the burn already planned onto it this pass) stay Hysteresis
+// under its caps. Aggressive accounts first in the picker's order (draining ones, then the
+// soonest 5-hour reset, then the most room), protected ones last.
+func (p Params) destination(in Input, s Session, st *moveState, delta map[string]float64, u urgency) (string, string) {
+	now := in.Now
+	from := Org(s.Account)
+	var accs []Account
+	why := "no logged-in account on this machine has room for its burn"
+	for _, a := range in.Accounts {
+		if a.Key == s.Account || !a.LoggedIn || a.Stale || a.Excluded || a.Off || p.staleFor(a, in.Now) > 0 {
+			continue
+		}
+		if p.Orgs == OrgsSame && a.Org() != from {
+			why = "no account of its organisation has room (account.move_orgs = same)"
+			continue
+		}
+		accs = append(accs, a)
+	}
+	// Lanes under YoungGate count at the lane burn (else their measured burn), not 0: the
+	// trigger leaves out their first minutes but counts them 15 minutes in, and a move
+	// accepted onto an account of fresh lanes was then undone (live pre9: ai-lane-E, 27.1
+	// points/h, moved claude-6 → claude-2 at 10:00:58 while claude-2 had 6.5-8.7 points/h of
+	// young lanes left out; they burned 60-90 points/h by 10:10, "5h projected 95%").
+	byAcc := map[string][]Session{}
+	young := map[string]float64{}
+	fromReadings := map[string]bool{} // the readings' slope has their burn already
+	for _, a := range in.Accounts {
+		fromReadings[a.Key] = a.FromReadings
+	}
+	for _, x := range in.Sessions {
+		if !p.oldDest && !p.noYoungDest && p.young(x, now) && x.Rate <= 0 && !x.Stopped && !fromReadings[x.Account] {
+			r := x.YoungRate
+			if in.LaneRate > 0 {
+				r = in.LaneRate
 			}
-			on := append([]Session(nil), added[a.Key]...)
-			for _, x := range ss {
-				if x.Account == a.Key {
-					on = append(on, x)
+			x.Rate = r
+			young[x.Account] += r
+		}
+		byAcc[x.Account] = append(byAcc[x.Account], x)
+	}
+	// The trigger's projection of the account after the move (Project: to the resets, the
+	// moves planned this pass in delta), the moved session at its burn until its expected end
+	// as the trigger counts it there, Hysteresis under the caps: the next pass's trigger does
+	// not fire on it for this move.
+	room := func(a Account) (Projection, bool) {
+		r := math.Max(0, s.Rate)
+		a.Rate += young[a.Key]
+		pr := p.Project(a, byAcc[a.Key], delta[a.Key]+r, now)
+		if p.MinBurn >= 0 && !p.IdleMoves && s.Expected > 0 && r > 0 {
+			e := max(s.Expected, ExpectFloor).Hours()
+			pr.P5 -= r * math.Max(0, pr.Reset5.Hours()-e)
+			pr.P7 -= r / pr.ratio * math.Max(0, math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours())-e)
+		}
+		h5, h7 := p.destHyst(pr)
+		ok := pr.P5 <= pr.Cap5-h5 && pr.P7 <= pr.Cap7-h7 && pr.Level5 < pr.Cap5-h5 && pr.Level7 < pr.Cap7-h7
+		if p.resetsSoon(a, now) {
+			// The burn goes on past the reset: the next window must hold it too.
+			nx := p.nextWindow(a, byAcc[a.Key], delta[a.Key]+r, now)
+			if s.Expected > 0 && r > 0 {
+				e := max(s.Expected, ExpectFloor) - pr.Reset5
+				nx.P5 -= r * math.Max(0, 5-math.Max(0, e.Hours()))
+			}
+			n5, _ := p.destHyst(nx)
+			if nx.P5 > nx.Cap5-n5 {
+				ok = false
+				nx.P7, nx.Level7 = 0, 0
+				nx.Cap5 -= n5
+				pr.nextFit = pr.Reset5 + min(p.fitFor(nx), 5*time.Hour)
+			}
+		}
+		return pr, ok
+	}
+	if p.DestHorizon > 0 && p.oldDest {
+		full := room
+		room = func(a Account) (Projection, bool) {
+			if a.Protected {
+				return full(a)
+			}
+			// Its own projection, plus this session for the horizon only.
+			pr := p.Project(a, byAcc[a.Key], delta[a.Key], now)
+			h := s.Expected
+			if h <= 0 {
+				h = p.DestHorizon
+			}
+			h = max(min(h, pr.Reset5), DestFloor)
+			r := math.Max(0, s.Rate)
+			pr.P5 += r * min(h, pr.Reset5).Hours()
+			pr.P7 += r / pr.ratio * math.Min(h.Hours(), math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours()))
+			h5, h7 := p.hyst(pr)
+			return pr, pr.P5 <= pr.Cap5-h5 && pr.P7 <= pr.Cap7-h7 && pr.Level5 < pr.Cap5-h5 && pr.Level7 < pr.Cap7-h7
+		}
+	}
+	idx := map[string]int{}
+	for i, a := range in.Accounts {
+		idx[a.Key] = i
+	}
+	head := map[string]float64{}
+	for _, a := range accs {
+		pr, _ := room(a)
+		head[a.Key] = math.Min(pr.Cap5-pr.P5, pr.Cap7-pr.P7)
+	}
+	far := now.Add(1000 * time.Hour)
+	reset := func(a Account) time.Time {
+		if a.W5.Reset.After(now) {
+			return a.W5.Reset
+		}
+		return far // not started: its room does not expire
+	}
+	sort.SliceStable(accs, func(i, j int) bool {
+		x, y := accs[i], accs[j]
+		if x.Protected != y.Protected {
+			return !x.Protected
+		}
+		if p.Orgs == OrgsSameFirst && (x.Org() == from) != (y.Org() == from) {
+			return x.Org() == from
+		}
+		if x.Drain != y.Drain {
+			return x.Drain
+		}
+		if rx, ry := reset(x), reset(y); !rx.Equal(ry) {
+			return rx.Before(ry)
+		}
+		if head[x.Key] != head[y.Key] {
+			return head[x.Key] > head[y.Key]
+		}
+		return idx[x.Key] < idx[y.Key]
+	})
+	last, moved := st.last[s.ID]
+	limited := func(a Account) bool {
+		if u.near {
+			return false // the rate limit holds back only soft triggers, not a near hit
+		}
+		if p.AccountMoves > 0 && st.movedIn[a.Key] >= p.AccountMoves && p.countsAsMove(s.Rate) {
+			return true
+		}
+		return !p.oldChurn && p.AccountBurn > 0 && st.burnIn[a.Key] > 0 && st.burnIn[a.Key]+math.Max(0, s.Rate) > p.AccountBurn
+	}
+	noReturn := func(a Account) bool {
+		return moved && p.NoReturn > 0 && last.From == a.Key && now.Sub(last.At) < p.NoReturn && !resetSince(a, last.At, now)
+	}
+	for i, a := range accs {
+		if noReturn(a) {
+			continue
+		}
+		if limited(a) {
+			why = "the accounts with room took their moves for now (account rate limit)"
+			continue
+		}
+		if a.Protected && !p.oldChurn {
+			// Before a protected account: an aggressive one with room that only the anti-churn
+			// limits held back takes it (its projection check is the real guard).
+			for _, b := range accs[:i] {
+				if !b.Protected && !noReturn(b) && limited(b) {
+					if _, ok := room(b); ok {
+						return b.Key, ""
+					}
 				}
 			}
-			moved := s
-			moved.Account, moved.Stopped = a.Key, false
-			if p.Fixed5h > 0 {
-				if a.W5.Level < p.Fixed5h && a.W7.Level < 98 {
-					return a.Key, ""
-				}
+		}
+		if _, ok := room(a); ok {
+			return a.Key, ""
+		}
+	}
+	// Only aggressive accounts were left, held back by the limits: the one with room takes it.
+	for _, b := range accs {
+		if p.oldChurn {
+			break
+		}
+		if !b.Protected && !noReturn(b) && limited(b) {
+			if _, ok := room(b); ok {
+				return b.Key, ""
+			}
+		}
+	}
+	// None has room for it to its reset, but the source will hit 100% before its own: the
+	// account that stays under its caps the longest with it takes it, when that is at least
+	// as long as the source has left (and ExpectFloor): a move that buys 2 hours beats a hit
+	// in 20 minutes (live pre9 10:31: claude-4 at 99%, its 25.9 and 16.9 points/h burners
+	// stayed, "no logged-in account on this machine has room for its burn", while claude-6
+	// was at 16% and claude-2 at 34%). Only for an urgent source (a soft trigger waits: a
+	// destination over its caps by its reset triggers there in turn), and only onto an
+	// aggressive account (a protected one keeps its room).
+	//
+	// The destination must last BestMargin longer than the source (and BestFloor at least),
+	// each as this pass leaves it (the moves planned into and off both), and must not be an
+	// account this pass moves burners off or that sent burn to the source within NoReturn: a
+	// move re-reads the session's whole context, and swapping burners between two accounts
+	// that both hit buys nothing (live pre24 02:47-02:52: owner-drained claude-6 and claude-7
+	// both over their 5h caps swapped eight 1.1-5.6 points/h sessions, 7->6 "fits for 41m"
+	// against the 36m the source had left, then 6->7 "fits for 37m" against 36m).
+	if u.near && !p.oldChurn && !p.oldDest && u.hit >= 0 {
+		need := max(u.hit+BestMargin, BestFloor)
+		best, bestFit, label := "", time.Duration(0), ""
+		for _, b := range accs {
+			if b.Protected || noReturn(b) || st.off[b.Key] || p.sentTo(in, b, s.Account) {
 				continue
 			}
-			f := p.Forecast(a, append(on, moved), in.Now, p.Hysteresis)
-			if _, hits := f.First(); !hits {
-				return a.Key, ""
+			pr, _ := room(b)
+			if f := p.fitFor(pr); f >= need && f > bestFit {
+				best, bestFit, label = b.Key, f, b.Label
 			}
+		}
+		if best != "" {
+			st.bestFit = bestFit
+			return best, fmt.Sprintf("best available: %s fits for %s (no account has room for it to its reset; this one stays under its caps longer than the %s %s has left)",
+				label, fmtDur(bestFit), fmtDur(u.hit), "the source")
 		}
 	}
 	return "", why
+}
+
+// BestMargin is how much longer than the source a best-available destination must stay under
+// its caps with the session; BestFloor the least it must (a move re-reads the whole context).
+const (
+	BestMargin = 30 * time.Minute
+	BestFloor  = time.Hour
+)
+
+// sentTo reports whether a move from account b to account to happened within NoReturn with
+// b's 5-hour window not reset since (a best-available move back would swap burn between them).
+func (p Params) sentTo(in Input, b Account, to string) bool {
+	for _, r := range in.Recent {
+		if !r.Alias && r.From == b.Key && r.To == to && p.NoReturn > 0 && in.Now.Sub(r.At) < p.NoReturn && !resetSince(b, r.At, in.Now) {
+			return true
+		}
+	}
+	return false
+}
+
+// urgency is how pressing a source's moves are: near (a hit within UrgentWithin, a cap reached
+// now, or a stopped session) lifts the account rate limit and puts the highest burner first;
+// hit is the time to its projected 100% (-1: none before its resets), for the best-available
+// destination.
+type urgency struct {
+	near bool
+	hit  time.Duration
+}
+
+func (p Params) urgencyOf(pr Projection) urgency {
+	u := urgency{hit: pr.Hit}
+	if pr.Hard || (pr.Level5 >= 100 && !pr.Ign5) || pr.Level7 >= 100 {
+		u.hit = 0
+	}
+	u.near = p.UrgentWithin > 0 && u.hit >= 0 && u.hit < p.UrgentWithin
+	return u
+}
+
+// fitFor is how long an account's projection stays under its caps (its burn to the resets as
+// the projection counts it, spread evenly): the full time to its reset when it fits to it.
+func (p Params) fitFor(pr Projection) time.Duration {
+	fit := time.Duration(math.MaxInt64)
+	one := func(level, proj, cap, h float64) {
+		if h <= 0 {
+			return
+		}
+		if level >= cap {
+			fit = 0
+			return
+		}
+		r := (proj - level) / h
+		if r <= 0 || proj <= cap {
+			return
+		}
+		if t := time.Duration((cap - level) / r * float64(time.Hour)); t < fit {
+			fit = t
+		}
+	}
+	one(pr.Level5, pr.P5, pr.Cap5, pr.Reset5.Hours())
+	one(pr.Level7, pr.P7, pr.Cap7, math.Min(pr.Reset7.Hours(), p.WeekSpan.Hours()))
+	if pr.nextFit > 0 && pr.nextFit < fit {
+		fit = pr.nextFit // over its cap in the window after its reset
+	}
+	return fit
+}
+
+// fmtDur is a duration as "2h10m" (minutes only under an hour).
+func fmtDur(d time.Duration) string {
+	if d <= 0 {
+		return "0m"
+	}
+	d = d.Round(time.Minute)
+	if d >= time.Hour {
+		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+	return fmt.Sprintf("%dm", int(d.Minutes()))
+}
+
+// countsAsMove: a move of a session burning rate counts against AccountMoves (one under the
+// burn floor frees nothing and is not churn worth limiting; with MinBurn negative all count).
+func (p Params) countsAsMove(rate float64) bool {
+	return p.oldChurn || p.MinBurn < 0 || rate >= p.MinBurn
+}
+
+// resetSince reports whether a's 5-hour window reset after t.
+func resetSince(a Account, t, now time.Time) bool {
+	if a.W5.Reset.IsZero() || !a.W5.Reset.After(now) {
+		return true // not started since: it reset
+	}
+	return a.W5.Reset.Add(-5 * time.Hour).After(t)
 }
 
 // Org is the organisation part of an account key ("acct:<account>/<org>"; "" when none).
@@ -480,50 +1795,191 @@ func Org(key string) string {
 	return ""
 }
 
+// Clock is t as the owner reads it in notes, notices, reasons and alerts: "15:04" within 24
+// hours of now, else with its weekday ("Thu 03:30"), and its date beyond 6 days ("Dec 2 03:30").
+func Clock(t, now time.Time) string {
+	t = t.Local()
+	switch d := t.Sub(now); {
+	case d > -24*time.Hour && d < 24*time.Hour:
+		return t.Format("15:04")
+	case d > -6*24*time.Hour && d < 6*24*time.Hour:
+		return t.Format("Mon 15:04")
+	}
+	return t.Format("Jan 2 15:04")
+}
+
 // reason is the move's one-line explanation.
-func (p Params) reason(a Account, f WindowForecast, s Session, mv Move, why string) string {
+func (p Params) reason(a Account, mv Move, why string, now time.Time) string {
 	var b strings.Builder
 	switch {
-	case s.Stopped:
-		fmt.Fprintf(&b, "stopped at the %s limit", f.Window)
-	case p.Fixed5h > 0:
-		fmt.Fprintf(&b, "5h %.0f%% >= %.0f%%", a.W5.Level, p.Fixed5h)
+	case mv.Stopped:
+		fmt.Fprintf(&b, "stopped at the %s limit (resets %s)", mv.Window, Clock(mv.ResetAt, now))
 	default:
-		fmt.Fprintf(&b, "%s would hit %.0f%% at %s, before its reset at %s (burn %.0f%%/h)", f.Window, f.Limit,
-			mv.HitAt.Local().Format("15:04"), mv.ResetAt.Local().Format("15:04"), f.BurnRate)
+		fmt.Fprintf(&b, "%s projected %.0f%% (cap %.0f%%) at %.1f points/h of burn", mv.Window, mv.P, p.capOf(a, mv.Window, now), mv.Rate)
+		if mv.HitAt.After(now) {
+			fmt.Fprintf(&b, ", 100%% at %s", Clock(mv.HitAt, now))
+		}
+		if mv.MidTurn {
+			b.WriteString("; mid-turn")
+		}
 	}
-	if mv.Wait {
-		b.WriteString("; mid-turn: moves when it stops")
+	if mv.OrgChanged {
+		b.WriteString("; another organisation")
 	}
-	if mv.To == "" {
+	switch {
+	case mv.To == "":
 		b.WriteString("; not moved: " + why)
+	case why != "":
+		b.WriteString("; " + why)
 	}
 	return b.String()
 }
 
-// Destination is the account a move of session id would go to now under in.Params (wy move
-// without an account), or "" and why none can take it.
+func (p Params) capOf(a Account, w string, now time.Time) float64 {
+	c5, c7 := p.caps(a, now)
+	if w == Win7d {
+		return math.Max(0, c7-math.Max(0, a.Reserve7))
+	}
+	return math.Max(0, c5-math.Max(0, a.Reserve5))
+}
+
+// pinAlerts are the accounts whose pinned sessions alone take them to 100 before the window
+// resets, within PinAlertWithin (setup.md 8.6, Pinned sessions): the switch cannot help (they
+// never move), so the owner is told with the command to move one by hand. Pinned here means
+// opted out by the owner and burning; the account's own rate (other machines) is not counted.
+func (p Params) pinAlerts(in Input, byAcc map[string][]Session) []Alert {
+	if p.PinAlertWithin <= 0 {
+		return nil
+	}
+	var out []Alert
+	for _, a := range in.Accounts {
+		var pins []Session
+		for _, s := range byAcc[a.Key] {
+			if s.Pinned && s.Rate > 0 && !s.Stopped {
+				pins = append(pins, s)
+			}
+		}
+		if len(pins) == 0 {
+			continue
+		}
+		b := a
+		b.Rate, b.Reserve5, b.Reserve7 = 0, 0, 0
+		pr := p.Project(b, pins, 0, in.Now)
+		if pr.Hit < 0 || pr.Hit > p.PinAlertWithin {
+			continue
+		}
+		w, reset := Win5h, pr.Reset5
+		if t5 := (100 - pr.Level5) / pr.R5; t5 > pr.Reset5.Hours() || t5 > pr.Hit.Hours()+1e-9 {
+			w, reset = Win7d, pr.Reset7 // the weekly window is the one it hits
+		}
+		sort.SliceStable(pins, func(i, j int) bool { return pins[i].Rate > pins[j].Rate })
+		al := Alert{Session: pins[0].ID, Account: a.Key, Window: w, P: pr.pOf(w), Rate: pr.R5, HitAt: in.Now.Add(pr.Hit),
+			ResetAt: in.Now.Add(reset), In: pr.Hit, Level: pr.Level5}
+		if w == Win7d {
+			al.Level = pr.Level7
+		}
+		out = append(out, al)
+	}
+	return out
+}
+
+// Destination is the account a move of session id would go to now (wy move without an
+// account), or "" and why none can take it.
 func Destination(in Input, id string) (string, string) {
-	p := in.Params
-	var s Session
-	found := false
-	for _, x := range in.Sessions {
-		if x.ID == id {
-			s, found = x, true
+	for _, s := range in.Sessions {
+		if s.ID == id {
+			return in.Params.destination(in, s, in.Params.newMoveState(in), map[string]float64{}, urgency{hit: -1})
 		}
 	}
-	if !found {
-		return "", "the session is not known"
-	}
-	movedIn := map[string]int{}
-	var last Record
-	for _, r := range in.Recent {
-		if p.AccountWindow > 0 && in.Now.Sub(r.At) < p.AccountWindow {
-			movedIn[r.To]++
+	return "", "the session is not known"
+}
+
+// Recheck re-chooses a planned move just before it is carried out, on state in read again
+// after the session's step wait (setup.md 8.6, Re-check): the plan was made on readings and
+// burns up to a step wait old (live pre10: 441d209b, planned onto protected claude-7 at
+// 11:57:35 when claude-4 projected 90.2 of 90, moved at 11:58:41 when claude-4 had room).
+// It plans again (the session's own move lock left out): no move for it now (the source no
+// longer needs it, or another session's move is enough) drops it (ok false, why); another
+// destination takes it, with the change in Move.Recheck; the same one keeps the move as
+// planned (the new reason and burn).
+func Recheck(in Input, mv Move) (Move, string, bool) {
+	ss := append([]Session(nil), in.Sessions...)
+	for i := range ss {
+		if ss[i].ID == mv.Session {
+			ss[i].Moving = false // its own move holds its lock
 		}
-		if r.Session == id && r.At.After(last.At) {
-			last = r
+	}
+	in.Sessions = ss
+	label := func(key string) string {
+		for _, a := range in.Accounts {
+			if a.Key == key {
+				return a.Label
+			}
+		}
+		return key
+	}
+	r := Plan(in)
+	for _, x := range r.Moves {
+		if x.Session != mv.Session {
+			continue
+		}
+		if x.To == "" {
+			return mv, "re-checked after its step wait: " + reasonTail(x.Reason), false
+		}
+		x.MidTurn, x.StepEnded, x.StepTool, x.StepCmd = mv.MidTurn, mv.StepEnded, mv.StepTool, mv.StepCmd
+		if x.To != mv.To {
+			x.Recheck = fmt.Sprintf("re-checked after its step wait: %s, not %s as planned", label(x.To), label(mv.To))
+		}
+		return x, x.Recheck, true
+	}
+	for _, k := range r.Skips {
+		if k.Session == mv.Session {
+			return mv, "re-checked after its step wait: " + k.Why, false
 		}
 	}
-	return p.destination(in, s, last, movedIn, map[string][]Session{})
+	return mv, "re-checked after its step wait: " + label(mv.From) + " no longer needs it", false
+}
+
+// reasonTail is the part of a move reason after "not moved: ".
+func reasonTail(r string) string {
+	if i := strings.Index(r, "not moved: "); i >= 0 {
+		return r[i+len("not moved: "):]
+	}
+	return r
+}
+
+// DestFloor is the shortest horizon a destination was judged on (Params.DestHorizon, the
+// simulator's comparison row).
+const DestFloor = time.Hour
+
+// ExpectFloor: a session inside its expected duration (its lease's --expect) burns, as the
+// switch's trigger and destination check and the picker's switch-projection check all count
+// it, for max(its expected remaining time, ExpectFloor), at most to each window's horizon
+// (the 5-hour reset; min(the weekly reset, WeekSpan)); once it overruns (or with none
+// expected), to the full horizon. One rule, so the switch never undoes what the picker or the
+// switch itself just did (live pre7: 2de58a08 leased on claude-3 at 07:36, moved off at
+// 07:53).
+const ExpectFloor = 30 * time.Minute
+
+// reRead is s's re-read cost: its context (at least 20,000 tokens) × its model factor.
+func reRead(s Session) float64 {
+	f := s.ModelFactor
+	if f <= 0 {
+		f = 3
+	}
+	return math.Max(s.Context, 20_000) * f
+}
+
+// ModelFactor is a model's re-read price relative to haiku: opus 5, sonnet 3, haiku 1 (0:
+// unknown).
+func ModelFactor(model string) float64 {
+	switch m := strings.ToLower(model); {
+	case strings.Contains(m, "opus"):
+		return 5
+	case strings.Contains(m, "sonnet"):
+		return 3
+	case strings.Contains(m, "haiku"):
+		return 1
+	}
+	return 0
 }

@@ -27,6 +27,9 @@ func runConfig(args []string, stdout, stderr io.Writer) error {
 	for _, a := range rest {
 		if a == "--insecure-lan" || a == "-insecure-lan" {
 			*insecure = true
+		} else if len(a) > 2 && strings.HasPrefix(a, "--") {
+			fmt.Fprintf(stderr, "wy config: %q is not a flag of wy config and not a value: nothing changed\n", a)
+			return errUsage
 		} else {
 			kept = append(kept, a)
 		}

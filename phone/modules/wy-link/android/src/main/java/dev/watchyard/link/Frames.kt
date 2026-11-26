@@ -137,12 +137,25 @@ object Payloads {
   private fun isUsageNotice(trigger: String?): Boolean =
     trigger == "limit_change" || trigger == "usage_reset" || trigger == "seat_change" || trigger == "weekly_drop"
 
-  /** P6.1's channel for the trigger; `wy_test` for tests. */
-  fun channelFor(type: String, trigger: String?): String = when {
+  /** push.md 3.9's switch notices: a machine's automatic moves and its daily digest. */
+  private fun isSwitchNotice(trigger: String?): Boolean = trigger == "session_moved" || trigger == "switch_digest"
+
+  /** push.md 3.9's drain notices. */
+  private fun isDrainNotice(trigger: String?): Boolean =
+    trigger == "drain_started" || trigger == "drain_ended" || trigger == "drain_pulled"
+
+  /**
+   * P6.1's channel: the payload's own `channel` when it is one of ours (the hub decides), else the
+   * mapping by type and trigger (hubs before categories send none); `wy_test` for tests.
+   */
+  fun channelFor(type: String, trigger: String?, payloadChannel: String? = null): String = when {
+    payloadChannel != null && payloadChannel in Channels.KNOWN -> payloadChannel
     type == "test" -> Channels.TEST
     type == "summary" -> Channels.NEEDS_YOU
     trigger == "limit_80" || trigger == "limit_95" || trigger == "reset" -> Channels.LIMITS
     trigger == "machine_silent" -> Channels.MACHINES
+    isSwitchNotice(trigger) -> Channels.SWITCH
+    isDrainNotice(trigger) -> Channels.DRAIN
     isUsageNotice(trigger) -> Channels.USAGE
     else -> Channels.NEEDS_YOU
   }
@@ -153,9 +166,9 @@ object Payloads {
     type == "summary" -> IconKind.SUMMARY
     trigger == "needs_permission" || trigger == "asked" -> IconKind.NEEDS_YOU
     trigger == "failed" -> IconKind.FAILED
-    trigger == "limit_80" || trigger == "limit_95" || isUsageNotice(trigger) -> IconKind.LIMIT
+    trigger == "limit_80" || trigger == "limit_95" || isUsageNotice(trigger) || isDrainNotice(trigger) -> IconKind.LIMIT
     trigger == "reset" -> IconKind.RESET
-    trigger == "machine_silent" -> IconKind.MACHINE
+    trigger == "machine_silent" || isSwitchNotice(trigger) -> IconKind.MACHINE
     else -> IconKind.GENERIC
   }
 
@@ -182,7 +195,7 @@ object Payloads {
       tag = o.optString("tag", frameTag).ifEmpty { frameTag },
       title = o.optString("title", ""),
       body = o.optString("body", ""),
-      channel = channelFor(type, o.optString("trigger").ifEmpty { null }),
+      channel = channelFor(type, o.optString("trigger").ifEmpty { null }, o.optString("channel").ifEmpty { null }),
       whenMs = o.optString("ts").takeIf { it.isNotEmpty() && it != "null" }?.let(::parseIso),
       url = o.optString("url", "/#/"),
       remoteUrl = claudeUrl(o.optString("remote_url")),

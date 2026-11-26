@@ -25,6 +25,9 @@ export interface Payload {
   alert?: string;
   alerts?: string[];
   trigger?: Trigger;
+  /** The Android channel id (P6.1) and the category it belongs to; hubs before categories omit both. */
+  channel?: string;
+  category?: string;
   title: string;
   body: string;
   tag: string;
@@ -56,7 +59,12 @@ export const PAYLOAD_KEYS = [
   'actions',
   'private',
   'ts',
+  'channel',
+  'category',
 ] as const;
+
+/** Payload keys whose place in Go's order is not pinned (`channel`, `category`): they may sit anywhere. */
+export const PAYLOAD_FLOATING_KEYS = ['channel', 'category'] as const;
 
 /** The widget refresh payload (push.md 12.9): never shown, never an alert. */
 export interface RefreshData {
@@ -67,4 +75,11 @@ export interface RefreshData {
 }
 
 /** Android channels (phone.md P6.1). */
-export type AndroidChannelId = 'wy_needs_you' | 'wy_limits' | 'wy_machines' | 'wy_usage' | 'wy_test';
+export type AndroidChannelId =
+  | 'wy_needs_you'
+  | 'wy_limits'
+  | 'wy_switch'
+  | 'wy_drain'
+  | 'wy_usage'
+  | 'wy_machines'
+  | 'wy_test';

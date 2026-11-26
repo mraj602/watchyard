@@ -68,6 +68,13 @@ type Line struct {
 	FinishBy *time.Time `json:"finish_by,omitempty"`
 	// MovedFrom: the session moved here from the account with this label (setup.md 8.6).
 	MovedFrom string `json:"moved_from,omitempty"`
+	// Expect: the lane's size class as the picker counted it (short, medium, long; "medium"
+	// also without --expect) and ExpectMin its expected minutes; ExpectEnd when it is expected
+	// to end (the pick + ExpectMin; a move lease keeps its session's). The switch projects the
+	// session's burn to ExpectEnd while it runs inside it (setup.md 8.6). Absent on older lines.
+	Expect    string     `json:"expect,omitempty"`
+	ExpectMin float64    `json:"expect_min,omitempty"`
+	ExpectEnd *time.Time `json:"expect_end,omitempty"`
 	// Parent is the session that asked for the lease (its id), when it was asked from inside
 	// a session: Watchyard tells it when the lane moves (setup.md 8.6).
 	Parent string `json:"parent,omitempty"`

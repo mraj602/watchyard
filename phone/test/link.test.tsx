@@ -413,6 +413,36 @@ describe('Settings → Notifications', () => {
     openURL.mockRestore();
   });
 
+  it('Categories: one switch per category, on unless muted; a switch writes mute_categories (merged with the other prefs)', async () => {
+    const dev = { ...linkDevice(), prefs: { tap: 'claude', mute_categories: ['usage'] } } as unknown as Device;
+    const client = fakeClient({ deviceSelf: jest.fn(async () => dev) });
+    await show({ client });
+    expect(await screen.findByText('Categories')).toBeTruthy();
+    expect(screen.getByText('Off: your hub does not send them to this phone. Sound and importance: your phone\'s settings for each channel.')).toBeTruthy();
+    for (const id of ['sessions', 'limits', 'switch', 'drain', 'machines']) expect(screen.getByTestId(`cat-${id}`).props.value).toBe(true);
+    expect(screen.getByTestId('cat-usage').props.value).toBe(false);
+    await fireEvent(screen.getByTestId('cat-drain'), 'valueChange', false);
+    expect(client.patchSelf).toHaveBeenCalledWith({ tap: 'claude', mute_categories: ['drain', 'usage'] });
+    await waitFor(() => expect(screen.getByTestId('cat-drain').props.value).toBe(false));
+    await fireEvent(screen.getByTestId('cat-usage'), 'valueChange', true);
+    expect(client.patchSelf).toHaveBeenLastCalledWith({ tap: 'claude', mute_categories: ['drain'] });
+  });
+
+  it('Categories: a refused save puts the switch back and says why', async () => {
+    const client = fakeClient({ deviceSelf: jest.fn(async () => linkDevice()), patchSelf: jest.fn(async () => { throw new Error('nope'); }) });
+    await show({ client });
+    await fireEvent(await screen.findByTestId('cat-switch'), 'valueChange', false);
+    expect(await screen.findByText('nope')).toBeTruthy();
+    expect(screen.getByTestId('cat-switch').props.value).toBe(true);
+  });
+
+  it('Categories: Sound… opens the system settings of that category\'s channel', async () => {
+    await show();
+    await fireEvent.press(await screen.findByTestId('cat-sound-switch'));
+    await fireEvent.press(screen.getByTestId('cat-sound-sessions'));
+    expect(callsOf('notifications.openChannelSettingsAsync').map((c) => c.args[0])).toEqual(['wy_switch', 'wy_needs_you']);
+  });
+
   it('a phone without a link target is told to pair again', async () => {
     const client = fakeClient({ deviceSelf: jest.fn(async () => ({ ...linkDevice(), targets: [] })) });
     await show({ client });

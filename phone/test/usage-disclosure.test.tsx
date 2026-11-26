@@ -146,8 +146,8 @@ describe('Usage and the picker', () => {
 
 describe('How should the picker use this account?', () => {
   const ME_OWNER = { ...fx.me, owner: true } as never;
-  const openWith = async (client: ReturnType<typeof fakeClient>, owner: boolean, seatMode?: 'protected' | 'aggressive' | null, extra: object = {}) => {
-    const accounts = fx.accounts.accounts.map((x) => (x.id === 'seat_work' ? { ...x, mode: seatMode } : x));
+  const openWith = async (client: ReturnType<typeof fakeClient>, owner: boolean, seatMode?: 'protected' | 'aggressive' | 'off' | null, extra: object = {}, seatExtra: object = {}) => {
+    const accounts = fx.accounts.accounts.map((x) => (x.id === 'seat_work' ? { ...x, mode: seatMode, ...seatExtra } : x));
     const h = makeHarness({ client, data: { accounts: accounts as never }, api: { ...(owner ? { me: ME_OWNER } : {}), ...extra } });
     await render(<AccountsScreen />, { wrapper: h.Wrapper });
     await fireEvent.press(screen.getByTestId('row-seat_work'));
@@ -169,17 +169,54 @@ describe('How should the picker use this account?', () => {
     expect(screen.queryByTestId('mode-current-seat_work')).toBeNull();
   });
 
-  it('the owner has three options with definitions and a choice saves at once', async () => {
+  it('the owner has the options with definitions and a choice saves at once', async () => {
     const client = fakeClient();
     const kick = jest.fn(() => new Promise<void>(() => undefined)); // the refresh is still on its way: the choice shows meanwhile
     await openWith(client, true, null, { kick });
     expect(screen.getByTestId('mode-seat_work-protected')).toHaveTextContent(/^Protected.*Kept for you\./);
     expect(screen.getByTestId('mode-seat_work-aggressive')).toHaveTextContent(/^AggressiveUse it up. Sessions go here until 98% of the week or 5 hours.$/);
     expect(screen.getByTestId('mode-seat_work-none')).toHaveTextContent(/^Not chosenNot chosen yet; treated as aggressive.$/);
+    expect(screen.getByTestId('mode-seat_work-drain')).toHaveTextContent(/^DrainUse it up now/);
+    expect(screen.getByTestId('mode-seat_work-off')).toHaveTextContent(/^OffNever picked, nothing moved in; sessions already there stay/);
     await fireEvent.press(screen.getByTestId('mode-seat_work-protected'));
-    expect(client.patchSeat).toHaveBeenCalledWith('seat_work', { mode: 'protected' });
+    expect(client.patchSeat).toHaveBeenCalledWith('seat_work', { mode: 'protected', drain_until: null });
     await waitFor(() => expect(kick).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByTestId('mode-seat_work-protected').props.accessibilityState.checked).toBe(true));
+  });
+
+  it('Off sends only the mode, and shows what it means', async () => {
+    const client = fakeClient();
+    await openWith(client, true, 'protected', { kick: jest.fn(async () => undefined) });
+    await fireEvent.press(screen.getByTestId('mode-seat_work-off'));
+    expect(client.patchSeat).toHaveBeenCalledWith('seat_work', { mode: 'off' });
+  });
+
+  it('shows Off to a reader in words', async () => {
+    await openWith(fakeClient(), false, 'off');
+    expect(screen.getByTestId('mode-current-seat_work')).toHaveTextContent(/^Off\. Never picked, nothing moved in; sessions already there stay/);
+  });
+
+  it('Drain asks for an end time and sends drain_until; from Off it also leaves Off', async () => {
+    const client = fakeClient();
+    await openWith(client, true, 'off', { kick: jest.fn(async () => undefined) });
+    expect(screen.queryByTestId('drain-choices-seat_work')).toBeNull();
+    await fireEvent.press(screen.getByTestId('mode-seat_work-drain'));
+    expect(screen.getByTestId('drain-choices-seat_work')).toBeTruthy();
+    await fireEvent.press(screen.getByTestId('drain-seat_work-4h'));
+    expect(client.patchSeat).toHaveBeenCalledWith('seat_work', { mode: null, drain_until: new Date(NOW + 4 * 3_600_000).toISOString() });
+  });
+
+  it('a drain from a mode sends just the end; a draining account shows when it ends and a mode pick stops it', async () => {
+    const client = fakeClient();
+    const until = new Date(NOW + 3_600_000);
+    await openWith(client, true, 'protected', { kick: jest.fn(async () => undefined) }, { drain_until: until.toISOString() });
+    const hh = String(until.getHours()).padStart(2, '0');
+    const mm = String(until.getMinutes()).padStart(2, '0');
+    expect(screen.getByTestId('mode-drain-seat_work')).toHaveTextContent(`Draining until ${hh}:${mm}`);
+    expect(screen.getByTestId('mode-seat_work-drain').props.accessibilityState.checked).toBe(true);
+    expect(screen.getByTestId('mode-seat_work-protected').props.accessibilityState.checked).toBe(false);
+    await fireEvent.press(screen.getByTestId('mode-seat_work-protected'));
+    expect(client.patchSeat).toHaveBeenCalledWith('seat_work', { mode: 'protected', drain_until: null });
   });
 
   it('a refusal puts the old choice back and says why', async () => {

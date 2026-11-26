@@ -210,6 +210,7 @@ func (e *Engine) Notify(ch ingest.Changes) {
 	for id := range ch.Machines {
 		e.changes.Machines[id] = true
 	}
+	e.changes.Notices = append(e.changes.Notices, ch.Notices...)
 	if len(ch.More) > 0 {
 		now := e.clk.Now()
 		for id, more := range ch.More {

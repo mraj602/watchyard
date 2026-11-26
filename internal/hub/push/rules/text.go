@@ -175,7 +175,7 @@ func URL(a model.Alert) string {
 		return "/#/sessions/" + *a.Session + "?alert=" + a.ID
 	case IsWindowTrigger(a.Trigger) && a.Seat != nil:
 		return "/#/accounts?seat=" + *a.Seat
-	case a.Trigger == model.TriggerMachineSilent && a.Machine != nil:
+	case (a.Trigger == model.TriggerMachineSilent || a.Trigger.FromMachine()) && a.Machine != nil:
 		return "/#/machines?machine=" + *a.Machine
 	case a.Trigger.IsNotice() && a.Seat != nil:
 		return "/#/accounts?seat=" + *a.Seat
@@ -204,6 +204,10 @@ func Tag(a model.Alert) string {
 		return "wy-m-" + deref(a.Machine)
 	case a.Trigger == model.TriggerLimitChange:
 		return "wy-u-" + string(a.Trigger) + "-" + a.Facts.Model
+	case a.Trigger.FromMachine():
+		return "wy-u-" + string(a.Trigger) + "-" + deref(a.Machine)
+	case a.Trigger == model.TriggerDrainStarted || a.Trigger == model.TriggerDrainEnded:
+		return "wy-d-" + deref(a.Seat)
 	case a.Trigger.IsNotice():
 		return "wy-u-" + string(a.Trigger) + "-" + deref(a.Seat)
 	}
@@ -221,6 +225,16 @@ func privateText(t model.Trigger) string {
 		return "An account is near its limit"
 	case t == model.TriggerMachineSilent:
 		return "A machine went quiet"
+	case t == model.TriggerSessionMoved:
+		return "A session moved to another account"
+	case t == model.TriggerSwitchDigest:
+		return "The switch digest is ready"
+	case t == model.TriggerDrainStarted:
+		return "An account is draining"
+	case t == model.TriggerDrainEnded:
+		return "An account's drain ended"
+	case t == model.TriggerDrainPulled:
+		return "Sessions moved to a draining account"
 	case t.IsNotice():
 		return "Account usage changed"
 	}
@@ -283,7 +297,9 @@ func Render(a model.Alert, o TextOptions) Text {
 			last = "last record " + Clock(f.LastSeen.Std(), o.Now, o.Loc)
 		}
 		out.Body = join(live, last)
-	case model.TriggerLimitChange, model.TriggerUsageReset, model.TriggerSeatChange, model.TriggerWeeklyDrop:
+	case model.TriggerLimitChange, model.TriggerUsageReset, model.TriggerSeatChange, model.TriggerWeeklyDrop,
+		model.TriggerSessionMoved, model.TriggerSwitchDigest, model.TriggerDrainStarted, model.TriggerDrainEnded,
+		model.TriggerDrainPulled:
 		out.Title, out.Body = noticeText(a, o)
 	default:
 		out.Title = string(a.Trigger)
@@ -357,9 +373,54 @@ func noticeText(a model.Alert, o TextOptions) (string, string) {
 			reset = "no reset (resets " + r + ")"
 		}
 		return join(seatOf(f), "7-day dropped "+pct(f.Peak)+" → "+pct(f.Pct)), join("Something changed, check", reset)
+	case model.TriggerSessionMoved, model.TriggerSwitchDigest:
+		name := f.Machine
+		if name == "" && a.Machine != nil {
+			name = *a.Machine
+		}
+		title := "Switch digest"
+		if a.Trigger == model.TriggerSessionMoved {
+			title = "Moved a session"
+			if f.Moves > 1 {
+				title = fmt.Sprintf("Moved %d sessions", f.Moves)
+			}
+		}
+		return join(name, title), f.Message
+	case model.TriggerDrainPulled:
+		name := f.Machine
+		if name == "" && a.Machine != nil {
+			name = *a.Machine
+		}
+		title := "Pulled a session into a draining account"
+		if f.Moves > 1 {
+			title = fmt.Sprintf("Pulled %d sessions into a draining account", f.Moves)
+		}
+		return join(name, title), f.Message
+	case model.TriggerDrainStarted:
+		until := "its end"
+		if f.ResetsAt != 0 {
+			until = Clock(f.ResetsAt.Std(), o.Now, o.Loc)
+		}
+		return join(seatOf(f), "draining until "+until),
+			"New sessions go to it first and busy ones are pulled in, up to 97% of its week"
+	case model.TriggerDrainEnded:
+		body := "Back to its usual mode"
+		switch f.Detail {
+		case DrainEndAim:
+			body = "Its week reached " + pct(f.Pct) + "; back to its usual mode"
+		case DrainEndTime:
+			body = "Its end time came at " + pct(f.Pct) + " of its week; back to its usual mode"
+		}
+		return join(seatOf(f), "drain ended"), body
 	}
 	return string(a.Trigger), ""
 }
+
+// Why a drain ended (Facts.Detail of drain_ended).
+const (
+	DrainEndTime = "time"
+	DrainEndAim  = "aim"
+)
 
 // silentFor is "20 min" under 55 min, else "1 h" or "2 h" (rounded down, at least 1 h), since
 // the last record.

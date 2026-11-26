@@ -69,6 +69,7 @@ export const RULE_GROUPS: readonly { id: string; label: string; triggers: readon
   { id: 'reset', label: 'Limit window reset', triggers: ['reset'] },
   { id: 'machine_silent', label: 'Machine silent with live sessions', triggers: ['machine_silent'], delay: true },
   { id: 'usage', label: 'Usage and limit changes', triggers: ['limit_change', 'usage_reset', 'seat_change', 'weekly_drop'] },
+  { id: 'switch', label: 'Smart Account Switch moves and digest', triggers: ['session_moved', 'switch_digest'] },
 ];
 
 export function delayText(s: number | null | undefined): string {

@@ -160,6 +160,11 @@ func parse(fs *flag.FlagSet, args []string) ([]string, error) {
 			return nil, err
 		}
 		if fs.NArg() == 0 {
+			for _, a := range pos {
+				if len(a) > 2 && strings.HasPrefix(a, "--") {
+					return nil, fmt.Errorf("%q was not read as a flag (after --?): nothing done", a)
+				}
+			}
 			return pos, nil
 		}
 		pos = append(pos, fs.Arg(0))

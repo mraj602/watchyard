@@ -1,5 +1,6 @@
 import * as ExpoNotifications from '../modules/wy-notify';
 import type { AppInfo, Clock, FetchLike, RequestInitLike } from '../src/contract/platform';
+import { ANDROID_CHANNELS, NOTIFY_CATEGORIES } from '../src/contract/constants';
 import {
   actOnToken,
   decideResponse,
@@ -78,14 +79,34 @@ function fakeFetch(status = 200, body: unknown = { applied: true }): { fetch: Fe
   return { fetch, sent };
 }
 
+describe('channels: JS and Kotlin lists', () => {
+  it('Channels.kt has the same ids, names and importances as ANDROID_CHANNELS (plus the connection channel)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs') as typeof import('fs');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require('path') as typeof import('path');
+    const kt = fs.readFileSync(path.join(__dirname, '../modules/wy-link/android/src/main/java/dev/watchyard/link/Channels.kt'), 'utf8');
+    const consts = Object.fromEntries([...kt.matchAll(/const val (\w+) = "([^"]+)"/g)].map((m) => [m[1]!, m[2]!]));
+    const rows = [...kt.matchAll(/Triple\((\w+), "([^"]+)", (\d)\)/g)].map((m) => ({ id: consts[m[1]!], name: m[2]!, importance: Number(m[3]) }));
+    const imp = { HIGH: 4, DEFAULT: 3, LOW: 2 } as const;
+    expect(rows.filter((r) => r.id !== 'wy_connection')).toEqual(ANDROID_CHANNELS.map((c) => ({ id: c.id, name: c.name, importance: imp[c.importance] })));
+    expect(rows.at(-1)?.id).toBe('wy_connection');
+  });
+  it('every category names a channel that exists', () => {
+    const ids = ANDROID_CHANNELS.map((c) => c.id);
+    NOTIFY_CATEGORIES.forEach((c) => expect(ids).toContain(c.channel));
+    expect(NOTIFY_CATEGORIES.map((c) => c.id)).toEqual(['sessions', 'limits', 'switch', 'drain', 'usage', 'machines']);
+  });
+});
+
 describe('channels and categories', () => {
-  it('creates the five Android channels with the mapped importance, and no channels on iOS', async () => {
+  it('creates the seven Android channels with the mapped importance, and no channels on iOS', async () => {
     await setupChannelsAndCategories(N, 'android', 15);
     const ch = callsOf('notifications.setNotificationChannelAsync');
-    expect(ch.map((c) => c.args[0])).toEqual(['wy_needs_you', 'wy_limits', 'wy_machines', 'wy_usage', 'wy_test']);
+    expect(ch.map((c) => c.args[0])).toEqual(['wy_needs_you', 'wy_limits', 'wy_switch', 'wy_drain', 'wy_usage', 'wy_machines', 'wy_test']);
     const imp = ExpoNotifications.AndroidImportance;
-    expect(ch.map((c) => (c.args[1] as { importance: number }).importance)).toEqual([imp.HIGH, imp.DEFAULT, imp.LOW, imp.LOW, imp.DEFAULT]);
-    expect(ch.map((c) => (c.args[1] as { name: string }).name)).toEqual(['Needs you', 'Limits', 'Machines', 'Usage changes', 'Test']);
+    expect(ch.map((c) => (c.args[1] as { importance: number }).importance)).toEqual([imp.HIGH, imp.DEFAULT, imp.LOW, imp.DEFAULT, imp.LOW, imp.LOW, imp.DEFAULT]);
+    expect(ch.map((c) => (c.args[1] as { name: string }).name)).toEqual(['Sessions', 'Limits', 'Account switch', 'Drain', 'Usage notices', 'Machines', 'Test']);
 
     calls.length = 0;
     await setupChannelsAndCategories(N, 'ios', 15);

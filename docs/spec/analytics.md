@@ -32,6 +32,10 @@ list below or a `seat` that does not exist; `400 bad_request` for a `from` or `t
 date, `days` not 1-366, `from` after `to`, or a range over 366 days. Nothing else is rejected: unknown query
 parameters are ignored.
 
+One report runs at a time. The others wait for their turn without holding a database connection, so
+auth, ingest and the board's own reads and settings changes never queue behind a report. A report
+that has not finished 45 s after it arrived (waiting included) answers `503 unavailable`.
+
 Every reply starts with `report`, `from`, `to`, `tz` and `seat` (the filter, null for all), so a
 client can show the range the hub chose.
 

@@ -1,6 +1,7 @@
 // Names and limits shared by the app, its tasks, its widgets and the hub (docs/spec/phone.md
 // and push.md 12). A change here is a contract change.
 
+import type { NotifyCategory } from './api';
 import type { AndroidChannelId } from './payload';
 
 /** SecureStore key of the paired hub: {origin, token, device, name, paired_at} (P3). */
@@ -58,11 +59,23 @@ export const ANDROID_CHANNELS: readonly {
   name: string;
   importance: 'HIGH' | 'DEFAULT' | 'LOW';
 }[] = [
-  { id: 'wy_needs_you', name: 'Needs you', importance: 'HIGH' },
+  { id: 'wy_needs_you', name: 'Sessions', importance: 'HIGH' },
   { id: 'wy_limits', name: 'Limits', importance: 'DEFAULT' },
+  { id: 'wy_switch', name: 'Account switch', importance: 'LOW' },
+  { id: 'wy_drain', name: 'Drain', importance: 'DEFAULT' },
+  { id: 'wy_usage', name: 'Usage notices', importance: 'LOW' },
   { id: 'wy_machines', name: 'Machines', importance: 'LOW' },
-  { id: 'wy_usage', name: 'Usage changes', importance: 'LOW' },
   { id: 'wy_test', name: 'Test', importance: 'DEFAULT' },
+];
+
+/** Notification categories (push.md), in the order Settings lists them, with the channel each posts to. */
+export const NOTIFY_CATEGORIES: readonly { id: NotifyCategory; name: string; channel: AndroidChannelId; words: string }[] = [
+  { id: 'sessions', name: 'Sessions', channel: 'wy_needs_you', words: 'Needs permission, asked, failed, summaries' },
+  { id: 'limits', name: 'Limits', channel: 'wy_limits', words: '80% and 95% of a limit, resets' },
+  { id: 'switch', name: 'Account switch', channel: 'wy_switch', words: 'Sessions moved to another account, the daily digest' },
+  { id: 'drain', name: 'Drain', channel: 'wy_drain', words: 'A drain started, ended or pulled sessions in' },
+  { id: 'usage', name: 'Usage notices', channel: 'wy_usage', words: 'Limit changes, usage resets, seat changes, weekly drops' },
+  { id: 'machines', name: 'Machines', channel: 'wy_machines', words: 'A machine went silent' },
 ];
 
 /** Foreground poll period (P5). */

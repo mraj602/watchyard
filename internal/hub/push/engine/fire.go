@@ -93,6 +93,11 @@ func (e *Engine) pass() {
 		if err := w.reconcileChanges(ch); err != nil {
 			return err
 		}
+		// Switch notices from machines (push.md 3.9): created pending even while frozen, fired
+		// once unfrozen (the 6-hour stale rule still applies).
+		if err := w.notices(ch.Notices); err != nil {
+			return err
+		}
 		if frozen {
 			// push.md 3.6: while frozen nothing is created by the sweep and nothing is fired or
 			// sent (deliveries stay pending), so an old and a new hub never both push.
@@ -112,6 +117,9 @@ func (e *Engine) pass() {
 				return err
 			}
 			if err := w.expireNotices(); err != nil {
+				return err
+			}
+			if err := w.drains(); err != nil {
 				return err
 			}
 			_, seats, _, err := tx.AlertSubjects(w.nowMS)
@@ -636,6 +644,12 @@ func (w *work) render(ps []*push) error {
 			}
 		}
 		pl.Title, pl.Body, pl.URL, pl.Tag = txt.Title, txt.Body, txt.URL, txt.Tag
+		// A summary batches session alerts (fanOut): the sessions category.
+		pl.Category = model.CategorySessions
+		if !summary {
+			pl.Category = trig.Category()
+		}
+		pl.Channel = model.Channel(pl.Category)
 		p.msg = model.Message{Payload: pl, TTL: rules.TTL(trig, summary, resets, w.nowMS), Urgency: rules.Urgency(trig, summary),
 			Priority: rules.Priority(trig, summary), HubURL: w.hub}
 		for _, d := range p.ds {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -212,7 +213,13 @@ func Explain(w io.Writer, res Result, data, hubErr string) error {
 func explainLanes(w io.Writer, res Result) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "#\tACCOUNT\tFOLDER\tKIND\tOK\t7D (RESERVE) RESET\t5H\tLEASES BURST\tDATA\tWHY")
+	rows := map[string]bool{} // each folder once (live on pre4.1: blocked accounts showed twice)
 	for i, r := range res.Ranked {
+		if id := r.Label + "\x00" + r.Folder; rows[id] {
+			continue
+		} else {
+			rows[id] = true
+		}
 		n, ok := "-", "no"
 		if r.Eligible {
 			n, ok = fmt.Sprint(i+1), "yes"
@@ -243,6 +250,8 @@ func explainLanes(w io.Writer, res Result) error {
 		if r.Eligible {
 			why = "eligible"
 			switch {
+			case r.Lanes != nil && r.Lanes.Class == ClassDrain && r.Lanes.Drain != nil && r.Lanes.Drain.Owner && r.Lanes.Drain.FinishBy != nil:
+				why += ", " + OwnerDrainText(*r.Lanes.Drain.FinishBy, res.Now)
 			case r.Lanes != nil && r.Lanes.Class == ClassDrain:
 				why += ", drain"
 			case r.Lanes != nil && r.Lanes.Class == ClassAtRisk:
@@ -258,6 +267,23 @@ func explainLanes(w io.Writer, res Result) error {
 	}
 	for _, l := range kindLines(res.Ranked) {
 		fmt.Fprintln(w, l)
+	}
+	pinned := map[string]bool{}
+	for _, r := range res.Ranked {
+		if r.Lanes == nil || r.Lanes.Pins == 0 || pinned[r.key] {
+			continue
+		}
+		pinned[r.key] = true
+		fmt.Fprintln(w, pinLine(r.Label, *r.Lanes, res.Now))
+	}
+	expiring := map[string]bool{}
+	for _, r := range res.Ranked {
+		if r.Lanes == nil || r.Lanes.ExpiringRoom <= 0 || expiring[r.key] {
+			continue
+		}
+		expiring[r.key] = true
+		fmt.Fprintf(w, "Expiring room %s: protected, its week resets in %.1f h: it may be drained to %s%% of its week until then (its 5-hour cap stays %s%%)\n",
+			r.Label, r.Lanes.HoursToReset, f0(r.Lanes.ExpiringRoom), f0(r.Lanes.FiveHourCap))
 	}
 	drained := map[string]bool{}
 	for _, r := range res.Ranked {
@@ -285,6 +311,9 @@ func explainLanes(w io.Writer, res Result) error {
 			fmt.Fprintln(w, leaseLine(r.Label, lc))
 		}
 	}
+	if res.LaneBurn != "" {
+		fmt.Fprintln(w, res.LaneBurn)
+	}
 	for _, p := range res.Picks {
 		fmt.Fprintln(w, "Pick: "+Line(p.Ranked))
 	}
@@ -297,12 +326,54 @@ func explainLanes(w io.Writer, res Result) error {
 	return nil
 }
 
+// pinLine is the --explain line of an account with live pinned sessions: "Pins claude-3: 2
+// live pinned sessions keep 30% of the 5-hour window and 6% of the week free (caps 5h 15, 7d 79)".
+// When the reserve is scaled to the time left (setup.md 8.6, Pinned sessions) each window says
+// until when: "... 20% of the 5-hour window and 2.1% of the week free until Thu 03:30, scaled
+// to time left (full 10) (caps now ...)".
+func pinLine(label string, v LaneView, now time.Time) string {
+	n := "1 live pinned session keeps"
+	if v.Pins != 1 {
+		n = fmt.Sprintf("%d live pinned sessions keep", v.Pins)
+	}
+	pct := func(x float64) string {
+		if x == math.Trunc(x) {
+			return f0(x)
+		}
+		return strconv.FormatFloat(x, 'f', 1, 64)
+	}
+	var r5, r7 *time.Time
+	if v.FiveHourResetsAt != nil {
+		r5 = v.FiveHourResetsAt
+	}
+	if v.HoursToReset > 0 {
+		t := now.Add(hoursDur(v.HoursToReset))
+		r7 = &t
+	}
+	scaled := func(r, full float64, what string, until *time.Time) string {
+		if full > r+0.05 && until != nil {
+			return "; the " + what + " part until " + when(*until, now) + ", scaled to time left (full " + pct(full) + ")"
+		}
+		return ""
+	}
+	return fmt.Sprintf("Pins %s: %s %s%% of the 5-hour window and %s%% of the week free%s%s (caps now 5h %s, 7d %s)", label, n,
+		pct(v.PinReserve5hPct), pct(v.PinReserve7dPct),
+		scaled(v.PinReserve5hPct, v.PinFull5hPct, "5-hour", r5), scaled(v.PinReserve7dPct, v.PinFull7dPct, "weekly", r7),
+		f0(v.FiveHourCap), f0(v.WeeklyCap))
+}
+
 // drainLine is the --explain line of a draining account: "Drain claude-2: room 9.3% (71 pts),
 // need 3.6 h at full 5h speed, horizon 24 h; capacity 3 (weekly 6, 5h 3); running burn 12 pts
 // before reset; projected 96% at reset; unavoidable waste 0%; finish by 09:20".
 func drainLine(label string, d DrainView, now time.Time) string {
 	s := fmt.Sprintf("Drain %s: room %.1f%% (%.0f pts), need %.1f h at full 5h speed, horizon %.0f h", label, d.RoomPct, d.RoomPts,
 		d.NeedHours, d.HorizonHours)
+	if d.SlackX > 0 {
+		s += fmt.Sprintf(" (entry %g × need)", d.SlackX)
+	}
+	if d.Owner && d.FinishBy != nil {
+		s = fmt.Sprintf("Drain %s, %s: room %.1f%% (%.0f pts), need %.1f h at full 5h speed", label, OwnerDrainText(*d.FinishBy, now), d.RoomPct, d.RoomPts, d.NeedHours)
+	}
 	if d.Capacity != nil {
 		c5 := "not limiting"
 		if d.Capacity5h != nil {
@@ -314,6 +385,9 @@ func drainLine(label string, d DrainView, now time.Time) string {
 		}
 		s += ")"
 	}
+	if d.Ignore5h {
+		s += "; " + Ignored5hText
+	}
 	s += fmt.Sprintf("; %d running, burn %.0f pts before reset", d.Running, d.ForwardBurn)
 	if d.ProjectedPct != nil {
 		s += fmt.Sprintf("; projected %.0f%% at reset", *d.ProjectedPct)
@@ -323,6 +397,13 @@ func drainLine(label string, d DrainView, now time.Time) string {
 	}
 	if d.FinishBy != nil {
 		s += "; finish by " + d.FinishBy.Local().Format("15:04")
+	}
+	if d.AimPct != nil && d.AimAtResetPct != nil {
+		// "aim 98.3% now, 99% at 03:20" (the ramp; setup.md 8.5, Drain aim)
+		s += fmt.Sprintf("; aim %.1f%% now", *d.AimPct)
+		if d.ResetsAt != nil && *d.AimAtResetPct > *d.AimPct+0.05 {
+			s += fmt.Sprintf(", %s%% at %s", strconv.FormatFloat(*d.AimAtResetPct, 'f', -1, 64), when(*d.ResetsAt, now))
+		}
 	}
 	return s
 }
@@ -431,7 +512,7 @@ func KindText(r Ranked) string {
 // (ModeWords), then, when a logged-in account is not chosen, how to choose (with its email,
 // else its label, when it is the only one).
 func kindLines(rs []Ranked) []string {
-	var prot, aggr, none bool
+	var prot, aggr, off, none bool
 	var unchosen []Ranked
 	seen := map[string]bool{}
 	for _, r := range rs {
@@ -448,6 +529,8 @@ func kindLines(rs []Ranked) []string {
 			none = true
 		case kind == config.NextModeProtected:
 			prot = true
+		case kind == config.NextModeOff:
+			off = true
 		default:
 			aggr = true
 		}
@@ -458,6 +541,9 @@ func kindLines(rs []Ranked) []string {
 	}
 	if aggr {
 		out = append(out, "Aggressive: "+ModeWords.Aggressive)
+	}
+	if off {
+		out = append(out, "Off: "+ModeWords.Off)
 	}
 	if none {
 		out = append(out, "Not chosen: "+ModeWords.NotChosen)
