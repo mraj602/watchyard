@@ -60,6 +60,7 @@ type DrainInfo struct {
 	RoomPts     float64 // the same in 5-hour points (R5)
 	NeedH       float64 // hours to use it at full 5-hour speed
 	HorizonH    float64 // drain entry horizon: max(floor, slack × need) (protected: no floor)
+	Ign5h       bool    // drain_ignore_5h in effect: no 5-hour limit
 	SlackX      float64 // the slack used: account.drain_slack, or drain_slack_protected
 	Capacity    int     // new lanes the room absorbs now (C)
 	CapWeekly   int
@@ -300,6 +301,13 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	rho := pa.ratio()
 	// The hard limits (98, no higher than the switch's caps, less the pin reserve): full7 is
 	// what the week may be drained to, full the 5-hour speed (setup.md 8.5, Drain).
+	// drain_ignore_5h: the speed and the room are worked out as for any account, then the
+	// 5-hour limit is lifted (below).
+	ign5 := acc.Ignores5h()
+	if ign5 {
+		acc.Ign5h = false
+		d.Ign5h = true
+	}
 	full7, full := p.hard(acc)
 	lim7, lim5 := p.limits(acc)
 	if acc.Protected {
@@ -333,6 +341,9 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	if !acc.Protected && acc.Limit5h <= 0 {
 		full = math.Max(full, pinLess(projection.DrainCeil5At(t5), acc.PinReserve5))
 		lim5 = full
+	}
+	if ign5 {
+		lim5 = noLimit5
 	}
 	d.Target = lim7
 	H := v.hrs
@@ -434,7 +445,7 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	soon := fiveOpen && v.fiveRst.Sub(now) <= p.FreshSoon
 	c5 := -1
 	fit5 := true // one more lane fits under the 5-hour hard limit and the backstop (NoStall)
-	if fiveOpen {
+	if fiveOpen && !ign5 {
 		t5p := math.Min(t5, H)
 		n15 := math.Max(math.Min(em, r*t5p), 1e-6)
 		if p.UseEstimate {
@@ -461,7 +472,7 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 			c5 = 0
 		}
 	}
-	if v.hM >= lim5 { // the hard limit holds even when the window resets soon
+	if v.hM >= lim5 && !ign5 { // the hard limit holds even when the window resets soon
 		c5 = 0
 	}
 	if in.HubDown && p.HubDownFactor > 0 {
@@ -520,7 +531,7 @@ func (p LaneParams) drainInfo(acc LaneAccount, c cleanSample, v laneState, in La
 	d.Capacity, d.LimitedBy = C, by
 	// Overflow (NoStall): full by its drain capacity, but one more lane stays under the hard
 	// limits (weekly 98 or the switch's cap, the 5-hour limit and backstop, the landing guard).
-	d.over = C <= 0 && !landed && v.wM+(F+n1)/rho <= full7 && fit5 && v.hM < full
+	d.over = C <= 0 && !landed && v.wM+(F+n1)/rho <= full7 && fit5 && (ign5 || v.hM < full)
 	if C > 0 {
 		return d
 	}

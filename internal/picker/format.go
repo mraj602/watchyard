@@ -385,6 +385,9 @@ func drainLine(label string, d DrainView, now time.Time) string {
 		}
 		s += ")"
 	}
+	if d.Ignore5h {
+		s += "; " + Ignored5hText
+	}
 	s += fmt.Sprintf("; %d running, burn %.0f pts before reset", d.Running, d.ForwardBurn)
 	if d.ProjectedPct != nil {
 		s += fmt.Sprintf("; projected %.0f%% at reset", *d.ProjectedPct)

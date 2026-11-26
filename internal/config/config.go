@@ -231,6 +231,10 @@ type NextAccount struct {
 	// account.pin_reserve_5h / _7d (0: the global one; setup.md 8.6).
 	PinReserve5h float64 `toml:"pin_reserve_5h"`
 	PinReserve7d float64 `toml:"pin_reserve_7d"`
+	// DrainIgnore5h: while this account's owner drain is on, ignore its 5-hour window: no
+	// 5-hour limit, projection, capacity or burst cap in the picker, no move off it for a
+	// 5-hour trigger, no 5-hour room or margin for a pull into it (setup.md 8.5, Owner drain).
+	DrainIgnore5h bool `toml:"drain_ignore_5h"`
 }
 
 // MCPMode returns share.mcp as "true", "false" or "external" ("" when unset).

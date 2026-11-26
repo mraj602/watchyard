@@ -8,6 +8,11 @@ All notable changes to Watchyard are recorded here. The format follows
 
 ### Added
 
+- **`drain_ignore_5h` per account** (setup.md 8.5, Owner drain). With
+  `next.accounts.<key>.drain_ignore_5h = true`, an owner-drained account ignores its 5-hour window
+  while the drain is on: no 5-hour limit, switch projection, capacity or burst cap in the picker,
+  no move off it for a 5-hour trigger, no 5-hour room or margin for a pull into it. The weekly
+  checks stay; `--explain` / `--plan` say "5-hour window ignored (drain_ignore_5h)".
 - **Drain entry slack keys and a per-account pin reserve** (setup.md 8.5, 8.6).
   `account.drain_slack` (default 2) and `account.drain_slack_protected` (default **1.5**, was 1:
   owner "1.5x instead of 1x") set how close to its weekly reset an account's drain starts, as

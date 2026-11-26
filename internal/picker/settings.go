@@ -122,6 +122,8 @@ type Policy struct {
 	// DrainUntil: the owner drains the account until then (next.accounts.<key>.drain_until;
 	// zero: off; setup.md 8.5, Owner drain).
 	DrainUntil time.Time
+	// DrainIgnore5h: next.accounts.<key>.drain_ignore_5h (in effect only while DrainUntil is).
+	DrainIgnore5h bool
 }
 
 // Protected reports whether the lanes strategy keeps the account for its owner: mode
@@ -216,6 +218,7 @@ func (s Settings) PolicyFor(c Candidate) (Policy, []string) {
 		p.Weight = a.Weight
 	}
 	p.DrainUntil = c.HubDrainUntil
+	p.DrainIgnore5h = a.DrainIgnore5h
 	if a.DrainUntil != "" {
 		if t, err := time.Parse(time.RFC3339, a.DrainUntil); err == nil {
 			p.DrainUntil = t

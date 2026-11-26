@@ -251,12 +251,24 @@ type Account struct {
 	// 8.6, Owner drain): nothing moves off it before a 5-hour hit within UrgentWithin (or its
 	// 5-hour cap), and while its 5-hour projection has room it pulls busy burners in.
 	DrainUntil time.Time
+	// Ign5h: next.accounts.<key>.drain_ignore_5h: while DrainUntil is on, its 5-hour window
+	// is ignored (no 5-hour cap, trigger, hit or pull margin; Ignores5h).
+	Ign5h bool
 	// Pins: its live pinned sessions (running, not idle for PinIdle); Reserve5 and Reserve7
 	// the points of its 5-hour and weekly windows kept free for them (Params.PinReserve): its
 	// caps for every other session are its caps less these.
 	Pins               int
 	Reserve5, Reserve7 float64
 }
+
+// Ignores5h: the owner drain is on and drain_ignore_5h set.
+func (a Account) Ignores5h(now time.Time) bool { return a.Ign5h && a.DrainUntil.After(now) && !a.Off }
+
+// Ignored5hText is the --plan / --explain note of an account whose 5-hour window is ignored.
+const Ignored5hText = "5-hour window ignored (drain_ignore_5h)"
+
+// noCap5 stands for "no 5-hour cap" (an account that ignores its 5-hour window).
+const noCap5 = 1e9
 
 // Org is the account's organisation (the part of its key after the last "/").
 func (a Account) Org() string { return Org(a.Key) }
@@ -361,7 +373,9 @@ type Projection struct {
 	// NearReset: the trigger was dropped, the projected 100% hit being within ResetSkip of the
 	// 5-hour reset.
 	NearReset bool
-	Hard      bool
+	// Ign5: its 5-hour window is ignored (drain_ignore_5h under an owner drain).
+	Ign5 bool
+	Hard bool
 	// Streak counts the consecutive passes it triggered, this one included; Triggered is
 	// whether this pass acts on it (Held: over the cap, waiting for the spike filter).
 	Streak    int
@@ -749,6 +763,10 @@ func Plan(in Input) Result {
 		if a.ownerDrain(now) && len(cands) > 0 {
 			if cur := p.Project(a, ss, delta[a.Key], now); !p.near5h(cur) {
 				for _, s := range cands {
+					if a.Ignores5h(now) {
+						skip(s, OwnerDrainText(a.DrainUntil, now)+": "+Ignored5hText+"; nothing moves off it for a 5h trigger")
+						continue
+					}
 					skip(s, fmt.Sprintf("%s: nothing moves off it before its 5h window is within %d min of 100%% or at its cap",
 						OwnerDrainText(a.DrainUntil, now), int(p.UrgentWithin.Minutes())))
 				}
@@ -888,6 +906,9 @@ func OwnerDrainText(until, now time.Time) string {
 
 // near5h: pr's 5-hour window is at its cap now or reaches 100% within UrgentWithin.
 func (p Params) near5h(pr Projection) bool {
+	if pr.Ign5 { // only an actual limit (the stopped rule moves those)
+		return pr.Level5 >= 100
+	}
 	if pr.Level5 >= pr.Cap5 || pr.Level5 >= 100 {
 		return true
 	}
@@ -1348,7 +1369,11 @@ func (p Params) Project(a Account, ss []Session, extra float64, now time.Time) P
 	r5 = math.Max(0, r5+extra)
 	c5, c7 := p.caps(a, now)
 	c5, c7 = math.Max(0, c5-math.Max(0, a.Reserve5)), math.Max(0, c7-math.Max(0, a.Reserve7))
-	pr := Projection{Key: a.Key, Label: a.Label, Protected: a.Protected, Level5: a.W5.Level, Level7: a.W7.Level, R5: r5, RateNote: a.RateNote,
+	ign5 := a.Ignores5h(now)
+	if ign5 {
+		c5 = noCap5
+	}
+	pr := Projection{Key: a.Key, Label: a.Label, Ign5: ign5, Protected: a.Protected, Level5: a.W5.Level, Level7: a.W7.Level, R5: r5, RateNote: a.RateNote,
 		Cap5: c5, Cap7: c7, Hit: -1, ratio: ratio(a), Pins: a.Pins, Reserve5: math.Max(0, a.Reserve5), Reserve7: math.Max(0, a.Reserve7)}
 	pr.Expiring = p.expiring(a, now)
 	pr.Draining = !a.Protected && !a.Off && (a.Drain || a.DrainUntil.After(now))
@@ -1384,7 +1409,7 @@ func (p Params) Project(a Account, ss []Session, extra float64, now time.Time) P
 	}
 	if r5 > 0 {
 		hit := math.Inf(1)
-		if t := (100 - pr.Level5) / r5; t <= pr.Reset5.Hours() {
+		if t := (100 - pr.Level5) / r5; t <= pr.Reset5.Hours() && !ign5 {
 			hit = math.Max(0, t)
 		}
 		if t := (100 - pr.Level7) / (r5 / pr.ratio); t <= h7 && t < hit {
@@ -1598,7 +1623,7 @@ type urgency struct {
 
 func (p Params) urgencyOf(pr Projection) urgency {
 	u := urgency{hit: pr.Hit}
-	if pr.Hard || pr.Level5 >= 100 || pr.Level7 >= 100 {
+	if pr.Hard || (pr.Level5 >= 100 && !pr.Ign5) || pr.Level7 >= 100 {
 		u.hit = 0
 	}
 	u.near = p.UrgentWithin > 0 && u.hit >= 0 && u.hit < p.UrgentWithin
