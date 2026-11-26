@@ -17,7 +17,7 @@ func TestDestResetNextWindow(t *testing.T) {
 		c7.DrainUntil, c7.Rate, c7.Ratio = t0.Add(13*time.Hour), 10, 7
 		c7.W7.Reset = t0.Add(13 * time.Hour)
 		c4 := acc("c4", 70, 90*time.Minute, 40) // 70 + 33 × 1.5 = 119.5: a near hit in 55 min
-		c5 := acc("c5", 10, time.Hour, 30) // room for both: 10 + 33 × 1 = 43
+		c5 := acc("c5", 10, time.Hour, 30)      // room for both: 10 + 33 × 1 = 43
 		c5.Protected = true
 		return Input{Accounts: []Account{c7, c4, c5},
 			Sessions: []Session{lane("s12", "c4", 14.5, true), lane("deeplink", "c4", 18.5, true)}}
