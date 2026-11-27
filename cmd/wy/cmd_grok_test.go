@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mraj602/watchyard/internal/grokpeer"
 )
 
 func fakeGrok(t *testing.T, body string) {
@@ -16,7 +19,9 @@ func fakeGrok(t *testing.T, body string) {
 	}
 	old := grokLocate
 	grokLocate = func(string) (string, error) { return p, nil }
-	t.Cleanup(func() { grokLocate = old })
+	oh, state := grokHost, t.TempDir()
+	grokHost = func() *grokpeer.Host { return &grokpeer.Host{State: state, Spawn: func(string) error { return nil }} }
+	t.Cleanup(func() { grokLocate, grokHost = old, oh })
 }
 
 func runGrokCmd(args ...string) (int, string, string) {
@@ -77,5 +82,42 @@ func TestGrokNotFound(t *testing.T) {
 	}
 	if code, _, _ := runGrokCmd("run", "x"); code != 3 {
 		t.Fatal(code)
+	}
+}
+
+func TestGrokRunRegistersPeer(t *testing.T) {
+	fakeGrok(t, `echo '{"text":"ok","sessionId":"sess-1","num_turns":2,"usage":{"total_tokens":7}}'`)
+	if code, _, e := runGrokCmd("run", "--name", "worker", "hi"); code != 0 {
+		t.Fatal(code, e)
+	}
+	ss := grokHost().Sessions()
+	if len(ss) != 1 || ss[0].ID != "sess-1" || ss[0].Name != "worker" || ss[0].Account != "grok" {
+		t.Fatalf("sessions = %+v", ss)
+	}
+	if code, out, _ := runGrokCmd("list"); code != 0 || !strings.Contains(out, "sess-1\tidle\tworker") {
+		t.Fatal(code, out)
+	}
+	if code, _, _ := runGrokCmd("forget", "sess-1"); code != 0 || len(grokHost().Sessions()) != 0 {
+		t.Fatal("forget failed")
+	}
+}
+
+func TestGrokAdoptAndAccountLines(t *testing.T) {
+	fakeGrok(t, `if [ "$1" = usage ] && [ "$2" = --json ]; then echo "Error: no service" >&2; exit 1; fi
+echo '{"sessionId":"a1","session":{"inputTokens":3,"outputTokens":2,"totalTokens":5,"modelCalls":1,"costUsdTicks":100000000,"turnCount":1,"primaryModelId":"m"}}'`)
+	if code, out, e := runGrokCmd("adopt", "a1", "--name", "pal", "--dir", "/w"); code != 0 || !strings.Contains(out, "pal") {
+		t.Fatal(code, out, e)
+	}
+	var b bytes.Buffer
+	grokAccountLines(context.Background(), &b)
+	got := b.String()
+	if !strings.Contains(got, "plan usage unavailable") || !strings.Contains(got, "pal") || !strings.Contains(got, "5 tokens") || !strings.Contains(got, "$0.010") {
+		t.Fatalf("lines:\n%s", got)
+	}
+	if code, out, _ := runGrokCmd("usage", "a1"); code != 0 || !strings.Contains(out, "5 tokens") {
+		t.Fatal(code, out)
+	}
+	if code, _, _ := runGrokCmd("usage"); code != 1 {
+		t.Fatal("plan usage without the service should fail")
 	}
 }

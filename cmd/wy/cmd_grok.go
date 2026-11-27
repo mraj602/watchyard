@@ -17,6 +17,7 @@ import (
 const grokUsage = `usage: wy grok run [--dir D] [--model M] [--effort E] [--max-turns N] [--yolo]
                    [--resume ID] [--name N] [--timeout 30m] [--json] <prompt | ->
        wy grok status
+       wy grok usage [id]
        wy grok list | forget <id> | adopt <id> [--dir D] [--name N] [--yolo]
 
 Runs xAI's Grok Build CLI headlessly and prints its answer, so a Claude session (or an
@@ -39,6 +40,8 @@ func runGrok(args []string, stdout, stderr io.Writer) error {
 		return runGrokRun(args[1:], stdout, stderr)
 	case "status":
 		return runGrokStatus(stdout, stderr)
+	case "usage":
+		return runGrokUsage(args[1:], stdout, stderr)
 	case "drain", "list", "forget", "adopt":
 		return runGrokPeer(args[0], args[1:], stdout, stderr)
 	case "-h", "--help":
@@ -208,4 +211,57 @@ func reorderFlags(args []string) []string {
 		}
 	}
 	return append(flags, pos...)
+}
+
+// runGrokUsage prints the plan usage (needs Grok's background service) or one session's.
+func runGrokUsage(args []string, stdout, stderr io.Writer) error {
+	bin, err := grokLocate(grokHome())
+	if err != nil {
+		return &exitError{code: 3, err: err}
+	}
+	if len(args) == 1 {
+		u, err := grokcli.UsageOf(context.Background(), bin, nil, args[0])
+		if err != nil {
+			return &exitError{code: 1, err: err}
+		}
+		fmt.Fprintln(stdout, grokUsageLine(u))
+		return nil
+	}
+	t, err := grokcli.PlanUsage(context.Background(), bin, nil)
+	if err != nil {
+		return &exitError{code: 1, err: err}
+	}
+	fmt.Fprintln(stdout, t)
+	return nil
+}
+
+func grokUsageLine(u grokcli.SessionUsage) string {
+	return fmt.Sprintf("%d turns, %d model calls, %d tokens (%d in, %d out, %d cached), about $%.3f, %s",
+		u.Turns, u.Calls, u.TotalTokens, u.InputTokens, u.OutputTokens, u.CachedTokens, u.CostUSD(), u.Model)
+}
+
+// grokAccountLines adds Grok to `wy account list`: one line for the plan and one per session
+// Watchyard knows. Grok is not a Claude account, so `wy account next` never sees it. Nothing
+// prints when grok is not installed.
+func grokAccountLines(ctx context.Context, w io.Writer) {
+	bin, err := grokLocate(grokHome())
+	if err != nil {
+		return
+	}
+	plan := "plan usage unavailable (open /usage inside grok)"
+	if t, err := grokcli.PlanUsage(ctx, bin, nil); err == nil {
+		plan = "plan " + t
+	}
+	fmt.Fprintf(w, "%-10s %-8s %-12s %-10s %s\n", "grok", "-", "(not Claude)", "-", plan)
+	for _, r := range grokHost().Records() {
+		line := fmt.Sprintf("%d turns, %d tokens (watchyard runs)", r.Turns, r.Tokens)
+		if u, err := grokcli.UsageOf(ctx, bin, nil, r.ID); err == nil {
+			line = grokUsageLine(u)
+		}
+		name := r.Name
+		if name == "" {
+			name = r.ID
+		}
+		fmt.Fprintf(w, "  %-8s %s\n", name, line)
+	}
 }
