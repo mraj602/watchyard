@@ -223,6 +223,10 @@ secret is in it. Sessions of the same account are not a reason to print it (nati
   reader's file-system layer refuses `*.key` (identity.md 4, which gains this allowance for
   `sessions/<digits>.json`).
 - Each local session's account is the slot's current seat (identity.md 3).
+- **Hosted sessions (AgentHost).** Another coding agent can list its sessions beside Claude's
+  through an `AgentHost` (`Sessions`, `Deliver`). Entries carry `kind: "host"`, a pseudo-account
+  (Grok: `grok`, label `grok`) that the matrix names like any account, and the host's own
+  busy/idle state. They are local only; the hub does not list them.
 
 ### 3.2 `list` entries
 
@@ -1218,6 +1222,14 @@ about a session's mode to avoid it. The one exception is the trusted sender (4.1
 class of its own: the owner's approval is its vetting, so its frames carry the receiving
 session's class and are admitted in either; when that class is not known, nothing is written
 and the send reports `held` (exit 9).
+
+### 8.5a Hosted sessions
+
+A hosted session (3.1) is written to with its host's `Deliver(id, text)` instead of an inbox
+socket, after the same checks (4.2: matrix, thread, loop guard, rate). `Deliver` injects at once
+when the session is idle and queues behind the running turn when it is busy; the send reports
+`delivered`, or `queued` with `busy: true` ("busy; message injected when its turn ends").
+Grok's host resumes the session headless and uses a file lock for busy (docs/grok.md).
 
 ### 8.6 Reply sockets
 

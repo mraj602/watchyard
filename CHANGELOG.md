@@ -302,6 +302,9 @@ All notable changes to Watchyard are recorded here. The format follows
   moved from.
 - `wy grok run` and `wy grok status`: run xAI's Grok Build CLI headlessly and read its result, so
   Claude sessions and orchestrators can hand work to Grok (docs/grok.md).
+- Grok sessions are peers: they appear in `wy peers list` as `<name>@grok.<machine>` and take
+  `wy peers send` (injected when idle, queued when busy). `wy grok list|adopt|forget|usage`,
+  and Grok plan and session usage in `wy account list`. `wy account next` ignores Grok.
 
 ## [1.3.2] - 2026-11-24
 
