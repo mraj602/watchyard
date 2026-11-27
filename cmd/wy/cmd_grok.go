@@ -10,12 +10,14 @@ import (
 	"strings"
 
 	"github.com/mraj602/watchyard/internal/grokcli"
+	"github.com/mraj602/watchyard/internal/grokpeer"
 	"github.com/mraj602/watchyard/internal/paths"
 )
 
 const grokUsage = `usage: wy grok run [--dir D] [--model M] [--effort E] [--max-turns N] [--yolo]
-                   [--resume ID] [--timeout 30m] [--json] <prompt | ->
+                   [--resume ID] [--name N] [--timeout 30m] [--json] <prompt | ->
        wy grok status
+       wy grok list | forget <id> | adopt <id> [--dir D] [--name N] [--yolo]
 
 Runs xAI's Grok Build CLI headlessly and prints its answer, so a Claude session (or an
 orchestrator) can hand work to Grok. "-" reads the prompt from stdin. See docs/grok.md.
@@ -37,6 +39,8 @@ func runGrok(args []string, stdout, stderr io.Writer) error {
 		return runGrokRun(args[1:], stdout, stderr)
 	case "status":
 		return runGrokStatus(stdout, stderr)
+	case "drain", "list", "forget", "adopt":
+		return runGrokPeer(args[0], args[1:], stdout, stderr)
 	case "-h", "--help":
 		fmt.Fprint(stdout, grokUsage)
 		return nil
@@ -75,6 +79,8 @@ func runGrokRun(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&o.SessionID, "resume", "", "resume a Grok session id")
 	fs.DurationVar(&o.Timeout, "timeout", 0, "overall timeout")
 	fs.BoolVar(&asJSON, "json", false, "print the result as JSON")
+	var name string
+	fs.StringVar(&name, "name", "", "name of the session in `wy peers list`")
 	if err := fs.Parse(args); err != nil {
 		return usageErr(err)
 	}
@@ -94,6 +100,19 @@ func runGrokRun(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return &exitError{code: 3, err: err}
 	}
+	host := grokHost()
+	if o.SessionID != "" {
+		// A resumed session is busy while this turn runs; messages sent meanwhile queue and
+		// are delivered when it ends.
+		if l, lerr := host.Hold(o.SessionID); lerr == nil {
+			defer func() {
+				l.Unlock()
+				_ = host.Drain(context.Background(), o.SessionID)
+			}()
+		} else {
+			return &exitError{code: 1, err: fmt.Errorf("session %s is busy (another run or a delivered message holds it); retry when it ends", o.SessionID)}
+		}
+	}
 	res, err := grokcli.Run(context.Background(), bin, nil, o)
 	if err != nil {
 		code := 1
@@ -101,6 +120,15 @@ func runGrokRun(args []string, stdout, stderr io.Writer) error {
 			code = 4
 		}
 		return &exitError{code: code, err: err}
+	}
+	if res.SessionID != "" {
+		dir := o.Dir
+		if dir == "" {
+			dir, _ = os.Getwd()
+		}
+		if _, rerr := host.Register(res.SessionID, dir, name, o, res); rerr != nil {
+			fmt.Fprintf(stderr, "wy grok: session not registered as a peer: %v\n", rerr)
+		}
 	}
 	if asJSON {
 		return json.NewEncoder(stdout).Encode(res)
@@ -110,4 +138,74 @@ func runGrokRun(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stderr, "grok session %s (%d turns, %d tokens)\n", res.SessionID, res.NumTurns, res.Tokens)
 	}
 	return nil
+}
+
+// grokHost is the Grok peers host of this machine; a variable so tests use a temp state dir.
+var grokHost = func() *grokpeer.Host {
+	dirs, err := paths.Resolve(paths.FromOS())
+	if err != nil {
+		return &grokpeer.Host{State: os.TempDir()}
+	}
+	return &grokpeer.Host{State: dirs.State.Path}
+}
+
+// runGrokPeer is drain (internal, started detached by a delivery), list, forget and adopt.
+func runGrokPeer(sub string, args []string, stdout, stderr io.Writer) error {
+	h := grokHost()
+	switch sub {
+	case "list":
+		for _, r := range h.Records() {
+			st := "idle"
+			if h.Busy(r.ID) {
+				st = "busy"
+			}
+			fmt.Fprintf(stdout, "%s\t%s\t%s\t%d queued\t%s\n", r.ID, st, r.Name, h.Pending(r.ID), r.Dir)
+		}
+		return nil
+	case "forget", "drain":
+		if len(args) != 1 {
+			fmt.Fprint(stderr, grokUsage)
+			return errUsage
+		}
+		if sub == "forget" {
+			return h.Forget(args[0])
+		}
+		return h.Drain(context.Background(), args[0])
+	}
+	// adopt: make an existing Grok session (e.g. started by hand) reachable as a peer.
+	fs := flag.NewFlagSet("grok adopt", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var o grokcli.Options
+	var dir, name string
+	fs.StringVar(&dir, "dir", "", "working directory of the session")
+	fs.StringVar(&name, "name", "", "name in `wy peers list`")
+	fs.BoolVar(&o.Yolo, "yolo", false, "deliveries run with auto-approve")
+	if err := fs.Parse(reorderFlags(args)); err != nil || fs.NArg() != 1 {
+		fmt.Fprint(stderr, grokUsage)
+		return errUsage
+	}
+	r, err := h.Register(fs.Arg(0), dir, name, o, nil)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "adopted grok session %s as %s\n", r.ID, r.Name)
+	return nil
+}
+
+// reorderFlags moves the positional arguments after the flags so `adopt <id> --name x` works.
+func reorderFlags(args []string) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			flags = append(flags, a)
+			if !strings.Contains(a, "=") && a != "--yolo" && i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+		} else {
+			pos = append(pos, a)
+		}
+	}
+	return append(flags, pos...)
 }

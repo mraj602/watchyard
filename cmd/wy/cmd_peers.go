@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/mraj602/watchyard/internal/grokpeer"
 	"io"
 	"os"
 	"runtime"
@@ -59,6 +60,7 @@ var peersEnv = func() (peerEnv, error) {
 			SlotExtra: cfg.Slots.Extra, SlotLabels: cfg.Slots.Labels,
 			Proc: peerspkg.NewProc(), StartPID: os.Getppid(), FS: identity.OSFS{},
 			PastSlots: movedSlots(dirs.State.Path), MarkerTags: scopeTags(cfg.Account.SmartSwitchScope),
+			Hosts: []peerspkg.AgentHost{&grokpeer.Host{State: dirs.State.Path}},
 		},
 		Enabled: cfg.Peers.Enabled, NoHubWiden: !cfg.Peers.HubMayWiden,
 	}, nil
