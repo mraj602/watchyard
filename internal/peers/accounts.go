@@ -13,5 +13,10 @@ func (e Env) Accounts() map[string]string {
 			}
 		}
 	}
+	for a, l := range e.HostAccounts() {
+		if _, dup := out[a]; !dup {
+			out[a] = l
+		}
+	}
 	return out
 }
