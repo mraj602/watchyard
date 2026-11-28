@@ -195,6 +195,7 @@ func accountList(ctx context.Context, e *setupEnv, f accountFlags) error {
 		}
 		fmt.Fprintf(e.stdout, "%-10s %-8s %-12s %-10s %-34s %-22s mcp %s\n", label, fo.Colour, fo.Folder, launch, login, strings.Join(parts, ", "), mcp)
 	}
+	grokAccountLines(ctx, e.stdout)
 	return nil
 }
 

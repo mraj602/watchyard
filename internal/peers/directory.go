@@ -41,6 +41,8 @@ type Session struct {
 	Blocked string
 	// Tags are the session's tags at the hub (peers.md 3.4), sorted; none without a hub.
 	Tags []string
+	// Host is set for a session of another agent (AgentHost); nil for a Claude Code session.
+	Host AgentHost
 }
 
 // ListEntry is one line of `wy peers list --json` (peers.md 3.2).
@@ -121,7 +123,9 @@ func (e Env) Directory() []Session {
 			out = append(out, s)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool {
+	n := len(out)
+	out = append(out, e.hostSessions()...)
+	sort.SliceStable(out[:n], func(i, j int) bool {
 		a, b := out[i].Entry, out[j].Entry
 		if a.Slot.Dir != b.Slot.Dir {
 			return a.Slot.Dir < b.Slot.Dir

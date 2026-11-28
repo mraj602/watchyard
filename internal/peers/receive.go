@@ -140,7 +140,7 @@ func (e Env) Receive(in Incoming) ReceiveResult {
 		From: addr, FromSession: env.From.Session, Hop: HopTokens(env.Hop), FromName: handle, FromMode: mode,
 		Body: header + "\n\n" + clean,
 	}
-	if err := WriteFrame(target.Entry.SocketOf(e.Runtime), NewFrame(env.Msg, target.Entry.SessionID, w)); err != nil {
+	if _, err := e.writeTo(*target, NewFrame(env.Msg, target.Entry.SessionID, w), w); err != nil {
 		res.Status, res.Detail = CodeFailed, CodeFailed
 		if errors.Is(err, ErrTargetGone) {
 			res.Status, res.Detail = CodeTargetGone, CodeTargetGone

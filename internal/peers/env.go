@@ -42,6 +42,8 @@ type Env struct {
 	// MarkerTags are tags this machine reads as settings (the account.smart_switch_scope tag):
 	// adding one sends no notice to other holders (peers.md 3.4). no-move always is one.
 	MarkerTags []string
+	// Hosts are other coding agents whose sessions are listed and messaged like Claude's.
+	Hosts []AgentHost
 }
 
 func (e Env) now() time.Time {

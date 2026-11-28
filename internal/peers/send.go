@@ -36,6 +36,9 @@ type SendResult struct {
 	// (identity.md 5.3), and Target.Handle is its handle now. "" when the send named it by
 	// its current handle (or anything else).
 	Via string
+	// Busy: the target is another agent's session in the middle of a turn; the message waits
+	// in its inbox and is injected when the turn ends.
+	Busy bool
 }
 
 // Line is the one status line `wy peers send` prints on success.
@@ -43,6 +46,8 @@ func (r SendResult) Line() string {
 	if r.Status == "queued" {
 		why := "not delivered yet"
 		switch {
+		case r.Busy:
+			why = "that session is busy; the message is injected when its turn ends"
 		case r.Offline:
 			why = "its machine is offline"
 		case r.Unconfirmed:
@@ -259,7 +264,8 @@ func (e Env) sendTo(sender *Session, target Session, dir []Session, text string,
 		Body: header + "\n\n" + clean,
 	}
 	frame := NewFrame(msg, target.Entry.SessionID, w)
-	if err := WriteFrame(target.Entry.SocketOf(e.Runtime), frame); err != nil {
+	queued, err := e.writeTo(target, frame, w)
+	if err != nil {
 		code := CodeFailed
 		if errors.Is(err, ErrTargetGone) {
 			code = CodeTargetGone
@@ -269,13 +275,21 @@ func (e Env) sendTo(sender *Session, target Session, dir []Session, text string,
 	th.RecordMessageFrom(sender.Entry.SessionID, now)
 	_ = threads.Save(e.ThreadsPath())
 	_ = MarkDelivered(e.State, target.Entry.SessionID, now)
+	status := "delivered"
+	if queued {
+		status = "queued"
+	}
 	e.audit(auditLine{Msg: msg, Thread: th.ID, From: sender.Entry.SessionID, To: target.Entry.SessionID, FromA: sender.Account,
-		ToA: target.Account, Size: len(clean), Local: true, Status: "delivered", FromKind: o.Service, Tag: o.Tag}, now)
+		ToA: target.Account, Size: len(clean), Local: true, Status: status, FromKind: o.Service, Tag: o.Tag}, now)
 	if e.Remote != nil {
 		e.Remote.Log(LocalLog{Msg: msg, Thread: th.ID, FromSession: sender.Entry.SessionID, ToSession: target.Entry.SessionID,
-			Kind: kind, Status: "delivered", Size: len(clean), At: now, FromKind: o.Service, Tag: o.Tag})
+			Kind: kind, Status: status, Size: len(clean), At: now, FromKind: o.Service, Tag: o.Tag})
 	}
-	return SendResult{Msg: msg, Thread: th.ID, Target: target, Sender: *sender, HeldLikely: mode != target.Mode}, nil
+	res := SendResult{Msg: msg, Thread: th.ID, Target: target, Sender: *sender, HeldLikely: mode != target.Mode && target.Host == nil}
+	if queued {
+		res.Status, res.Busy, res.Expires = "queued", true, now.Add(ttl)
+	}
+	return res, nil
 }
 
 // sendRemote hands a checked message to the hub. The state lock is released while the hub
